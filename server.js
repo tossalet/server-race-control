@@ -1262,6 +1262,76 @@ app.put('/api/ports', (req, res) => {
 });
 
 /* =======================================
+ *  NETWORK MANAGEMENT (NMCLI)
+ * ======================================= */
+app.get('/api/network', (req, res) => {
+    const { exec } = require('child_process');
+    
+    exec('nmcli -t -f NAME,TYPE,STATE con show --active', (err, stdout) => {
+        if (err || !stdout) return res.json({ ok: false, error: 'nmcli no disponible', fallback: true });
+        
+        const lines = stdout.trim().split('\n');
+        let activeConn = null;
+        for (let line of lines) {
+            const [name, type, state] = line.split(':');
+            if ((type === '802-3-ethernet' || type === 'ethernet') && state === 'activated') {
+                activeConn = name;
+                break;
+            }
+        }
+        
+        if (!activeConn) return res.json({ ok: false, error: 'No se encontró conexión Ethernet activa', fallback: true });
+        
+        exec(`nmcli -t -f ipv4.method,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS con show "${activeConn}"`, (err2, stdout2) => {
+            if (err2 || !stdout2) return res.json({ ok: false, error: 'Error leyendo configuración' });
+            
+            const details = stdout2.trim().split('\n').reduce((acc, line) => {
+                const parts = line.split(':');
+                acc[parts[0]] = parts.slice(1).join(':');
+                return acc;
+            }, {});
+            
+            const addressRaw = details['IP4.ADDRESS[1]'] || details['IP4.ADDRESS'] || '';
+            const [ip, cidr] = addressRaw.split('/');
+            
+            res.json({
+                ok: true,
+                connectionName: activeConn,
+                mode: details['ipv4.method'] === 'manual' ? 'manual' : 'auto',
+                ip: ip || '',
+                cidr: cidr || '24',
+                gateway: details['IP4.GATEWAY'] || '',
+                dns: details['IP4.DNS[1]'] || details['IP4.DNS'] || ''
+            });
+        });
+    });
+});
+
+app.post('/api/network', (req, res) => {
+    const { exec } = require('child_process');
+    const { connectionName, mode, ip, cidr, gateway, dns } = req.body;
+    
+    if (!connectionName) return res.status(400).json({ ok: false, error: 'Falta connectionName' });
+    
+    let cmd = '';
+    if (mode === 'auto') {
+        cmd = `nmcli con mod "${connectionName}" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" && nmcli con up "${connectionName}"`;
+    } else {
+        const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
+        cmd = `nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && nmcli con up "${connectionName}"`;
+    }
+    
+    res.json({ ok: true, message: 'Aplicando configuración...' });
+    
+    setTimeout(() => {
+        exec(cmd, (err) => {
+            if (err) console.error('[NETWORK] Error applying config:', err.message);
+            else console.log(`[NETWORK] Aplicado en ${connectionName}.`);
+        });
+    }, 1000);
+});
+
+/* =======================================
  *  BOOT SEQUENCE & WEBSOCKETS
  * ======================================= */
 
