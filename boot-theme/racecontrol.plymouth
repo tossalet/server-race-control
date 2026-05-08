@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Race Control
+Description=A sleek loading screen for Race Control with lighting squares
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/racecontrol
+ScriptFile=/usr/share/plymouth/themes/racecontrol/racecontrol.script

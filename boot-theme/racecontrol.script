@@ -1,0 +1,57 @@
+# Race Control Plymouth Theme Script
+
+# Background
+bg_image = Image("bg.png");
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+# Get ratios to preserve aspect ratio
+bg_ratio = bg_image.GetWidth() / bg_image.GetHeight();
+screen_ratio = screen_width / screen_height;
+
+if (screen_ratio > bg_ratio) {
+    # Screen is wider than image, scale to height
+    scale_factor = screen_height / bg_image.GetHeight();
+} else {
+    # Screen is taller than image, scale to width
+    scale_factor = screen_width / bg_image.GetWidth();
+}
+
+scaled_bg_image = bg_image.Scale(bg_image.GetWidth() * scale_factor, bg_image.GetHeight() * scale_factor);
+bg_sprite = Sprite(scaled_bg_image);
+# Center the image
+bg_sprite.SetX((screen_width / 2) - (scaled_bg_image.GetWidth() / 2));
+bg_sprite.SetY((screen_height / 2) - (scaled_bg_image.GetHeight() / 2));
+bg_sprite.SetZ(-100);
+
+# Progress Bar (Squares)
+box_image = Image("box.png");
+box_width = box_image.GetWidth();
+box_height = box_image.GetHeight();
+
+num_boxes = 20;
+box_spacing = 8;
+total_width = (num_boxes * box_width) + ((num_boxes - 1) * box_spacing);
+start_x = (screen_width / 2) - (total_width / 2);
+start_y = screen_height - 150;
+
+global.boxes = [];
+
+fun progress_callback (duration, progress) {
+    # Progress is a float between 0.0 and 1.0
+    boxes_to_show = Math.Int(progress * num_boxes);
+    
+    for (i = 0; i < num_boxes; i++) {
+        if (i <= boxes_to_show) {
+            if (!global.boxes[i]) {
+                box_sprite = Sprite(box_image);
+                box_sprite.SetX(start_x + (i * (box_width + box_spacing)));
+                box_sprite.SetY(start_y);
+                box_sprite.SetZ(10);
+                global.boxes[i] = box_sprite;
+            }
+        }
+    }
+}
+
+Plymouth.SetBootProgressFunction(progress_callback);
