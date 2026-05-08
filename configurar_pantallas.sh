@@ -82,9 +82,9 @@ chmod +x ~/.config/race-control/launch_kiosk.sh
 
 # Agregar al autostart de LXDE (Raspberry Pi OS) o similar
 AUTOSTART_DIR="$HOME/.config/autostart"
-mkdir -p "\$AUTOSTART_DIR"
+mkdir -p "$AUTOSTART_DIR"
 
-cat <<EOF > "\$AUTOSTART_DIR/race-control-kiosk.desktop"
+cat <<EOF > "$AUTOSTART_DIR/race-control-kiosk.desktop"
 [Desktop Entry]
 Type=Application
 Name=Race Control Kiosk
@@ -95,7 +95,7 @@ EOF
 # También para Raspberry Pi OS clásico (LXDE-pi)
 PI_AUTOSTART="$HOME/.config/lxsession/LXDE-pi"
 if [ -d "$PI_AUTOSTART" ]; then
-    grep -q "launch_kiosk.sh" "\$PI_AUTOSTART/autostart" || echo "@bash $HOME/.config/race-control/launch_kiosk.sh" >> "\$PI_AUTOSTART/autostart"
+    grep -q "launch_kiosk.sh" "$PI_AUTOSTART/autostart" || echo "@bash $HOME/.config/race-control/launch_kiosk.sh" >> "$PI_AUTOSTART/autostart"
 fi
 
 echo "✅ Configuración de monitores finalizada."
