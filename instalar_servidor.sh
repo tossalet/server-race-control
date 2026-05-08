@@ -7,24 +7,33 @@ if [ "$EUID" -ne 0 ]; then
   exit
 fi
 
-# Instalar whiptail por si no está (librería para dibujar menús visuales en la consola)
+# Detectar el usuario real que ejecutó el sudo para configurar el Kiosko en su cuenta
+if [ -n "$SUDO_USER" ]; then
+    REAL_USER="$SUDO_USER"
+else
+    REAL_USER=$(id -un 1000 2>/dev/null)
+    if [ -z "$REAL_USER" ]; then
+        REAL_USER="root"
+    fi
+fi
+REAL_HOME=$(eval echo ~$REAL_USER)
+
+# Instalar whiptail por si no está
 apt-get update -qq
 apt-get install -y whiptail
 
 # Bienvenida
-whiptail --title "Instalador Race Control Server" --msgbox "Bienvenido al asistente de instalación de Race Control Server para Raspberry Pi / i7.\n\nA continuación, configuraremos los parámetros básicos de tu servidor, instalaremos Node.js, FFmpeg y lo dejaremos listo para funcionar." 14 65
+whiptail --title "Instalador Máster: Race Control" --msgbox "Bienvenido al Instalador Todo-en-Uno de Race Control Server.\n\nEste script se encargará de configurar tu Raspberry Pi o PC (i7) al completo:\n- Limpiará instalaciones antiguas.\n- Instalará el software y sus dependencias.\n- Configurará la animación de arranque (Plymouth).\n- Configurará las pantallas automáticas (Kiosko)." 16 65
 
-# Preguntar Puerto Web
+# Preguntar Puertos
 WEB_PORT=$(whiptail --title "Configuración" --inputbox "Introduce el PUERTO en el que deseas visualizar el Panel de Control Web:\n\n(Ejemplo: 3000, 80, 8080)" 12 60 "3000" 3>&1 1>&2 2>&3)
 if [ -z "$WEB_PORT" ]; then WEB_PORT=3000; fi
 
-# Preguntar Puerto SRT
 SRT_PORT=$(whiptail --title "Configuración" --inputbox "Introduce el PUERTO BASE para la recepción de señal SRT:\n\n(Ejemplo: 8000)" 12 60 "8000" 3>&1 1>&2 2>&3)
 if [ -z "$SRT_PORT" ]; then SRT_PORT=8000; fi
 
 # Confirmación Final
-whiptail --title "Resumen de Instalación" --yesno "Se procederá a instalar con la siguiente configuración:\n\n- Panel Web: Puerto $WEB_PORT\n- Señal SRT: Puerto Base $SRT_PORT\n\n¿Deseas iniciar la instalación ahora?" 14 60
-
+whiptail --title "Resumen de Instalación" --yesno "Se procederá a instalar con la siguiente configuración:\n\n- Panel Web: Puerto $WEB_PORT\n- Señal SRT: Puerto Base $SRT_PORT\n- Usuario Principal (Kiosko): $REAL_USER\n\n¿Deseas iniciar la instalación global ahora?" 15 60
 if [ $? -ne 0 ]; then
     clear
     echo "Instalación cancelada por el usuario."
@@ -32,43 +41,41 @@ if [ $? -ne 0 ]; then
 fi
 
 clear
-echo "🛠️ Iniciando instalación de dependencias base..."
-apt-get install -y ffmpeg curl software-properties-common wget build-essential git
+echo "🧹 1. Limpiando instalaciones antiguas y servicios fantasmas..."
+systemctl stop tsst-srt.service 2>/dev/null
+systemctl disable tsst-srt.service 2>/dev/null
+systemctl stop race-control.service 2>/dev/null
+systemctl disable race-control.service 2>/dev/null
+rm -rf /opt/race-control
 
-echo "📦 Instalando Node.js..."
+echo "🛠️ 2. Instalando dependencias del sistema operativo..."
+apt-get install -y ffmpeg curl software-properties-common wget build-essential git ntfs-3g exfatprogs udevil plymouth plymouth-themes
+# Intentar instalar chromium-browser o chromium
+apt-get install -y chromium-browser unclutter xdotool || apt-get install -y chromium unclutter xdotool
+
+echo "📦 3. Instalando Node.js..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 
-echo "📂 Configurando el entorno de la aplicación..."
-APP_DIR="/opt/race-control"
-rm -rf $APP_DIR
-mkdir -p $APP_DIR
-
-echo "💽 Instalando y configurando Auto-Montador moderno de memorias USB (udevil)..."
-apt-get install -y ntfs-3g exfatprogs udevil
-# Activar el servicio devmon en segundo plano para que escuche cuándo se pincha un USB y lo monte en /media
+echo " USB 4. Activando Auto-Montador de discos duros..."
 systemctl enable devmon@root
 systemctl start devmon@root
 
-# Forzar instalación de git si falló en el primer bloque
-apt-get update -qq
-apt-get install -y git
-
-echo "Copiando archivos..."
-# IMPORTANTE: Cambia esta URL por la de tu repositorio de GitHub real.
+echo "📂 5. Descargando el código del servidor..."
+APP_DIR="/opt/race-control"
+mkdir -p $APP_DIR
 GITHUB_REPO="https://github.com/tossalet/server-race-control.git"
 git clone $GITHUB_REPO $APP_DIR
 cd $APP_DIR
 
-echo "⚙️ Instalando dependencias de Node (npm install)..."
+echo "⚙️ 6. Instalando dependencias de Node (npm)..."
 npm install --omit=dev
 
-# Crear archivo .env para el puerto
+echo "📝 7. Configurando variables de entorno (.env)..."
 echo "PORT=$WEB_PORT" > .env
-# Si nuestra app lee SRT_PORT del .env, también lo ponemos (dependiendo de nuestra lógica en app)
 echo "SRT_BASE_PORT=$SRT_PORT" >> .env
 
-echo "🚀 Creando servicio de arranque automático (Systemd)..."
+echo "🚀 8. Creando servicio central (race-control.service)..."
 cat <<EOF > /etc/systemd/system/race-control.service
 [Unit]
 Description=Race Control Server
@@ -81,22 +88,101 @@ Restart=always
 User=root
 Environment=PATH=/usr/bin:/usr/local/bin
 Environment=NODE_ENV=production
-EnvironmentFile=/opt/race-control/.env
+EnvironmentFile=$APP_DIR/.env
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# Refrescar y activar que inicie en cada arranque
 systemctl daemon-reload
 systemctl enable race-control.service
 systemctl start race-control.service
-systemctl status race-control.service --no-pager
+
+echo "🎬 9. Instalando animación de arranque (Plymouth)..."
+THEME_DIR="/usr/share/plymouth/themes/racecontrol"
+mkdir -p "$THEME_DIR"
+cp -r $APP_DIR/boot-theme/* "$THEME_DIR/" 2>/dev/null
+chmod -R 755 "$THEME_DIR"
+if [ -f "$THEME_DIR/racecontrol.script" ]; then
+    plymouth-set-default-theme -R racecontrol
+    
+    # Modificar cmdline.txt si existe (Raspberry Pi)
+    CMDLINE_PATH="/boot/firmware/cmdline.txt"
+    if [ ! -f "$CMDLINE_PATH" ]; then CMDLINE_PATH="/boot/cmdline.txt"; fi
+    if [ -f "$CMDLINE_PATH" ]; then
+        if ! grep -q "splash" "$CMDLINE_PATH"; then
+            sed -i 's/$/ quiet splash/' "$CMDLINE_PATH"
+        fi
+    fi
+    # Modificar GRUB si existe (Ubuntu/Debian i7)
+    if [ -f "/etc/default/grub" ]; then
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"/' /etc/default/grub
+        update-grub 2>/dev/null
+    fi
+fi
+
+echo "🖥️ 10. Configurando pantallas automáticas (Modo Kiosko)..."
+# Script de lanzamiento para las pantallas
+mkdir -p $REAL_HOME/.config/race-control
+cat <<'EOF' > $REAL_HOME/.config/race-control/launch_kiosk.sh
+#!/bin/bash
+unclutter -idle 3 &
+xset s noblank
+xset s off
+xset -dpms
+
+ENV_PORT=$(grep '^PORT=' /opt/race-control/.env | cut -d '=' -f2)
+PORT=${ENV_PORT:-3000}
+
+echo "Esperando al Servidor Node en el puerto $PORT..."
+while ! curl -s http://localhost:$PORT > /dev/null; do sleep 2; done
+echo "Servidor listo."
+
+BROWSER="chromium-browser"
+if ! command -v chromium-browser &> /dev/null; then
+    if command -v chromium &> /dev/null; then BROWSER="chromium"
+    elif command -v google-chrome &> /dev/null; then BROWSER="google-chrome"
+    fi
+fi
+
+$BROWSER \
+    --noerrdialogs --disable-infobars --disable-features=Translate \
+    --no-first-run --check-for-update-interval=31536000 \
+    --kiosk --window-position=0,0 \
+    --user-data-dir=/tmp/chromium_kiosk_1 \
+    "http://localhost:$PORT/grabador" &
+
+sleep 5
+
+$BROWSER \
+    --noerrdialogs --disable-infobars --disable-features=Translate \
+    --no-first-run --check-for-update-interval=31536000 \
+    --kiosk --window-position=1920,0 \
+    --user-data-dir=/tmp/chromium_kiosk_2 \
+    "http://localhost:$PORT/grabador/?monitor=1#monitor" &
+EOF
+
+chmod +x $REAL_HOME/.config/race-control/launch_kiosk.sh
+
+# Autostart para LXDE/X11
+AUTOSTART_DIR="$REAL_HOME/.config/autostart"
+mkdir -p "$AUTOSTART_DIR"
+cat <<EOF > "$AUTOSTART_DIR/race-control-kiosk.desktop"
+[Desktop Entry]
+Type=Application
+Name=Race Control Kiosk
+Exec=$REAL_HOME/.config/race-control/launch_kiosk.sh
+StartupNotify=false
+Terminal=false
+EOF
+
+# Arreglar permisos para que el usuario real sea el dueño de su config
+chown -R $REAL_USER:$REAL_USER $REAL_HOME/.config/race-control
+chown -R $REAL_USER:$REAL_USER $REAL_HOME/.config/autostart
 
 LOCAL_IP=$(hostname -I | awk '{print $1}')
 
-whiptail --title "¡Instalación Completada!" --msgbox "Race Control Server se ha instalado correctamente y se ha programado para auto-arrancarse cada vez que enciendas el equipo.\n\nPuedes acceder a tu panel de control desde cualquier navegador en la red ingresando a:\n\n👉 http://$LOCAL_IP:$WEB_PORT" 15 65
+whiptail --title "¡Instalación Maestra Completada!" --msgbox "Race Control Server se ha instalado y configurado al 100%.\n\nTodo ha quedado limpio y unificado en un solo instalador.\n\n👉 Ya puedes reiniciar la máquina y disfrutar.\nPanel Web: http://$LOCAL_IP:$WEB_PORT" 15 65
 
 clear
 echo "✅ ¡Instalación Finalizada con éxito!"
-echo "📍 Panel Web en: http://$LOCAL_IP:$WEB_PORT"
+echo "🔄 RECOMENDACIÓN: Ejecuta 'sudo reboot' para probar todo."
