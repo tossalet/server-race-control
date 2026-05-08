@@ -51,8 +51,8 @@ systemctl disable race-control-kiosk.service 2>/dev/null
 rm -rf /opt/race-control
 
 echo "🛠️ 2. Instalando dependencias del sistema operativo..."
-# Añadimos X11 y Openbox para sistemas Server/Lite sin entorno gráfico
-apt-get install -y ffmpeg curl software-properties-common wget build-essential git ntfs-3g exfatprogs udevil plymouth plymouth-themes xserver-xorg x11-xserver-utils xinit openbox
+# Añadimos X11, Openbox y LightDM para sistemas Server/Lite sin entorno gráfico
+apt-get install -y ffmpeg curl software-properties-common wget build-essential git ntfs-3g exfatprogs udevil plymouth plymouth-themes xserver-xorg openbox lightdm
 # Intentar instalar chromium-browser o chromium
 apt-get install -y chromium-browser unclutter xdotool || apt-get install -y chromium unclutter xdotool
 
@@ -112,45 +112,43 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
     CMDLINE_PATH="/boot/firmware/cmdline.txt"
     if [ ! -f "$CMDLINE_PATH" ]; then CMDLINE_PATH="/boot/cmdline.txt"; fi
     if [ -f "$CMDLINE_PATH" ]; then
-        if ! grep -q "splash" "$CMDLINE_PATH"; then
-            sed -i 's/$/ quiet splash/' "$CMDLINE_PATH"
+        # Activar el modo splash oficial de la Raspberry Pi
+        if command -v raspi-config > /dev/null; then
+            raspi-config nonint do_boot_splash 0
         fi
+        
+        # Inyectar variables nativas de Plymouth para ocultar el texto matrix
+        for word in "quiet" "splash" "plymouth.ignore-serial-consoles" "vt.global_cursor_default=0"; do
+            if ! grep -q "$word" "$CMDLINE_PATH"; then
+                sed -i "s/$/ $word/" "$CMDLINE_PATH"
+            fi
+        done
+        
+        # Reconstruir arranque profundo
+        update-initramfs -u 2>/dev/null
     fi
     # Modificar GRUB si existe (Ubuntu/Debian i7)
     if [ -f "/etc/default/grub" ]; then
-        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"/' /etc/default/grub
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
         update-grub 2>/dev/null
     fi
 fi
 
-echo "🖥️ 10. Configurando pantallas automáticas (Modo Kiosko para Server/Lite)..."
-# Crear el servicio de sistema para arrancar el motor gráfico X11
-cat <<EOF > /etc/systemd/system/race-control-kiosk.service
-[Unit]
-Description=Race Control Graphical Kiosk
-After=systemd-user-sessions.service network.target race-control.service
+echo "🖥️ 10. Configurando pantallas automáticas (Modo Kiosko para Server/Lite con LightDM)..."
 
-[Service]
-User=$REAL_USER
-Group=$REAL_USER
-PAMName=login
-Type=simple
-Environment=DISPLAY=:0
-ExecStart=/usr/bin/startx /usr/bin/openbox-session -- :0 -nocursor -s off -dpms
-Restart=always
-RestartSec=5
+# Configurar autologin en LightDM para evitar la pantalla de contraseña
+if [ -f "/etc/lightdm/lightdm.conf" ]; then
+    sed -i "s/^#autologin-user=.*/autologin-user=$REAL_USER/" /etc/lightdm/lightdm.conf
+    sed -i "s/^#autologin-user-timeout=.*/autologin-user-timeout=0/" /etc/lightdm/lightdm.conf
+fi
 
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable race-control-kiosk.service
+# Configurar LightDM para que cargue la sesión Kiosko por defecto
+echo -e "[Desktop]\nSession=openbox" > /var/lib/AccountsService/users/$REAL_USER 2>/dev/null || true
 
 # Script de lanzamiento para Openbox (arranque de ventanas)
 mkdir -p $REAL_HOME/.config/openbox
 cat <<'EOF' > $REAL_HOME/.config/openbox/autostart
-# Hide mouse and disable screensaver
-unclutter -idle 3 &
+# Disable screensaver and energy saving
 xset s noblank
 xset s off
 xset -dpms
@@ -158,8 +156,11 @@ xset -dpms
 ENV_PORT=$(grep '^PORT=' /opt/race-control/.env | cut -d '=' -f2)
 PORT=${ENV_PORT:-3000}
 
-# Wait for server
-while ! curl -s http://localhost:$PORT > /dev/null; do sleep 2; done
+# Wait for server (max 10 seconds to avoid hanging)
+for i in {1..5}; do
+  if curl -s http://localhost:$PORT > /dev/null; then break; fi
+  sleep 2
+done
 
 BROWSER="chromium-browser"
 if ! command -v chromium-browser &> /dev/null; then
@@ -171,24 +172,30 @@ fi
 # App Grabador (Monitor 1)
 $BROWSER \
     --noerrdialogs --disable-infobars --disable-features=Translate \
-    --no-first-run --check-for-update-interval=31536000 \
-    --kiosk --window-position=0,0 \
+    --no-first-run --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy --kiosk --window-position=0,0 \
     --user-data-dir=/tmp/chromium_kiosk_1 \
     "http://localhost:$PORT/grabador" &
 
 sleep 5
 
-# Monitor Output (Monitor 2)
-$BROWSER \
-    --noerrdialogs --disable-infobars --disable-features=Translate \
-    --no-first-run --check-for-update-interval=31536000 \
-    --kiosk --window-position=1920,0 \
-    --user-data-dir=/tmp/chromium_kiosk_2 \
-    "http://localhost:$PORT/grabador/?monitor=1#monitor" &
+# Detectar número de monitores conectados
+NUM_MONITORS=$(xrandr --listactivemonitors | head -n 1 | awk '{print $2}')
+
+# Solo lanzar la ventana del Monitor 2 si hay 2 monitores conectados físicamente
+if [ "$NUM_MONITORS" -gt 1 ]; then
+    $BROWSER \
+        --noerrdialogs --disable-infobars --disable-features=Translate \
+        --no-first-run --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy --kiosk --window-position=1920,0 \
+        --user-data-dir=/tmp/chromium_kiosk_2 \
+        "http://localhost:$PORT/grabador/?monitor=1#monitor" &
+fi
 EOF
 
 # Arreglar permisos para que el usuario real sea el dueño de su config
 chown -R $REAL_USER:$REAL_USER $REAL_HOME/.config/openbox
+
+# Activar LightDM como servicio principal gráfico
+systemctl enable lightdm
 
 LOCAL_IP=$(hostname -I | awk '{print $1}')
 
