@@ -14,8 +14,8 @@ sudo apt-get install -y chromium-browser unclutter xdotool || sudo apt-get insta
 
 # Averiguar el puerto del .env o usar 3000 por defecto
 PORT=3000
-if [ -f "/opt/srt-server/.env" ]; then
-    ENV_PORT=$(grep PORT /opt/srt-server/.env | cut -d '=' -f2)
+if [ -f "/opt/race-control/.env" ]; then
+    ENV_PORT=$(grep PORT /opt/race-control/.env | cut -d '=' -f2)
     if [ ! -z "$ENV_PORT" ]; then
         PORT=$ENV_PORT
     fi

@@ -12,7 +12,7 @@ apt-get update -qq
 apt-get install -y whiptail
 
 # Bienvenida
-whiptail --title "Instalador Servidor SRT TSST" --msgbox "Bienvenido al asistente de instalación del Servidor SRT para Raspberry Pi.\n\nA continuación, configuraremos los parámetros básicos de tu servidor, instalaremos Node.js, FFmpeg y lo dejaremos listo para funcionar." 14 65
+whiptail --title "Instalador Race Control Server" --msgbox "Bienvenido al asistente de instalación de Race Control Server para Raspberry Pi / i7.\n\nA continuación, configuraremos los parámetros básicos de tu servidor, instalaremos Node.js, FFmpeg y lo dejaremos listo para funcionar." 14 65
 
 # Preguntar Puerto Web
 WEB_PORT=$(whiptail --title "Configuración" --inputbox "Introduce el PUERTO en el que deseas visualizar el Panel de Control Web:\n\n(Ejemplo: 3000, 80, 8080)" 12 60 "3000" 3>&1 1>&2 2>&3)
@@ -40,7 +40,7 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 
 echo "📂 Configurando el entorno de la aplicación..."
-APP_DIR="/opt/srt-server"
+APP_DIR="/opt/race-control"
 rm -rf $APP_DIR
 mkdir -p $APP_DIR
 
@@ -69,9 +69,9 @@ echo "PORT=$WEB_PORT" > .env
 echo "SRT_BASE_PORT=$SRT_PORT" >> .env
 
 echo "🚀 Creando servicio de arranque automático (Systemd)..."
-cat <<EOF > /etc/systemd/system/tsst-srt.service
+cat <<EOF > /etc/systemd/system/race-control.service
 [Unit]
-Description=Servidor SRT TSST y Panel Web
+Description=Race Control Server
 After=network.target
 
 [Service]
@@ -81,7 +81,7 @@ Restart=always
 User=root
 Environment=PATH=/usr/bin:/usr/local/bin
 Environment=NODE_ENV=production
-EnvironmentFile=/opt/srt-server/.env
+EnvironmentFile=/opt/race-control/.env
 
 [Install]
 WantedBy=multi-user.target
@@ -89,13 +89,13 @@ EOF
 
 # Refrescar y activar que inicie en cada arranque
 systemctl daemon-reload
-systemctl enable tsst-srt.service
-systemctl start tsst-srt.service
-systemctl status tsst-srt.service --no-pager
+systemctl enable race-control.service
+systemctl start race-control.service
+systemctl status race-control.service --no-pager
 
 LOCAL_IP=$(hostname -I | awk '{print $1}')
 
-whiptail --title "¡Instalación Completada!" --msgbox "El Servidor SRT se ha instalado correctamente y se ha programado para auto-arrancarse cada vez que enciendas la Raspberry.\n\nPuedes acceder a tu panel de control desde cualquier navegador en la red ingresando a:\n\n👉 http://$LOCAL_IP:$WEB_PORT" 15 65
+whiptail --title "¡Instalación Completada!" --msgbox "Race Control Server se ha instalado correctamente y se ha programado para auto-arrancarse cada vez que enciendas el equipo.\n\nPuedes acceder a tu panel de control desde cualquier navegador en la red ingresando a:\n\n👉 http://$LOCAL_IP:$WEB_PORT" 15 65
 
 clear
 echo "✅ ¡Instalación Finalizada con éxito!"
