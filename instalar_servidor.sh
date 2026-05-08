@@ -56,7 +56,7 @@ apt-get install -y git
 
 echo "Copiando archivos..."
 # IMPORTANTE: Cambia esta URL por la de tu repositorio de GitHub real.
-GITHUB_REPO="https://github.com/tossalet/rtsp-server-tsst.git"
+GITHUB_REPO="https://github.com/tossalet/server-race-control.git"
 git clone $GITHUB_REPO $APP_DIR
 cd $APP_DIR
 
