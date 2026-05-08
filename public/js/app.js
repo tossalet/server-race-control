@@ -551,6 +551,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function fetchData() {
     try {
+        fetchNetworkSettings();
         const resIp = await fetch('/api/server-ip').catch(() => null);
         if (resIp && resIp.ok) {
             const dataIp = await resIp.json();
@@ -1037,10 +1038,89 @@ function openEditOutput(id) {
         const ipMatch = out.url.match(/\/\/([^:]+)/);
         if(ipMatch) document.getElementById('out_ip').value = ipMatch[1];
     }
+    
     updateOutputFields();
     
     document.querySelector('#outputModal .modal-header h3').innerText = 'Editar Output Stream';
     openModal('outputModal');
+}
+
+async function fetchNetworkSettings() {
+    try {
+        const res = await fetch('/api/network');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.ok) {
+            document.getElementById('net_connName').value = data.connectionName || '';
+            document.getElementById('net_mode').value = data.mode || 'auto';
+            document.getElementById('net_ip').value = data.ip || '';
+            document.getElementById('net_cidr').value = data.cidr || '24';
+            document.getElementById('net_gateway').value = data.gateway || '';
+            document.getElementById('net_dns').value = data.dns || '';
+            toggleNetworkFields();
+        }
+    } catch (e) {
+        console.error("Error fetching network settings:", e);
+    }
+}
+
+function toggleNetworkFields() {
+    const mode = document.getElementById('net_mode').value;
+    const isAuto = mode === 'auto';
+    document.getElementById('net_ip').disabled = isAuto;
+    document.getElementById('net_cidr').disabled = isAuto;
+    document.getElementById('net_gateway').disabled = isAuto;
+    document.getElementById('net_dns').disabled = isAuto;
+    
+    const btn = document.getElementById('net_saveBtn');
+    if (isAuto) {
+        btn.innerHTML = '<i class="fa-solid fa-save"></i> Guardar y Aplicar DHCP';
+    } else {
+        btn.innerHTML = '<i class="fa-solid fa-save"></i> Aplicar IP Estática (El servidor se reiniciará en la nueva IP)';
+    }
+}
+
+async function saveNetworkSettings(e) {
+    e.preventDefault();
+    const mode = document.getElementById('net_mode').value;
+    const ip = document.getElementById('net_ip').value;
+    const payload = {
+        connectionName: document.getElementById('net_connName').value,
+        mode: mode,
+        ip: ip,
+        cidr: document.getElementById('net_cidr').value,
+        gateway: document.getElementById('net_gateway').value,
+        dns: document.getElementById('net_dns').value
+    };
+    
+    if (!payload.connectionName) {
+        alert("Error: No se detectó ninguna conexión Ethernet activa gestionada por nmcli.");
+        return;
+    }
+    
+    if (confirm(`¿Estás seguro de que quieres aplicar esta configuración de red?\n\nSi cambias la IP (modo: ${mode}), perderás la conexión actual y tendrás que escribir la nueva IP en el navegador para volver a entrar.`)) {
+        try {
+            const res = await fetch('/api/network', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.ok) {
+                alert("Configuración aplicada. Si la IP ha cambiado, la página dejará de responder. Por favor, navega a la nueva IP en unos segundos.");
+                if (mode === 'manual' && ip) {
+                    setTimeout(() => {
+                        window.location.href = `http://${ip}:${window.location.port}/`;
+                    }, 3000);
+                }
+            } else {
+                alert("Error: " + data.error);
+            }
+        } catch (e) {
+            console.error("Error saving network:", e);
+            alert("Se ha aplicado la red, pero se perdió la conexión con el servidor (esperable si cambiaste la IP).");
+        }
+    }
 }
 
 async function submitInput(e) {
