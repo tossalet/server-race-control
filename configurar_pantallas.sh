@@ -15,12 +15,12 @@ sudo apt-get install -y chromium-browser unclutter xdotool || sudo apt-get insta
 # Averiguar el puerto del .env o usar 3000 por defecto
 PORT=3000
 if [ -f "/opt/race-control/.env" ]; then
-    ENV_PORT=$(grep PORT /opt/race-control/.env | cut -d '=' -f2)
+    ENV_PORT=$(grep '^PORT=' /opt/race-control/.env | cut -d '=' -f2)
     if [ ! -z "$ENV_PORT" ]; then
         PORT=$ENV_PORT
     fi
 elif [ -f "./.env" ]; then
-    ENV_PORT=$(grep PORT ./.env | cut -d '=' -f2)
+    ENV_PORT=$(grep '^PORT=' ./.env | cut -d '=' -f2)
     if [ ! -z "$ENV_PORT" ]; then
         PORT=$ENV_PORT
     fi
@@ -48,9 +48,19 @@ while ! curl -s http://localhost:$PORT > /dev/null; do
 done
 echo "Servidor listo, lanzando pantallas..."
 
+# Detect browser
+BROWSER="chromium-browser"
+if ! command -v chromium-browser &> /dev/null; then
+    if command -v chromium &> /dev/null; then
+        BROWSER="chromium"
+    elif command -v google-chrome &> /dev/null; then
+        BROWSER="google-chrome"
+    fi
+fi
+
 # Monitor 1 (Principal): App Grabador
 # Lanzamos con un user-data-dir específico para evitar conflictos de sesión y forzar ventana nueva
-chromium-browser \\
+\$BROWSER \\
     --noerrdialogs \\
     --disable-infobars \\
     --disable-features=Translate \\
@@ -65,7 +75,7 @@ chromium-browser \\
 sleep 5
 
 # Monitor 2 (Secundario): App Monitor
-chromium-browser \\
+\$BROWSER \\
     --noerrdialogs \\
     --disable-infobars \\
     --disable-features=Translate \\
