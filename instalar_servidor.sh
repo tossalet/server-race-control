@@ -46,10 +46,13 @@ systemctl stop tsst-srt.service 2>/dev/null
 systemctl disable tsst-srt.service 2>/dev/null
 systemctl stop race-control.service 2>/dev/null
 systemctl disable race-control.service 2>/dev/null
+systemctl stop race-control-kiosk.service 2>/dev/null
+systemctl disable race-control-kiosk.service 2>/dev/null
 rm -rf /opt/race-control
 
 echo "🛠️ 2. Instalando dependencias del sistema operativo..."
-apt-get install -y ffmpeg curl software-properties-common wget build-essential git ntfs-3g exfatprogs udevil plymouth plymouth-themes
+# Añadimos X11 y Openbox para sistemas Server/Lite sin entorno gráfico
+apt-get install -y ffmpeg curl software-properties-common wget build-essential git ntfs-3g exfatprogs udevil plymouth plymouth-themes xserver-xorg x11-xserver-utils xinit openbox
 # Intentar instalar chromium-browser o chromium
 apt-get install -y chromium-browser unclutter xdotool || apt-get install -y chromium unclutter xdotool
 
@@ -120,11 +123,33 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
     fi
 fi
 
-echo "🖥️ 10. Configurando pantallas automáticas (Modo Kiosko)..."
-# Script de lanzamiento para las pantallas
-mkdir -p $REAL_HOME/.config/race-control
-cat <<'EOF' > $REAL_HOME/.config/race-control/launch_kiosk.sh
-#!/bin/bash
+echo "🖥️ 10. Configurando pantallas automáticas (Modo Kiosko para Server/Lite)..."
+# Crear el servicio de sistema para arrancar el motor gráfico X11
+cat <<EOF > /etc/systemd/system/race-control-kiosk.service
+[Unit]
+Description=Race Control Graphical Kiosk
+After=systemd-user-sessions.service network.target race-control.service
+
+[Service]
+User=$REAL_USER
+Group=$REAL_USER
+PAMName=login
+Type=simple
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/startx /usr/bin/openbox-session -- :0 -nocursor -s off -dpms
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable race-control-kiosk.service
+
+# Script de lanzamiento para Openbox (arranque de ventanas)
+mkdir -p $REAL_HOME/.config/openbox
+cat <<'EOF' > $REAL_HOME/.config/openbox/autostart
+# Hide mouse and disable screensaver
 unclutter -idle 3 &
 xset s noblank
 xset s off
@@ -133,9 +158,8 @@ xset -dpms
 ENV_PORT=$(grep '^PORT=' /opt/race-control/.env | cut -d '=' -f2)
 PORT=${ENV_PORT:-3000}
 
-echo "Esperando al Servidor Node en el puerto $PORT..."
+# Wait for server
 while ! curl -s http://localhost:$PORT > /dev/null; do sleep 2; done
-echo "Servidor listo."
 
 BROWSER="chromium-browser"
 if ! command -v chromium-browser &> /dev/null; then
@@ -144,6 +168,7 @@ if ! command -v chromium-browser &> /dev/null; then
     fi
 fi
 
+# App Grabador (Monitor 1)
 $BROWSER \
     --noerrdialogs --disable-infobars --disable-features=Translate \
     --no-first-run --check-for-update-interval=31536000 \
@@ -153,6 +178,7 @@ $BROWSER \
 
 sleep 5
 
+# Monitor Output (Monitor 2)
 $BROWSER \
     --noerrdialogs --disable-infobars --disable-features=Translate \
     --no-first-run --check-for-update-interval=31536000 \
@@ -161,23 +187,8 @@ $BROWSER \
     "http://localhost:$PORT/grabador/?monitor=1#monitor" &
 EOF
 
-chmod +x $REAL_HOME/.config/race-control/launch_kiosk.sh
-
-# Autostart para LXDE/X11
-AUTOSTART_DIR="$REAL_HOME/.config/autostart"
-mkdir -p "$AUTOSTART_DIR"
-cat <<EOF > "$AUTOSTART_DIR/race-control-kiosk.desktop"
-[Desktop Entry]
-Type=Application
-Name=Race Control Kiosk
-Exec=$REAL_HOME/.config/race-control/launch_kiosk.sh
-StartupNotify=false
-Terminal=false
-EOF
-
 # Arreglar permisos para que el usuario real sea el dueño de su config
-chown -R $REAL_USER:$REAL_USER $REAL_HOME/.config/race-control
-chown -R $REAL_USER:$REAL_USER $REAL_HOME/.config/autostart
+chown -R $REAL_USER:$REAL_USER $REAL_HOME/.config/openbox
 
 LOCAL_IP=$(hostname -I | awk '{print $1}')
 
