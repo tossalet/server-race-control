@@ -252,6 +252,46 @@
                         </form>
                     </div>
 
+                    <!-- Network Configuration -->
+                    <div class="settings-card" style="background: rgba(0,0,0,0.2); padding: 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+                        <h2 style="font-size: 1.25rem; font-weight: 600; margin-bottom: 1.5rem; display:flex; align-items:center; gap:10px;">
+                            <i class="fa-solid fa-wifi"></i> Network Configuration
+                        </h2>
+                        <form id="formNetwork" onsubmit="saveNetworkSettings(event)">
+                            <input type="hidden" id="net_connName" value="">
+                            <div class="form-group row">
+                                <div class="full" style="width:100%;">
+                                    <label>Modo de Asignación IP</label>
+                                    <select id="net_mode" onchange="toggleNetworkFields()" class="form-control">
+                                        <option value="auto">Automático (DHCP) - Asignado por Router</option>
+                                        <option value="manual">Manual (IP Estática)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-group row">
+                                <div class="half">
+                                    <label>Dirección IP</label>
+                                    <input type="text" id="net_ip" placeholder="192.168.1.50">
+                                </div>
+                                <div class="half">
+                                    <label>Máscara (Bits / CIDR)</label>
+                                    <input type="number" id="net_cidr" placeholder="24" min="8" max="32">
+                                </div>
+                            </div>
+                            <div class="form-group row">
+                                <div class="half">
+                                    <label>Puerta de Enlace (Gateway)</label>
+                                    <input type="text" id="net_gateway" placeholder="192.168.1.1">
+                                </div>
+                                <div class="half">
+                                    <label>Servidor DNS</label>
+                                    <input type="text" id="net_dns" placeholder="8.8.8.8">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn-primary" id="net_saveBtn" style="margin-top:10px; width:100%;"><i class="fa-solid fa-save"></i> Aplicar Cambios de Red</button>
+                        </form>
+                    </div>
+
                     <!-- User Management -->
                     <div class="settings-card" style="background: rgba(0,0,0,0.2); padding: 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 1.5rem;">
