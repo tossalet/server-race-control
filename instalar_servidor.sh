@@ -52,7 +52,7 @@ rm -rf /opt/race-control
 
 echo "🛠️ 2. Instalando dependencias del sistema operativo..."
 # Añadimos X11, Openbox y LightDM para sistemas Server/Lite sin entorno gráfico
-apt-get install -y ffmpeg curl software-properties-common wget build-essential git ntfs-3g exfatprogs udevil plymouth plymouth-themes xserver-xorg openbox lightdm
+apt-get install -y ffmpeg curl software-properties-common wget build-essential git ntfs-3g exfatprogs udevil plymouth plymouth-themes xserver-xorg openbox lightdm feh
 # Intentar instalar chromium-browser o chromium
 apt-get install -y chromium-browser unclutter xdotool || apt-get install -y chromium unclutter xdotool
 
@@ -152,6 +152,14 @@ cat <<'EOF' > $REAL_HOME/.config/openbox/autostart
 xset s noblank
 xset s off
 xset -dpms
+
+# Poner fondo de pantalla para transición sin cortes
+if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then
+    feh --bg-scale /usr/share/plymouth/themes/racecontrol/bg.png
+fi
+
+# Limpiar bloqueos de navegadores anteriores
+rm -rf /tmp/chromium_kiosk_*
 
 ENV_PORT=$(grep '^PORT=' /opt/race-control/.env | cut -d '=' -f2)
 PORT=${ENV_PORT:-3000}
