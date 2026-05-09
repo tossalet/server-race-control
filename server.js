@@ -643,8 +643,7 @@ app.post('/api/recordings/start', (req, res) => {
                 return res.status(400).json({ error: 'No active inputs found' });
 
             const { spawn } = require('child_process');
-            const ffmpegCmd = path.join(__dirname, 'ffmpeg_bin',
-                fs.readdirSync(path.join(__dirname, 'ffmpeg_bin'))[0], 'bin', 'ffmpeg.exe');
+            const ffmpegCmd = streamManager.getFFmpegPath();
 
             const net = require('net');
 
