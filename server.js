@@ -103,10 +103,62 @@ console.error = function(...args) {
     broadCastLog('ERROR', msg);
 };
 
-// Media Root for USB Recording and Playback
-const mediaRoot = process.platform === 'win32' ? path.join(__dirname, 'media') : '/media';
-if (!fs.existsSync(mediaRoot)) {
-    try { fs.mkdirSync(mediaRoot, { recursive: true }); } catch (e) {}
+// ── Preview Root: archivos HLS temporales en disco del sistema ─────────────
+const previewRoot = process.platform === 'win32'
+    ? path.join(__dirname, 'public', 'preview')
+    : '/tmp/race-control-preview';
+if (!fs.existsSync(previewRoot)) {
+    try { fs.mkdirSync(previewRoot, { recursive: true }); } catch (e) {}
+}
+
+// ── Media Root: grabaciones en disco externo / NVMe ──────────────────────────
+// Prioridad: 1) MEDIA_ROOT del .env  2) Auto-detect disco externo  3) null (bloqueado)
+function detectExternalDisk() {
+    if (process.env.MEDIA_ROOT) return process.env.MEDIA_ROOT;
+    if (process.platform === 'win32') return path.join(__dirname, 'media');
+    // Linux: buscar primer disco montado en /media o /mnt distinto al sistema
+    const bases = ['/media', '/mnt'];
+    for (const base of bases) {
+        if (!fs.existsSync(base)) continue;
+        try {
+            const baseDev = fs.statSync(base).dev;
+            const entries = fs.readdirSync(base);
+            for (const entry of entries) {
+                const full = path.join(base, entry);
+                try {
+                    if (fs.statSync(full).isDirectory()) {
+                        // Primer nivel (e.g. /media/racecontrol)
+                        if (fs.statSync(full).dev !== baseDev) return full;
+                        // Segundo nivel (e.g. /media/racecontrol/USB_DRIVE)
+                        const sub = fs.readdirSync(full);
+                        for (const s of sub) {
+                            const sfull = path.join(full, s);
+                            try {
+                                if (fs.statSync(sfull).isDirectory() &&
+                                    fs.statSync(sfull).dev !== fs.statSync(full).dev) {
+                                    return sfull;
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                } catch(e) {}
+            }
+        } catch(e) {}
+    }
+    return null;
+}
+
+let mediaRoot = detectExternalDisk();
+if (mediaRoot) {
+    const recDir = path.join(mediaRoot, 'recordings');
+    if (!fs.existsSync(recDir)) {
+        try { fs.mkdirSync(recDir, { recursive: true }); mediaRoot = recDir; } catch(e) {}
+    } else {
+        mediaRoot = recDir;
+    }
+    console.log(`[STORAGE] Disco de grabacion: ${mediaRoot}`);
+} else {
+    console.log('[STORAGE] AVISO: No hay disco externo. Grabacion bloqueada hasta conectar uno.');
 }
 
 const thumbsDir = path.join(__dirname, 'public', 'thumbs');
@@ -118,9 +170,22 @@ if (!fs.existsSync(thumbsDir)) {
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/media', express.static(mediaRoot, {
-    setHeaders: (res, path) => {
-        if (path.endsWith('.m3u8')) {
+
+// Servir archivos de media (grabaciones) y preview (temp)
+if (mediaRoot) {
+    app.use('/media', express.static(mediaRoot, {
+        setHeaders: (res, filePath) => {
+            if (filePath.endsWith('.m3u8')) {
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                res.setHeader('Pragma', 'no-cache');
+                res.setHeader('Expires', '0');
+            }
+        }
+    }));
+}
+app.use('/preview', express.static(previewRoot, {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.m3u8')) {
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             res.setHeader('Pragma', 'no-cache');
             res.setHeader('Expires', '0');
@@ -128,10 +193,36 @@ app.use('/media', express.static(mediaRoot, {
     }
 }));
 
+
 // Simple API status endpoint
 app.get('/api/status', (req, res) => {
     res.json({ online: true, app: 'Race Control Server', version: '1.0.0' });
 });
+
+// Storage status — informa al frontend si hay disco de grabacion disponible
+app.get('/api/storage/status', (req, res) => {
+    // Re-detectar por si el disco se conectó después de arrancar
+    if (!mediaRoot) {
+        const detected = detectExternalDisk();
+        if (detected) {
+            const recDir = path.join(detected, 'recordings');
+            try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+            mediaRoot = recDir;
+            console.log(`[STORAGE] Disco detectado en caliente: ${mediaRoot}`);
+        }
+    }
+    if (!mediaRoot) {
+        return res.json({ available: false, path: null, message: 'No hay disco externo conectado. Conecta un USB o configura MEDIA_ROOT en .env' });
+    }
+    try {
+        const stat = fs.statfsSync ? fs.statfsSync(mediaRoot) : null;
+        const freeGB = stat ? ((stat.bfree * stat.bsize) / 1e9).toFixed(1) : null;
+        res.json({ available: true, path: mediaRoot, freeGB });
+    } catch(e) {
+        res.json({ available: true, path: mediaRoot, freeGB: null });
+    }
+});
+
 
 /* =======================================
  *  API: LANZAR MONITOR EN SEGUNDO DISPLAY (Linux)
@@ -624,8 +715,29 @@ function stopAllRecordings() {
 }
 
 app.post('/api/recordings/start', (req, res) => {
+    // ── Verificar disco de grabacion disponible ──
+    if (!mediaRoot) {
+        // Intentar detectar en caliente
+        const detected = detectExternalDisk();
+        if (detected) {
+            const recDir = path.join(detected, 'recordings');
+            try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+            mediaRoot = recDir;
+            // Registrar la ruta de media en express (hot-add)
+            app.use('/media', express.static(mediaRoot, {
+                setHeaders: (res, fp) => {
+                    if (fp.endsWith('.m3u8')) {
+                        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                    }
+                }
+            }));
+            console.log(`[STORAGE] Disco detectado al grabar: ${mediaRoot}`);
+        } else {
+            return res.status(503).json({ error: 'No hay disco externo disponible para grabar. Conecta un USB.' });
+        }
+    }
+
     // Parar grabaciones anteriores ANTES de iniciar una nueva
-    // Evita agotar conexiones RTSP de la cámara
     const stopped = stopAllRecordings();
     if (stopped > 0) {
         console.log(`[REC] Parando ${stopped} sesión(es) activa(s) antes de nueva grabación`);
@@ -1005,7 +1117,7 @@ app.post('/api/preview/live/:channel', (req, res) => {
             if (!livePreviewPending[channel] && livePreviewProcs[channel]) {
                 const name = path.basename(livePreviewProcs[channel].hlsPath);
                 if (fs.existsSync(livePreviewProcs[channel].hlsPath)) {
-                    return res.json({ url: `/media/${name}`, previewId: livePreviewProcs[channel].previewId, reused: true });
+                    return res.json({ url: `/preview/${name}`, previewId: livePreviewProcs[channel].previewId, reused: true });
                 }
             }
             if (Date.now() - waitStart > 15000) {
@@ -1019,7 +1131,7 @@ app.post('/api/preview/live/:channel', (req, res) => {
     // ── Si ya hay un preview activo y funcionando, reutilizarlo ──
     if (livePreviewProcs[channel] && livePreviewProcs[channel].proc && livePreviewProcs[channel].proc.exitCode === null) {
         const existingHlsName = path.basename(livePreviewProcs[channel].hlsPath);
-        const existingHlsUrl  = `/media/${existingHlsName}`;
+        const existingHlsUrl  = `/preview/${existingHlsName}`;
         if (fs.existsSync(livePreviewProcs[channel].hlsPath)) {
             return res.json({ url: existingHlsUrl, previewId: livePreviewProcs[channel].previewId, reused: true });
         }
@@ -1041,7 +1153,7 @@ app.post('/api/preview/live/:channel', (req, res) => {
     const ffmpegCmd = streamManager.getFFmpegPath();
 
     const previewId = `preview_ch${channel}_${Date.now()}`;
-    const hlsPath   = path.join(mediaRoot, `${previewId}.m3u8`);
+    const hlsPath   = path.join(previewRoot, `${previewId}.m3u8`);
     const tcpPort   = 43000 + channel;
 
     const args = [
@@ -1099,7 +1211,7 @@ app.post('/api/preview/live/:channel', (req, res) => {
 
     // ── Esperar a que FFmpeg genere el .m3u8 ──
     const hlsName   = path.basename(hlsPath);
-    const hlsUrl    = `/media/${hlsName}`;
+    const hlsUrl    = `/preview/${hlsName}`;
     const maxWaitMs = 15000;
     const pollMs    = 500;   // Aumentar intervalo a 500ms (antes 250ms) para reducir CPU
     let   elapsed   = 0;
