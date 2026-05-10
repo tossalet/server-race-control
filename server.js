@@ -1038,17 +1038,7 @@ app.post('/api/preview/live/:channel', (req, res) => {
     }
 
     const { spawn } = require('child_process');
-    let ffmpegCmd;
-    try {
-        const ffmpegBinDir = path.join(__dirname, 'ffmpeg_bin');
-        const subDir = fs.readdirSync(ffmpegBinDir)[0];
-        ffmpegCmd = path.join(ffmpegBinDir, subDir, 'bin', 'ffmpeg.exe');
-        if (!fs.existsSync(ffmpegCmd)) {
-            ffmpegCmd = path.join(ffmpegBinDir, 'ffmpeg');
-        }
-    } catch(e) {
-        ffmpegCmd = 'ffmpeg';
-    }
+    const ffmpegCmd = streamManager.getFFmpegPath();
 
     const previewId = `preview_ch${channel}_${Date.now()}`;
     const hlsPath   = path.join(mediaRoot, `${previewId}.m3u8`);
