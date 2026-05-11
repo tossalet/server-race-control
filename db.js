@@ -117,6 +117,13 @@ function initDB() {
         // Migration: add channel if missing
         db.run("ALTER TABLE clips ADD COLUMN channel INTEGER", () => {});
 
+        // Table settings (clave-valor genérico para configuración persistente)
+        db.run(`CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )`);
+
+
 
         // Table session_files (HLS + MP4 paths per recording)
         db.run(`CREATE TABLE IF NOT EXISTS session_files (
