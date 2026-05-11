@@ -88,9 +88,25 @@ apt-get install -y \
     xserver-xorg openbox lightdm feh \
     unclutter xdotool 2>/dev/null || true
 
-# Chromium (nombre varía según distro)
-apt-get install -y chromium-browser 2>/dev/null || \
-apt-get install -y chromium         2>/dev/null || true
+# Navegador para Kiosko:
+#  - x86_64 (i7): intenta Google Chrome primero (H.264 nativo, aceleración HW)
+#  - ARM (Raspberry Pi): Chromium + codecs extra para H.264
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+    if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
+        echo "   Descargando Google Chrome para x86_64..."
+        curl -fsSL -o /tmp/google-chrome.deb \
+            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" 2>/dev/null && \
+            apt-get install -y /tmp/google-chrome.deb 2>/dev/null && \
+            rm -f /tmp/google-chrome.deb || \
+            echo "   Chrome no disponible, usando Chromium."
+    fi
+    apt-get install -y chromium-browser 2>/dev/null || apt-get install -y chromium 2>/dev/null || true
+else
+    # Raspberry Pi / ARM: Chromium + códecs H.264
+    apt-get install -y chromium-browser chromium-codecs-ffmpeg-extra 2>/dev/null || \
+    apt-get install -y chromium 2>/dev/null || true
+fi
 
 # =============================================================================
 #  PASO 3 — Node.js 20 LTS
@@ -300,10 +316,12 @@ for i in $(seq 1 15); do
 done
 
 # Detectar navegador disponible
-BROWSER="chromium-browser"
-command -v chromium-browser &>/dev/null || \
-    { command -v chromium &>/dev/null && BROWSER="chromium"; } || \
-    { command -v google-chrome &>/dev/null && BROWSER="google-chrome"; }
+# Prioridad: Google Chrome > chromium-browser > chromium
+BROWSER=""
+for B in google-chrome-stable google-chrome chromium-browser chromium; do
+    command -v "$B" &>/dev/null && BROWSER="$B" && break
+done
+[ -z "$BROWSER" ] && BROWSER="chromium-browser"  # fallback
 
 # Monitor 1 — App Grabador
 $BROWSER \
