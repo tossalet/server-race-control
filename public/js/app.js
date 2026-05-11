@@ -758,7 +758,7 @@ function updateInputFields() {
         } else {
             ipContainer.style.display = 'block';
             ipContainer.style.width = '70%';
-            ipLabel.innerText = 'IP Origen (Codificador)';
+            ipLabel.innerText = 'IP Origen';
             ipInput.placeholder = 'ej: 192.168.1.100';
             ipInput.setAttribute('required', 'true');
             portInput.setAttribute('required', 'true');
