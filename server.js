@@ -148,18 +148,46 @@ function detectExternalDisk() {
     return null;
 }
 
-let mediaRoot = detectExternalDisk();
-if (mediaRoot) {
-    const recDir = path.join(mediaRoot, 'recordings');
-    if (!fs.existsSync(recDir)) {
-        try { fs.mkdirSync(recDir, { recursive: true }); mediaRoot = recDir; } catch(e) {}
-    } else {
-        mediaRoot = recDir;
-    }
-    console.log(`[STORAGE] Disco de grabacion: ${mediaRoot}`);
-} else {
-    console.log('[STORAGE] AVISO: No hay disco externo. Grabacion bloqueada hasta conectar uno.');
+// El disco de grabacion se inicializa a null; initMediaRoot() lo asigna desde DB o auto-detect
+let mediaRoot = null;
+
+// Helper para registrar el middleware de disco de grabaciones en Express
+function registerMediaStatic(rootPath) {
+    app.use('/media', express.static(rootPath, {
+        setHeaders: (res, fp) => {
+            if (fp.endsWith('.m3u8')) {
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                res.setHeader('Pragma', 'no-cache');
+                res.setHeader('Expires', '0');
+            }
+        }
+    }));
 }
+
+// Inicializar disco: 1) Disco guardado en DB  2) Auto-detect  3) null
+function initMediaRoot() {
+    db.get("SELECT value FROM settings WHERE key = 'recording_disk'", (err, row) => {
+        if (row && row.value && fs.existsSync(row.value)) {
+            mediaRoot = row.value;
+            registerMediaStatic(mediaRoot);
+            console.log(`[STORAGE] Disco cargado desde DB: ${mediaRoot}`);
+        } else {
+            // Fallback a auto-detect
+            const detected = detectExternalDisk();
+            if (detected) {
+                const recDir = path.join(detected, 'recordings');
+                try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+                mediaRoot = recDir;
+                registerMediaStatic(mediaRoot);
+                console.log(`[STORAGE] Disco detectado: ${mediaRoot}`);
+            } else {
+                console.log('[STORAGE] AVISO: No hay disco externo. Grabacion bloqueada hasta conectar uno.');
+            }
+        }
+    });
+}
+initMediaRoot();
+
 
 const thumbsDir = path.join(__dirname, 'public', 'thumbs');
 if (!fs.existsSync(thumbsDir)) {
@@ -171,18 +199,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Servir archivos de media (grabaciones) y preview (temp)
-if (mediaRoot) {
-    app.use('/media', express.static(mediaRoot, {
-        setHeaders: (res, filePath) => {
-            if (filePath.endsWith('.m3u8')) {
-                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                res.setHeader('Pragma', 'no-cache');
-                res.setHeader('Expires', '0');
-            }
-        }
-    }));
-}
+// NOTA: /media se registra dinámicamente desde registerMediaStatic() al inicializar
+// o al seleccionar un disco en /api/storage/select. No hay bloque estático aquí.
 app.use('/preview', express.static(previewRoot, {
     setHeaders: (res, filePath) => {
         if (filePath.endsWith('.m3u8')) {
@@ -192,6 +210,7 @@ app.use('/preview', express.static(previewRoot, {
         }
     }
 }));
+
 
 
 // Simple API status endpoint
@@ -918,14 +937,13 @@ app.post('/api/recordings/export', (req, res) => {
             const timeStr = `${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
             const clipLabel = (label || `clip_${Math.floor(start_time)}s`).replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
             const exportName = `${clipLabel}_${dateStr}_${timeStr}.mp4`;
-            
+
             // Destino: si envían dest_path usarlo, si no, usar local mediaRoot
-            const destDir = req.body.dest_path ? req.body.dest_path : mediaRoot;
+            const destDir = req.body.dest_path || mediaRoot;
+            if (!destDir) return res.status(503).json({ error: 'No hay disco de grabación configurado' });
             const exportPath = path.join(destDir, exportName);
 
-            const { spawn } = require('child_process');
-            const ffmpegCmd = path.join(__dirname, 'ffmpeg_bin',
-                fs.readdirSync(path.join(__dirname, 'ffmpeg_bin'))[0], 'bin', 'ffmpeg.exe');
+            const ffmpegBin = streamManager.getFFmpegPath();
 
             const args = [
                 '-hide_banner', '-y',
@@ -937,7 +955,7 @@ app.post('/api/recordings/export', (req, res) => {
             ];
 
             console.log(`[EXPORT] ${exportName} from ${start_time}s to ${end_time}s`);
-            const child = spawn(ffmpegCmd, args);
+            const child = spawn(ffmpegBin, args);
             child.on('close', code => {
                 console.log(`[EXPORT] Done: ${exportName} (code ${code})`);
                 io.emit('server_log', { timestamp: new Date().toISOString(), level: 'INFO',
@@ -1067,33 +1085,68 @@ app.delete('/api/users/:username', (req, res) => {
 app.get('/api/disks', async (req, res) => {
     try {
         let drives = [];
-        
-        // Escáner dinámico multi-plataforma real (Evita trampas de carpetas vacías /media/usb0 sin montar)
         const fsSizes = await si.fsSize();
-        
+
         fsSizes.forEach(f => {
-            // En Linux, ignorar particiones internas base y quedarnos con externos (media/mnt). En Windows, coger discos secundarios
-            if (f.mount && (f.mount.startsWith('/media') || f.mount.startsWith('/mnt') || (process.platform === 'win32' && f.mount !== 'C:\\' && f.mount !== 'C:'))) {
+            const isExternal = f.mount && (
+                f.mount.startsWith('/media') ||
+                f.mount.startsWith('/mnt') ||
+                (process.platform === 'win32' && f.mount !== 'C:\\' && f.mount !== 'C:')
+            );
+            if (isExternal) {
+                const freeGB  = f.available ? (f.available / 1e9).toFixed(1) : null;
+                const totalGB = f.size      ? (f.size      / 1e9).toFixed(1) : null;
+                const usedPct = f.size && f.use ? Math.round(f.use) : null;
                 drives.push({
-                    id: f.mount.replace(/[:\\\/]/g, '_'), // ID seguro
-                    name: `[${f.fs}] ${f.mount}`, // ej: [sda1] /media/pi/USB
-                    path: f.mount
+                    id:      f.mount.replace(/[:\\\/]/g, '_'),
+                    name:    `[${f.fs}] ${f.mount}`,
+                    path:    f.mount,
+                    freeGB, totalGB, usedPct,
+                    active:  mediaRoot && mediaRoot.startsWith(f.mount)
                 });
             }
         });
 
-        // Fallback: Si no hay discos externos, meter el mediaRoot siempre
-        // Además, incluir siempre mediaRoot como disco de grabacion local
-        const mediaRootEntry = { id: 'local_mediaroot', name: 'Grabaciones Locales (/media)', path: mediaRoot };
-        if (!drives.find(d => d.path === mediaRoot)) {
-            drives.unshift(mediaRootEntry); // Siempre el primero
-        }
-        
         res.json(drives);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
+
+// Seleccionar disco de grabacion en caliente
+app.post('/api/storage/select', (req, res) => {
+    const { disk_path } = req.body;
+    if (!disk_path) return res.status(400).json({ error: 'Missing disk_path' });
+
+    // Seguridad: no permitir disco del sistema
+    const forbidden = ['/', '/boot', '/usr', '/etc', '/home', '/var', '/sys', '/proc', 'C:\\', 'C:'];
+    if (forbidden.some(f => disk_path === f || disk_path.startsWith(f + '/'))) {
+        return res.status(403).json({ error: 'Disco del sistema — no permitido' });
+    }
+    if (!fs.existsSync(disk_path)) {
+        return res.status(404).json({ error: 'Ruta no encontrada: ' + disk_path });
+    }
+
+    // Crear carpeta recordings dentro del disco
+    const recDir = path.join(disk_path, 'recordings');
+    try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {
+        return res.status(500).json({ error: 'No se puede escribir en el disco: ' + e.message });
+    }
+
+    // Actualizar mediaRoot en caliente
+    mediaRoot = recDir;
+    registerMediaStatic(mediaRoot);
+
+    // Persistir en DB
+    db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', ?)", [recDir], (err) => {
+        if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
+    });
+
+    console.log(`[STORAGE] Disco de grabacion cambiado a: ${mediaRoot}`);
+    res.json({ ok: true, path: mediaRoot });
+});
+
+
 
 /* =======================================
  *  REST API: LIVE HLS PREVIEW (sin grabar)
