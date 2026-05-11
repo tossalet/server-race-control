@@ -920,15 +920,30 @@ app.post('/api/recordings/export', (req, res) => {
 
     // First try to get the MP4 path from session_files
     db.get('SELECT * FROM session_files WHERE session_id = ? AND channel = ?',
-        [session_id, channel], (err, fileRow) => {
+        [session_id, channel], (dbErr, fileRow) => {
+
+        if (dbErr) {
+            console.error(`[EXPORT] DB error: ${dbErr.message}`);
+            return res.status(500).json({ error: 'Error de base de datos: ' + dbErr.message });
+        }
 
         const getSourcePath = (cb) => {
             if (fileRow && fileRow.mp4_path && fs.existsSync(fileRow.mp4_path))
                 return cb(fileRow.mp4_path);
-            // Fallback: try HLS path
+            // Fallback: try HLS path — SOLO si el MP4 no existe
+            // Nota: exportar desde HLS puede fallar si los segmentos .ts ya no existen
             if (fileRow && fileRow.hls_path && fs.existsSync(fileRow.hls_path))
                 return cb(fileRow.hls_path);
-            return res.status(404).json({ error: 'Recording file not found on disk' });
+            // Fallback manual: buscar el MP4 por nombre convenido en mediaRoot
+            if (mediaRoot) {
+                const guessedMp4 = path.join(mediaRoot, `CAM_${channel}_${session_id}.mp4`);
+                if (fs.existsSync(guessedMp4)) return cb(guessedMp4);
+            }
+            const detail = fileRow
+                ? `MP4: ${fileRow.mp4_path || 'N/A'} | HLS: ${fileRow.hls_path || 'N/A'}`
+                : `No hay registro en session_files para sesión ${session_id} canal ${channel}`;
+            console.error(`[EXPORT] Archivo fuente no encontrado. ${detail}`);
+            return res.status(404).json({ error: 'Archivo de grabación no encontrado en disco', detail });
         };
 
         getSourcePath(sourcePath => {
@@ -940,8 +955,18 @@ app.post('/api/recordings/export', (req, res) => {
             const exportName = `${clipLabel}_${dateStr}_${timeStr}.mp4`;
 
             // Destino: si envían dest_path usarlo, si no, usar local mediaRoot
-            const destDir = req.body.dest_path || mediaRoot;
-            if (!destDir) return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+            // Crear subdirectorio 'clips' dentro del destino para no mezclar con grabaciones
+            const baseDestDir = req.body.dest_path || mediaRoot;
+            if (!baseDestDir) return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+
+            const destDir = path.join(baseDestDir, 'clips');
+            try {
+                fs.mkdirSync(destDir, { recursive: true });
+            } catch(mkErr) {
+                console.error(`[EXPORT] No se puede crear directorio destino: ${mkErr.message}`);
+                return res.status(500).json({ error: `No se puede escribir en el disco: ${mkErr.message}` });
+            }
+
             const exportPath = path.join(destDir, exportName);
 
             const ffmpegBin = streamManager.getFFmpegPath();
@@ -957,31 +982,59 @@ app.post('/api/recordings/export', (req, res) => {
                 '-i', sourcePath,
                 '-t', (end_time - start_time).toString(),
                 '-c', 'copy',
+                '-movflags', '+faststart',
                 exportPath
             ];
 
-            console.log(`[EXPORT] ${exportName} from ${start_time}s to ${end_time}s`);
+            console.log(`[EXPORT] ${exportName} — fuente: ${sourcePath} → destino: ${exportPath}`);
+            console.log(`[EXPORT] Segmento: ${start_time}s → ${end_time}s (${(end_time - start_time).toFixed(1)}s)`);
+
             let responded = false;
+            let stderrLines = [];
             const child = spawn(ffmpegBin, args);
+
+            // Capturar stderr para diagnóstico en caso de error
+            child.stderr.on('data', (d) => {
+                const line = d.toString().trim();
+                if (line) stderrLines.push(line);
+                // Mantener solo las últimas 20 líneas para no acumular RAM
+                if (stderrLines.length > 20) stderrLines.shift();
+            });
 
             child.on('error', (err) => {
                 console.error(`[EXPORT] FFmpeg spawn error: ${err.message}`);
                 if (!responded) {
                     responded = true;
-                    res.status(500).json({ error: `FFmpeg error: ${err.message}` });
+                    res.status(500).json({ error: `FFmpeg no se pudo ejecutar: ${err.message}` });
                 }
             });
 
+            // Esperar a que FFmpeg termine para responder con el resultado real
             child.on('close', code => {
-                console.log(`[EXPORT] Done: ${exportName} (code ${code})`);
-                io.emit('server_log', { timestamp: new Date().toISOString(), level: 'INFO',
-                    message: `Clip exportado: ${exportName} (code ${code})` });
+                const lastErr = stderrLines.slice(-3).join(' | ');
+                if (code === 0) {
+                    console.log(`[EXPORT] OK: ${exportName}`);
+                    io.emit('server_log', { timestamp: new Date().toISOString(), level: 'INFO',
+                        message: `✓ Clip exportado: ${exportName}` });
+                    if (!responded) {
+                        responded = true;
+                        res.json({ ok: true, filename: exportName, path: exportPath });
+                    }
+                } else {
+                    console.error(`[EXPORT] FALLO: ${exportName} (código ${code}) — ${lastErr}`);
+                    io.emit('server_log', { timestamp: new Date().toISOString(), level: 'ERROR',
+                        message: `✗ Export fallido (${code}): ${lastErr}` });
+                    if (!responded) {
+                        responded = true;
+                        res.status(500).json({
+                            error: `FFmpeg falló con código ${code}`,
+                            detail: lastErr || 'Sin detalle disponible',
+                            source: sourcePath,
+                            dest: exportPath
+                        });
+                    }
+                }
             });
-
-            if (!responded) {
-                responded = true;
-                res.json({ started: true, filename: exportName });
-            }
         });
 
     });
