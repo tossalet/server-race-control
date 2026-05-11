@@ -312,7 +312,7 @@ button { cursor: pointer; border: none; font-family: var(--font-body); transitio
 
 .form-group { margin-bottom: 1rem; }
 .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--text-muted); }
-.form-group input[type="text"], .form-group input[type="number"], .form-group select {
+.form-group input[type="text"], .form-group input[type="number"], .form-group input[type="password"], .form-group select {
     width: 100%; padding: 10px 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1);
     border-radius: 6px; color: var(--text-main); font-family: var(--font-body);
 }
