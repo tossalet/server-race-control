@@ -946,6 +946,11 @@ app.post('/api/recordings/export', (req, res) => {
 
             const ffmpegBin = streamManager.getFFmpegPath();
 
+            // Verificar que el binario existe antes de lanzar
+            if (!fs.existsSync(ffmpegBin)) {
+                return res.status(500).json({ error: `FFmpeg no encontrado en: ${ffmpegBin}` });
+            }
+
             const args = [
                 '-hide_banner', '-y',
                 '-ss', start_time.toString(),
@@ -956,16 +961,27 @@ app.post('/api/recordings/export', (req, res) => {
             ];
 
             console.log(`[EXPORT] ${exportName} from ${start_time}s to ${end_time}s`);
+            let responded = false;
             const child = spawn(ffmpegBin, args);
+
+            child.on('error', (err) => {
+                console.error(`[EXPORT] FFmpeg spawn error: ${err.message}`);
+                if (!responded) {
+                    responded = true;
+                    res.status(500).json({ error: `FFmpeg error: ${err.message}` });
+                }
+            });
+
             child.on('close', code => {
                 console.log(`[EXPORT] Done: ${exportName} (code ${code})`);
                 io.emit('server_log', { timestamp: new Date().toISOString(), level: 'INFO',
-                    message: `Clip exportado: ${exportName}` });
+                    message: `Clip exportado: ${exportName} (code ${code})` });
             });
 
-            // NO se inserta en clips aquí — ya fue guardado al crear el clip
-            // Así se evitan duplicados en la lista de clips
-            res.json({ started: true, filename: exportName });
+            if (!responded) {
+                responded = true;
+                res.json({ started: true, filename: exportName });
+            }
         });
 
     });
