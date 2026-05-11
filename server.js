@@ -946,8 +946,8 @@ app.post('/api/recordings/export', (req, res) => {
 
             const ffmpegBin = streamManager.getFFmpegPath();
 
-            // Verificar que el binario existe antes de lanzar
-            if (!fs.existsSync(ffmpegBin)) {
+            // Verificar existencia solo si es ruta absoluta (en Linux es simplemente 'ffmpeg' del PATH)
+            if (path.isAbsolute(ffmpegBin) && !fs.existsSync(ffmpegBin)) {
                 return res.status(500).json({ error: `FFmpeg no encontrado en: ${ffmpegBin}` });
             }
 
