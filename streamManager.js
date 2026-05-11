@@ -7,10 +7,18 @@ const dgram = require('dgram');
 let ioInstance = null;
 function setIo(io) { ioInstance = io; }
 
+// ── OUTPUTS DESACTIVADOS ──────────────────────────────────────────────────────
+// Las señales de entrada SÓLO se usan para preview HLS y grabación a disco.
+// Re-emitir a destinos externos (SRT/RTMP/disk outputs) nunca se usa en producción
+// y consume procesos FFmpeg innecesarios. Para reactivarlos, cambiar a true.
+const OUTPUTS_ENABLED = false;
+// ─────────────────────────────────────────────────────────────────────────────
+
 // In-memory store for active processes
 const activeInputs = {};
 const activeOutputs = {};
 const telemetryCache = {};
+
 
 // Locate FFmpeg binary (handles Windows local download vs Linux global)
 function getFFmpegPath() {
@@ -412,16 +420,22 @@ function stopInput(channel) {
  * Pulls from the Local UDP multiplexer (udpsrv) and pushes to destination URL.
  */
 function startOutput(outputObj) {
-    const { id, channel, url } = outputObj; 
+    // Outputs desactivados — señales solo para preview y grabación
+    if (!OUTPUTS_ENABLED) {
+        console.log(`[OUTPUT] Outputs disabled — skipping output ${outputObj.id}`);
+        return;
+    }
+    const { id, channel, url } = outputObj;
     if (activeOutputs[id]) {
         console.log(`Output ${id} is already running.`);
         return;
     }
-    
+
     // Check if input stream is alive
     if (!activeInputs[channel]) {
         console.log(`Cannot start Output ${id}: Input ${channel} is offline.`);
         return; // Will stay disabled until input connects
+
     }
 
     // Generate unique local UDP port for this specific output receiver
