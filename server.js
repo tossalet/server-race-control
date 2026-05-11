@@ -1101,29 +1101,75 @@ app.delete('/api/users/:username', (req, res) => {
  * ======================================= */
 app.get('/api/disks', async (req, res) => {
     try {
-        let drives = [];
-        const fsSizes = await si.fsSize();
+        const drives = [];
+        const seen   = new Set();
 
-        fsSizes.forEach(f => {
-            const isExternal = f.mount && (
-                f.mount.startsWith('/media')    ||
-                f.mount.startsWith('/mnt')      ||
-                f.mount.startsWith('/run/media') ||
-                (process.platform === 'win32' && f.mount !== 'C:\\' && f.mount !== 'C:')
-            );
-            if (isExternal) {
+        const addDrive = (mountPath, label, freeGB, totalGB, usedPct) => {
+            if (seen.has(mountPath)) return;
+            seen.add(mountPath);
+            drives.push({
+                id:      mountPath.replace(/[:\\/]/g, '_'),
+                name:    `[${label}] ${mountPath}`,
+                path:    mountPath,
+                freeGB:  freeGB  || null,
+                totalGB: totalGB || null,
+                usedPct: usedPct || null,
+                active:  mediaRoot && (mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/'))
+            });
+        };
+
+        // Fuente 1: systeminformation
+        try {
+            const fsSizes = await si.fsSize();
+            const EXT = ['/media', '/mnt', '/run/media'];
+            fsSizes.forEach(f => {
+                if (!f.mount) return;
+                const isExt = process.platform === 'win32'
+                    ? (f.mount !== 'C:\\' && f.mount !== 'C:' && /^[D-Z]/.test(f.mount))
+                    : EXT.some(p => f.mount.startsWith(p));
+                if (!isExt) return;
                 const freeGB  = f.available ? (f.available / 1e9).toFixed(1) : null;
                 const totalGB = f.size      ? (f.size      / 1e9).toFixed(1) : null;
                 const usedPct = f.size && f.use ? Math.round(f.use) : null;
-                drives.push({
-                    id:      f.mount.replace(/[:\\\/]/g, '_'),
-                    name:    `[${f.fs}] ${f.mount}`,
-                    path:    f.mount,
-                    freeGB, totalGB, usedPct,
-                    active:  mediaRoot && mediaRoot.startsWith(f.mount)
-                });
-            }
-        });
+                addDrive(f.mount, f.fs || 'disk', freeGB, totalGB, usedPct);
+            });
+        } catch (_) {}
+
+        // Fuente 2: /proc/mounts (Linux, más fiable en ARM/Raspberry)
+        if (process.platform !== 'win32') {
+            try {
+                const DATA_FS = new Set(['ext4','ext3','ext2','vfat','exfat','ntfs','xfs','btrfs','f2fs','fuseblk']);
+                const SKIP = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user',
+                              '/snap', '/usr', '/var', '/opt', '/etc', '/home',
+                              '/run/lock', '/run/systemd', '/run/credentials'];
+                const lines = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
+                for (const line of lines) {
+                    const [device, mount, fsType] = line.split(' ');
+                    if (!device || !mount || !fsType) continue;
+                    if (!device.startsWith('/dev/')) continue;
+                    if (!DATA_FS.has(fsType)) continue;
+                    if (SKIP.some(p => mount === p || mount.startsWith(p + '/'))) continue;
+                    if (!/^\/(media|mnt|run\/media)/.test(mount)) continue;
+                    if (!fs.existsSync(mount)) continue;
+                    try {
+                        const { execSync } = require('child_process');
+                        const dfOut = execSync(`df -B1 "${mount}" 2>/dev/null | tail -1`, { timeout: 3000 }).toString().trim();
+                        const parts = dfOut.split(/\s+/);
+                        addDrive(mount, fsType,
+                            parts[3] ? (parseInt(parts[3]) / 1e9).toFixed(1) : null,
+                            parts[1] ? (parseInt(parts[1]) / 1e9).toFixed(1) : null,
+                            parts[4] ? parseInt(parts[4]) : null);
+                    } catch (_) {
+                        addDrive(mount, fsType, null, null, null);
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // Fuente 3: mediaRoot activo (incluirlo siempre si existe)
+        if (mediaRoot && fs.existsSync(mediaRoot) && !seen.has(mediaRoot)) {
+            addDrive(mediaRoot, 'activo', null, null, null);
+        }
 
         res.json(drives);
     } catch (e) {
