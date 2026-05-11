@@ -1273,15 +1273,21 @@ app.post('/api/preview/live/:channel', (req, res) => {
     const hlsPath   = path.join(previewRoot, `${previewId}.m3u8`);
     const tcpPort   = 43000 + channel;
 
+    const isLinux = process.platform !== 'win32';
+
     const args = [
         '-hide_banner', '-y',
         '-fflags', '+genpts',
         '-thread_queue_size', '4096',
         '-i', `tcp://127.0.0.1:${tcpPort}?listen`,
         '-map', '0:v?', '-map', '0:a?',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '28',
-        '-vf', 'scale=-2:720',
-        '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
+        // En Linux (Raspberry Pi / i7): stream copy — sin re-codificar, muy ligero en CPU
+        // En Windows: re-codificar a H.264 para compatibilidad con Chromium local
+        ...(isLinux
+            ? ['-c:v', 'copy']
+            : ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+               '-crf', '28', '-vf', 'scale=-2:720',
+               '-g', '30', '-keyint_min', '30', '-sc_threshold', '0']),
         '-c:a', 'aac', '-b:a', '96k',
         '-bsf:a', 'aac_adtstoasc',
         '-hls_time', '2',
