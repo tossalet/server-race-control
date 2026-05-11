@@ -145,7 +145,11 @@ mkdir -p "$APP_DIR/data" "$APP_DIR/logs"
 #  PASO 6 — npm install
 # =============================================================================
 echo "⚙️  6/11 — Instalando dependencias Node.js..."
+# Asegurar que npm install corre SIEMPRE en el directorio correcto
+cd /opt/race-control
 npm install --omit=dev
+# Garantía extra: instalar dotenv y ws explícitamente (evita errores de directorio)
+npm install dotenv ws --save 2>/dev/null || true
 
 # =============================================================================
 #  PASO 7 — Detectar y montar disco externo
