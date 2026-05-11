@@ -642,7 +642,7 @@ function renderStreams() {
                             </button>
                             <button class="action-btn edit-btn" onclick="openEditInput(${input.channel})"><i class="fa-solid fa-pen"></i></button>
                             <button class="action-btn delete-btn" onclick="deleteInput(${input.channel})"><i class="fa-solid fa-trash"></i></button>
-                            <button class="btn-secondary add-output" onclick="openOutputModal(${input.channel})"><i class="fa-solid fa-arrow-right-to-bracket"></i> Add Output</button>
+
                         </div>
                     </div>
                 </div>
@@ -660,41 +660,8 @@ function renderStreams() {
                             <span style="color:#fff; font-weight:600; font-family:monospace; word-break: break-all;">${input.url}</span>
                         </div>
                     </div>
-                    ${inputOutputs.map(out => `
-                        <div class="output-row">
-                            <div class="left-section sub">
-                                <div id="led-out_${out.id}" class="connection-led ${out.enabled ? 'active yellow' : 'error'} tooltip" style="margin-right: -5px;">
-                                    <i class="fa-solid fa-lightbulb"></i>
-                                    <span class="tooltiptext">${out.enabled ? 'Enabled' : 'Disabled'}</span>
-                                </div>
-                                <span class="stream-name" style="display:flex; flex-direction:column; line-height:1.2;">
-                                    ${out.location || out.url.replace(/127\.0\.0\.1|0\.0\.0\.0/g, serverIp)}
-                                    <span style="font-size:0.70rem; color:var(--text-muted); font-family:monospace; font-weight:normal; user-select:all;">${out.url.replace(/127\.0\.0\.1|0\.0\.0\.0/g, serverIp)}</span>
-                                </span>
-                            </div>
-                            <div class="mid-section">
-                                <div class="stat-item ${!out.enabled ? 'disabled' : ''}">
-                                    <i class="fa-solid fa-clock"></i> <span id="time-out_${out.id}">--:--:--</span>
-                                </div>
-                                <div class="stat-item ${!out.enabled ? 'disabled' : ''}">
-                                    <i class="fa-solid fa-gauge-high"></i> <span class="monospaced" id="bitrate-out_${out.id}">-- Mbps</span>
-                                </div>
-                                <div class="quality-bar">
-                                    <div class="fill ${out.enabled ? 'yellow' : 'red'}" id="qbar-out_${out.id}" style="width: ${out.enabled ? '100%' : '0%'}"></div>
-                                </div>
-                            </div>
-                            <div class="right-section sub-controls">
-                                <div class="control-actions">
-                                    <button class="action-btn toggle-enabled" onclick="toggleOutput(${out.id})">
-                                        <i class="fa-solid ${out.enabled ? 'fa-toggle-on' : 'fa-toggle-off'}"></i>
-                                    </button>
-                                    <button class="action-btn edit-btn" onclick="openEditOutput(${out.id})"><i class="fa-solid fa-pen"></i></button>
-                                    <button class="action-btn delete-btn" onclick="deleteOutput(${out.id})"><i class="fa-solid fa-trash"></i></button>
-                                </div>
-                            </div>
-                        </div>
-                    `).join('')}
                 </div>
+
             </div>
         `;
         container.innerHTML += inputHTML;
