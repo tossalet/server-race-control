@@ -1197,15 +1197,20 @@ app.post('/api/preview/live/:channel', (req, res) => {
     });
 
     // Conectar al router de la cámara (1.5 s para que FFmpeg abra el socket TCP)
+    // IMPORTANTE: releer streamManager.activeInputs en el momento de conectar,
+    // no usar routerState capturado (puede estar obsoleto si el SRT se reconectó)
     setTimeout(() => {
         if (!livePreviewProcs[channel] || livePreviewProcs[channel].proc !== proc) return;
         const sock = net.createConnection(tcpPort, '127.0.0.1', () => {
-            if (routerState.router) routerState.router.subscribers.add(sock);
-            // Solo log silencioso — no spamear el broadcastLog con cada conexión
+            const currentRouter = streamManager.activeInputs[channel]?.router;
+            if (currentRouter) currentRouter.subscribers.add(sock);
             originalLog(`[PREVIEW] Ch${channel} conectado al router TCP :${tcpPort}`);
         });
         sock.on('error', () => {});
-        sock.on('close', () => { if (routerState.router) routerState.router.subscribers.delete(sock); });
+        sock.on('close', () => {
+            const currentRouter = streamManager.activeInputs[channel]?.router;
+            if (currentRouter) currentRouter.subscribers.delete(sock);
+        });
         livePreviewProcs[channel].sock = sock;
     }, 1500);
 
