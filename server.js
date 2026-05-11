@@ -112,39 +112,38 @@ if (!fs.existsSync(previewRoot)) {
 }
 
 // ── Media Root: grabaciones en disco externo / NVMe ──────────────────────────
-// Prioridad: 1) MEDIA_ROOT del .env  2) Auto-detect disco externo  3) null (bloqueado)
+// Prioridad: 1) MEDIA_ROOT del .env  2) Auto-detect por /proc/mounts  3) null (bloqueado)
 function detectExternalDisk() {
     if (process.env.MEDIA_ROOT) return process.env.MEDIA_ROOT;
     if (process.platform === 'win32') return path.join(__dirname, 'media');
-    // Linux: buscar primer disco montado en /media o /mnt distinto al sistema
-    const bases = ['/media', '/mnt'];
-    for (const base of bases) {
-        if (!fs.existsSync(base)) continue;
-        try {
-            const baseDev = fs.statSync(base).dev;
-            const entries = fs.readdirSync(base);
-            for (const entry of entries) {
-                const full = path.join(base, entry);
-                try {
-                    if (fs.statSync(full).isDirectory()) {
-                        // Primer nivel (e.g. /media/racecontrol)
-                        if (fs.statSync(full).dev !== baseDev) return full;
-                        // Segundo nivel (e.g. /media/racecontrol/USB_DRIVE)
-                        const sub = fs.readdirSync(full);
-                        for (const s of sub) {
-                            const sfull = path.join(full, s);
-                            try {
-                                if (fs.statSync(sfull).isDirectory() &&
-                                    fs.statSync(sfull).dev !== fs.statSync(full).dev) {
-                                    return sfull;
-                                }
-                            } catch(e) {}
-                        }
-                    }
-                } catch(e) {}
-            }
-        } catch(e) {}
-    }
+
+    // Linux: leer /proc/mounts es lo más fiable — captura todos los mount points
+    // sin importar si el distro usa /media/pi, /media/racecontrol, /run/media, /mnt…
+    const SKIP_FS   = new Set(['tmpfs','devtmpfs','sysfs','proc','devpts','cgroup',
+                                'cgroup2','overlay','squashfs','udev','securityfs',
+                                'fusectl','pstore','efivarfs','debugfs','tracefs',
+                                'hugetlbfs','mqueue','ramfs','bpf','configfs']);
+    const SKIP_PFX  = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user',
+                       '/run/lock', '/run/systemd', '/run/credentials',
+                       '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
+
+    try {
+        const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
+        for (const line of mounts) {
+            const [device, mountPoint, fsType] = line.split(' ');
+            if (!device || !mountPoint || !fsType) continue;
+            if (SKIP_FS.has(fsType))  continue;
+            if (!device.startsWith('/dev/')) continue;
+            // Sólo particiones de datos (ext4, vfat, ntfs, exfat, xfs, btrfs…)
+            if (!['ext4','ext3','ext2','vfat','exfat','ntfs','xfs','btrfs','f2fs'].includes(fsType)) continue;
+            // Ignorar rutas del sistema
+            if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
+            // Aceptar cualquier punto externo: /media/*, /mnt/*, /run/media/*
+            if (/^\/(media|mnt|run\/media)/.test(mountPoint) && fs.existsSync(mountPoint))
+                return mountPoint;
+        }
+    } catch(e) { console.error('[STORAGE] /proc/mounts read error:', e.message); }
+
     return null;
 }
 
@@ -1089,8 +1088,9 @@ app.get('/api/disks', async (req, res) => {
 
         fsSizes.forEach(f => {
             const isExternal = f.mount && (
-                f.mount.startsWith('/media') ||
-                f.mount.startsWith('/mnt') ||
+                f.mount.startsWith('/media')    ||
+                f.mount.startsWith('/mnt')      ||
+                f.mount.startsWith('/run/media') ||
                 (process.platform === 'win32' && f.mount !== 'C:\\' && f.mount !== 'C:')
             );
             if (isExternal) {
