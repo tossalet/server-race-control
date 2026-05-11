@@ -1303,13 +1303,10 @@ app.post('/api/preview/live/:channel', (req, res) => {
     const proc = spawn(ffmpegCmd, args);
     livePreviewProcs[channel] = { proc, hlsPath, previewId, sock: null };
 
-    // Silenciar stderr del preview (solo loguear errores fatales)
+    // Log completo de stderr para diagnóstico del preview
     proc.stderr.on('data', (d) => {
-        const txt = d.toString();
-        if (/error|invalid|unable/i.test(txt) && !/Last message|repeated/i.test(txt)) {
-            const line = txt.split('\n')[0].trim();
-            if (line) originalLog(`[PREVIEW-ERR ch${channel}] ${line}`);
-        }
+        const txt = d.toString().trim();
+        if (txt) originalLog(`[PREVIEW-FFMPEG ch${channel}] ${txt.split('\n')[0]}`);
     });
 
     proc.on('exit', code => {
