@@ -389,7 +389,7 @@ done
 $BROWSER \
     --noerrdialogs --disable-infobars --disable-features=Translate \
     --no-first-run --check-for-update-interval=31536000 \
-    --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy \
+    --disable-gpu \
     --kiosk --window-position=0,0 \
     --user-data-dir=/tmp/chromium_kiosk_1 \
     "http://localhost:$PORT/grabador" &
@@ -402,7 +402,7 @@ if [ "${NUM_MONITORS:-1}" -gt 1 ]; then
     $BROWSER \
         --noerrdialogs --disable-infobars --disable-features=Translate \
         --no-first-run --check-for-update-interval=31536000 \
-        --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy \
+        --disable-gpu \
         --kiosk --window-position=1920,0 \
         --user-data-dir=/tmp/chromium_kiosk_2 \
         "http://localhost:$PORT/grabador/?monitor=1#monitor" &
@@ -412,7 +412,7 @@ chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
 
 # Openbox autostart
 mkdir -p "$REAL_HOME/.config/openbox"
-echo "@bash $REAL_HOME/.config/race-control/launch_kiosk.sh" > "$REAL_HOME/.config/openbox/autostart"
+echo "bash $REAL_HOME/.config/race-control/launch_kiosk.sh &" > "$REAL_HOME/.config/openbox/autostart"
 
 # .desktop para GNOME/XFCE/KDE autostart
 mkdir -p "$REAL_HOME/.config/autostart"
