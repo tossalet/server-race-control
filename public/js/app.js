@@ -85,74 +85,52 @@ function switchTab(tabId) {
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
     document.getElementById('nav-' + tabId).classList.add('active');
 
+    // Ocultar todos los contenedores primero
+    const containers = ['streamsContainer', 'analyticsContainer', 'systemContainer', 'settingsContainer', 'storageContainer', 'ptzContainer', 'terminalContainer'];
+    containers.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    });
+
     if (tabId === 'streams') {
         document.getElementById('streamsContainer').style.display = 'block';
-        document.getElementById('analyticsContainer').style.display = 'none';
-        document.getElementById('systemContainer').style.display = 'none';
-        document.getElementById('settingsContainer').style.display = 'none';
-        document.getElementById('storageContainer').style.display = 'none';
-        document.getElementById('ptzContainer').style.display = 'none';
         document.getElementById('topbar-title').innerText = 'Streams Manager';
         document.getElementById('topbar-subtitle').innerText = 'Live endpoints control panel';
         document.getElementById('btn-add-input').style.display = 'inline-block';
     } else if (tabId === 'analytics') {
-        document.getElementById('streamsContainer').style.display = 'none';
         document.getElementById('analyticsContainer').style.display = 'block';
-        document.getElementById('systemContainer').style.display = 'none';
-        document.getElementById('settingsContainer').style.display = 'none';
-        document.getElementById('storageContainer').style.display = 'none';
-        document.getElementById('ptzContainer').style.display = 'none';
         document.getElementById('topbar-title').innerText = 'Analytics & Telemetry';
         document.getElementById('topbar-subtitle').innerText = 'Deep network inspection tools';
         document.getElementById('btn-add-input').style.display = 'none';
-        
         populateAnalyticsGrid();
     } else if (tabId === 'system') {
-        document.getElementById('streamsContainer').style.display = 'none';
-        document.getElementById('analyticsContainer').style.display = 'none';
         document.getElementById('systemContainer').style.display = 'block';
-        document.getElementById('settingsContainer').style.display = 'none';
-        document.getElementById('storageContainer').style.display = 'none';
-        document.getElementById('ptzContainer').style.display = 'none';
         document.getElementById('topbar-title').innerText = 'System Dashboard';
         document.getElementById('topbar-subtitle').innerText = 'Host hardware & overview';
         document.getElementById('btn-add-input').style.display = 'none';
     } else if (tabId === 'settings') {
-        document.getElementById('streamsContainer').style.display = 'none';
-        document.getElementById('analyticsContainer').style.display = 'none';
-        document.getElementById('systemContainer').style.display = 'none';
         document.getElementById('settingsContainer').style.display = 'block';
-        document.getElementById('storageContainer').style.display = 'none';
-        document.getElementById('ptzContainer').style.display = 'none';
         document.getElementById('topbar-title').innerText = 'Settings / Setup';
         document.getElementById('topbar-subtitle').innerText = 'Access control & Configuration';
         document.getElementById('btn-add-input').style.display = 'none';
-        
         fetchSettingsData();
     } else if (tabId === 'storage') {
-        document.getElementById('streamsContainer').style.display = 'none';
-        document.getElementById('analyticsContainer').style.display = 'none';
-        document.getElementById('systemContainer').style.display = 'none';
-        document.getElementById('settingsContainer').style.display = 'none';
         document.getElementById('storageContainer').style.display = 'block';
-        document.getElementById('ptzContainer').style.display = 'none';
         document.getElementById('topbar-title').innerText = 'Media Storage';
         document.getElementById('topbar-subtitle').innerText = 'Local recordings & file manager';
         document.getElementById('btn-add-input').style.display = 'none';
-        
         fetchStorage();
     } else if (tabId === 'ptz') {
-        document.getElementById('streamsContainer').style.display = 'none';
-        document.getElementById('analyticsContainer').style.display = 'none';
-        document.getElementById('systemContainer').style.display = 'none';
-        document.getElementById('settingsContainer').style.display = 'none';
-        document.getElementById('storageContainer').style.display = 'none';
         document.getElementById('ptzContainer').style.display = 'block';
         document.getElementById('topbar-title').innerText = 'PTZ Control';
         document.getElementById('topbar-subtitle').innerText = 'Control remoto para cámaras PTZ IP';
         document.getElementById('btn-add-input').style.display = 'none';
-        
         populatePtzCameras();
+    } else if (tabId === 'terminal') {
+        document.getElementById('terminalContainer').style.display = 'block';
+        document.getElementById('topbar-title').innerText = 'Terminal del Sistema';
+        document.getElementById('topbar-subtitle').innerText = 'Consola interactiva para administración';
+        document.getElementById('btn-add-input').style.display = 'none';
     }
     
     // Stop MJPEG stream if leaving PTZ tab
@@ -1606,3 +1584,79 @@ socket.on('copy_progress', (data) => {
         bar.style.background = 'var(--accent-red)';
     }
 });
+
+async function sendTerminalCommand(event) {
+    if (event) event.preventDefault();
+    const input = document.getElementById('terminalInput');
+    const consoleDiv = document.getElementById('terminalConsole');
+    const command = input.value.trim();
+    if (!command) return;
+
+    // Agregar comando a la pantalla
+    const cmdLine = document.createElement('div');
+    cmdLine.style.color = 'var(--accent-blue)';
+    cmdLine.style.fontWeight = 'bold';
+    cmdLine.style.marginTop = '10px';
+    cmdLine.innerText = `$ ${command}`;
+    consoleDiv.appendChild(cmdLine);
+    
+    input.value = '';
+    consoleDiv.scrollTop = consoleDiv.scrollHeight;
+
+    // Mostrar loader/espera
+    const loaderLine = document.createElement('div');
+    loaderLine.style.color = '#888';
+    loaderLine.style.fontStyle = 'italic';
+    loaderLine.innerText = 'Ejecutando...';
+    consoleDiv.appendChild(loaderLine);
+    consoleDiv.scrollTop = consoleDiv.scrollHeight;
+
+    try {
+        const res = await fetch('/api/terminal/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command })
+        });
+        const data = await res.json();
+        
+        // Quitar cargando
+        if (consoleDiv.contains(loaderLine)) consoleDiv.removeChild(loaderLine);
+
+        if (data.error) {
+            const errLine = document.createElement('div');
+            errLine.style.color = 'var(--accent-red)';
+            errLine.innerText = `Error: ${data.error}`;
+            consoleDiv.appendChild(errLine);
+        } else {
+            if (data.stdout) {
+                const outPre = document.createElement('pre');
+                outPre.style.margin = '0';
+                outPre.style.whiteSpace = 'pre-wrap';
+                outPre.style.color = '#a9b1d6';
+                outPre.innerText = data.stdout;
+                consoleDiv.appendChild(outPre);
+            }
+            if (data.stderr) {
+                const errPre = document.createElement('pre');
+                errPre.style.margin = '0';
+                errPre.style.whiteSpace = 'pre-wrap';
+                errPre.style.color = '#f7768e';
+                errPre.innerText = data.stderr;
+                consoleDiv.appendChild(errPre);
+            }
+            if (!data.stdout && !data.stderr) {
+                const emptyLine = document.createElement('div');
+                emptyLine.style.color = '#565f89';
+                emptyLine.innerText = `El comando finalizó con código ${data.code}`;
+                consoleDiv.appendChild(emptyLine);
+            }
+        }
+    } catch (err) {
+        if (consoleDiv.contains(loaderLine)) consoleDiv.removeChild(loaderLine);
+        const errLine = document.createElement('div');
+        errLine.style.color = 'var(--accent-red)';
+        errLine.innerText = `Error de conexión: ${err.message}`;
+        consoleDiv.appendChild(errLine);
+    }
+    consoleDiv.scrollTop = consoleDiv.scrollHeight;
+}
