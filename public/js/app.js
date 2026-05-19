@@ -866,12 +866,27 @@ async function fetchStorage() {
         }
 
         disks.forEach(d => {
-            // UI Grid
+            const badge = d.active 
+                ? `<div class="acard-badge" style="background:var(--accent-green); color:#000; font-weight:800;">Activo</div>`
+                : `<button onclick="selectStorageDisk('${d.path.replace(/\\/g, '\\\\')}')" class="acard-badge" style="background:var(--accent-blue); border:none; cursor:pointer; font-weight:bold; color:#000; padding: 2px 8px; border-radius: 4px;">⬤ Grabar aquí</button>`;
+            
+            const deselectBtn = d.active
+                ? `<button onclick="deselectStorageDisk()" style="background:rgba(224,49,49,0.15); color:var(--color-red); border:1px solid rgba(224,49,49,0.3); padding: 4px 10px; border-radius: 5px; font-size: 0.72rem; cursor:pointer; font-weight:600;">Desactivar</button>`
+                : '';
+
             grid.innerHTML += `
-                <div class="analytics-card" style="box-shadow: 0 4px 10px rgba(0,0,0,0.5);">
-                    <div class="acard-title"><i class="fa-solid fa-hard-drive"></i> ${d.name}</div>
-                    <div class="acard-badge" style="background:var(--accent-blue);">Activo</div>
-                    <div style="font-size: 0.8rem; margin-top: 10px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${d.path}</div>
+                <div class="analytics-card" style="box-shadow: 0 4px 10px rgba(0,0,0,0.5); display: flex; flex-direction: column; justify-content: space-between; min-height: 120px;">
+                    <div>
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div class="acard-title" style="margin:0;"><i class="fa-solid fa-hard-drive"></i> ${d.name}</div>
+                            ${badge}
+                        </div>
+                        <div style="font-size: 0.75rem; margin-top: 10px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${d.path}</div>
+                        ${d.totalGB ? `<div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">${d.freeGB} GB libres de ${d.totalGB} GB</div>` : ''}
+                    </div>
+                    <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+                        ${deselectBtn}
+                    </div>
                 </div>
             `;
             // Select Population
@@ -888,6 +903,13 @@ async function fetchStorage() {
             select.selectedIndex = 0;
         }
         
+        const diskSelect = document.getElementById('storageDiskSelect');
+        if (diskSelect.value) {
+            if (!currentBrowserPath || !disks.find(d => currentBrowserPath.startsWith(d.path))) {
+                currentBrowserPath = diskSelect.value;
+            }
+        }
+        
         fetchFiles();
         
     } catch(e) { console.error('fetchStorage failed', e); }
@@ -896,35 +918,75 @@ async function fetchStorage() {
 async function fetchFiles() {
     const parentDisk = document.getElementById('storageDiskSelect').value;
     if (!parentDisk) return;
+    
+    if (!currentBrowserPath || !currentBrowserPath.startsWith(parentDisk)) {
+        currentBrowserPath = parentDisk;
+    }
+
     try {
-        const res = await fetch(`/api/files?disk=${encodeURIComponent(parentDisk)}`);
-        const files = await res.json();
+        const res = await fetch(`/api/files?disk=${encodeURIComponent(parentDisk)}&path=${encodeURIComponent(currentBrowserPath)}`);
+        const data = await res.json();
+        
+        const { currentPath, parentPath, items } = data;
+        currentBrowserPath = currentPath;
+        
+        // Actualizar Breadcrumbs
+        const breadcrumbs = document.getElementById('fileManagerBreadcrumbs');
+        breadcrumbs.innerText = currentBrowserPath;
+        
+        // Actualizar botón "Subir"
+        const upBtn = document.getElementById('fileManagerUpBtn');
+        if (parentPath) {
+            upBtn.disabled = false;
+            upBtn.dataset.parent = parentPath;
+        } else {
+            upBtn.disabled = true;
+            upBtn.dataset.parent = '';
+        }
         
         const tbody = document.getElementById('storageFilesList');
         tbody.innerHTML = '';
         
-        if (files.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding: 20px; color:var(--text-muted);">No hay grabaciones en este disco.</td></tr>';
+        if (!items || items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding: 20px; color:var(--text-muted);">Esta carpeta está vacía.</td></tr>';
             return;
         }
 
-        files.forEach(f => {
-            const sizeMB = (f.size / (1024*1024)).toFixed(1);
-            const dStr = new Date(f.date).toLocaleString('es-ES', { dateStyle:'short', timeStyle:'short' });
-            const sName = f.name;
-            
-            tbody.innerHTML += `
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
-                    <td style="padding: 12px 10px; color: var(--text-main); font-weight: 500;"><i class="fa-regular fa-file-video" style="color:var(--accent-blue); margin-right:8px;"></i>${sName}</td>
-                    <td style="padding: 12px 10px;">${sizeMB} MB</td>
-                    <td style="padding: 12px 10px;">${dStr}</td>
-                    <td style="padding: 12px 10px; text-align:right;">
-                        <button onclick="previewFile('${f.url}', '${f.name}')" class="action-btn toggle-enabled" title="Previsualizar" style="background:var(--accent-blue);"><i class="fa-solid fa-play"></i></button>
-                        <a href="${f.url}" download="${f.name}" class="action-btn toggle-enabled" title="Descargar" style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center; margin-left: 5px;"><i class="fa-solid fa-download"></i></a>
-                        <button onclick="deleteFile('${f.url}')" class="action-btn terminate" title="Eliminar" style="margin-left: 5px;"><i class="fa-solid fa-trash"></i></button>
-                    </td>
-                </tr>
-            `;
+        items.forEach(item => {
+            if (item.isDir) {
+                tbody.innerHTML += `
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s; cursor:pointer;" 
+                        onclick="navigateToFolder('${item.path.replace(/\\/g, '\\\\')}')"
+                        onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
+                        <td style="padding: 12px 10px; color: #fff; font-weight: 600;">
+                            <i class="fa-solid fa-folder" style="color:var(--accent-amber); margin-right:8px;"></i>${item.name}
+                        </td>
+                        <td style="padding: 12px 10px; color: var(--text-muted); font-size:0.8rem;">Carpeta</td>
+                        <td style="padding: 12px 10px;">--</td>
+                        <td style="padding: 12px 10px; text-align:right;">
+                            <span style="font-size:0.75rem; color:var(--text-muted); padding-right:8px;">Haga click para abrir</span>
+                        </td>
+                    </tr>
+                `;
+            } else {
+                const sizeMB = (item.size / (1024*1024)).toFixed(1);
+                const dStr = new Date(item.date).toLocaleString('es-ES', { dateStyle:'short', timeStyle:'short' });
+                const copyBtn = `<button onclick="startFileCopy('${item.absolutePath.replace(/\\/g, '\\\\')}', '${item.name.replace(/'/g, "\\'")}')" class="action-btn toggle-enabled" title="Copiar a otro USB" style="background:var(--accent-green); color:#000; margin-left: 5px;"><i class="fa-solid fa-copy"></i></button>`;
+                
+                tbody.innerHTML += `
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
+                        <td style="padding: 12px 10px; color: var(--text-main); font-weight: 500;"><i class="fa-regular fa-file-video" style="color:var(--accent-blue); margin-right:8px;"></i>${item.name}</td>
+                        <td style="padding: 12px 10px;">${sizeMB} MB</td>
+                        <td style="padding: 12px 10px;">${dStr}</td>
+                        <td style="padding: 12px 10px; text-align:right;">
+                            <button onclick="previewFile('${item.url}', '${item.name}')" class="action-btn toggle-enabled" title="Previsualizar" style="background:var(--accent-blue);"><i class="fa-solid fa-play"></i></button>
+                            <a href="${item.url}" download="${item.name}" class="action-btn toggle-enabled" title="Descargar" style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center; margin-left: 5px;"><i class="fa-solid fa-download"></i></a>
+                            ${copyBtn}
+                            <button onclick="deleteFile('${item.url}')" class="action-btn terminate" title="Eliminar" style="margin-left: 5px;"><i class="fa-solid fa-trash"></i></button>
+                        </td>
+                    </tr>
+                `;
+            }
         });
     } catch(e) { console.error('fetchFiles failed', e); }
 }
@@ -1383,3 +1445,155 @@ function ptzMove(command) {
         body: JSON.stringify({ command })
     }).catch(console.error);
 }
+
+// ===================================
+// FILE MANAGER NAVIGATION & COPY HELPERS
+// ===================================
+let currentBrowserPath = null;
+
+async function selectStorageDisk(path) {
+    if (confirm(`¿Quieres configurar ${path} como el disco activo para guardar grabaciones?`)) {
+        try {
+            const res = await fetch('/api/storage/select', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ disk_path: path })
+            });
+            const data = await res.json();
+            if (data.ok) {
+                fetchStorage();
+            } else {
+                alert("Error: " + data.error);
+            }
+        } catch(e) {
+            alert("Error al seleccionar el disco.");
+        }
+    }
+}
+
+async function deselectStorageDisk() {
+    if (confirm(`¿Estás seguro de desactivar la grabación a disco? Las nuevas grabaciones continuas no se guardarán en disco.`)) {
+        try {
+            const res = await fetch('/api/storage/select', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ disk_path: 'disabled' })
+            });
+            const data = await res.json();
+            if (data.ok) {
+                fetchStorage();
+            } else {
+                alert("Error: " + data.error);
+            }
+        } catch(e) {
+            alert("Error al desactivar el disco.");
+        }
+    }
+}
+
+function onStorageDiskSelectChange() {
+    const parentDisk = document.getElementById('storageDiskSelect').value;
+    currentBrowserPath = parentDisk;
+    fetchFiles();
+}
+
+function navigateToFolder(folderPath) {
+    currentBrowserPath = folderPath;
+    fetchFiles();
+}
+
+function goUpFolder() {
+    const upBtn = document.getElementById('fileManagerUpBtn');
+    if (upBtn.dataset.parent) {
+        currentBrowserPath = upBtn.dataset.parent;
+        fetchFiles();
+    }
+}
+
+async function startFileCopy(sourcePath, filename) {
+    try {
+        const res = await fetch('/api/disks');
+        const disks = await res.json();
+        const parentDisk = document.getElementById('storageDiskSelect').value;
+        
+        // Excluir el disco de origen
+        const destDisks = disks.filter(d => d.path !== parentDisk);
+        
+        if (destDisks.length === 0) {
+            alert("No hay otros discos conectados. Conecta una unidad USB para exportar.");
+            return;
+        }
+        
+        // Generar un diálogo simple
+        let msg = `Selecciona el disco de destino para copiar ${filename}:\n\n`;
+        destDisks.forEach((d, idx) => {
+            msg += `[${idx + 1}] ${d.name} (${d.path})\n`;
+        });
+        msg += `\nIntroduce el número del disco destino (1-${destDisks.length}):`;
+        
+        const selection = prompt(msg);
+        if (selection === null) return;
+        
+        const idx = parseInt(selection) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= destDisks.length) {
+            alert("Selección inválida.");
+            return;
+        }
+        
+        const destDisk = destDisks[idx];
+        
+        document.getElementById('copyModalFilename').innerText = filename;
+        document.getElementById('copyModalProgressBar').style.width = '0%';
+        document.getElementById('copyModalPercentText').innerText = '0%';
+        document.getElementById('copyModalStatusText').innerText = `Iniciando copia hacia ${destDisk.name}...`;
+        openModal('copyProgressModal');
+        
+        const copyRes = await fetch('/api/files/copy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sourcePath: sourcePath,
+                destDiskPath: destDisk.path
+            })
+        });
+        
+        const copyData = await copyRes.json();
+        if (!copyRes.ok) {
+            alert("Error al iniciar copia: " + (copyData.error || copyRes.statusText));
+            closeModal('copyProgressModal');
+        }
+        
+    } catch (e) {
+        alert("Error al inicializar la copia.");
+        console.error(e);
+    }
+}
+
+// Registrar progreso de copia en Socket.io
+socket.on('copy_progress', (data) => {
+    const { filename, progress, status, error } = data;
+    
+    const modalFilename = document.getElementById('copyModalFilename').innerText;
+    if (modalFilename !== filename) return;
+    
+    const bar = document.getElementById('copyModalProgressBar');
+    const pctText = document.getElementById('copyModalPercentText');
+    const statusText = document.getElementById('copyModalStatusText');
+    
+    bar.style.width = `${progress}%`;
+    pctText.innerText = `${progress}%`;
+    
+    if (status === 'copiando') {
+        statusText.innerText = `Copiando... ${progress}%`;
+    } else if (status === 'completado') {
+        statusText.innerText = `Copia completada con éxito.`;
+        bar.style.background = 'var(--accent-green)';
+        setTimeout(() => {
+            closeModal('copyProgressModal');
+            fetchFiles(); // Recargar el listado
+        }, 1500);
+    } else if (status === 'error') {
+        statusText.innerText = `Error: ${error || 'Fallo desconocido'}`;
+        bar.style.background = 'var(--accent-red)';
+    }
+});
