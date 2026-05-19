@@ -1727,24 +1727,96 @@ app.put('/api/ports', (req, res) => {
  * ======================================= */
 app.get('/api/network', (req, res) => {
     const { exec } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    
+    // Función de fallback para obtener datos de red reales en caso de que nmcli falle o no controle la interfaz
+    const getFallbackNetworkData = (errorMsg) => {
+        const interfaces = os.networkInterfaces();
+        let ip = '';
+        for (const name of Object.keys(interfaces)) {
+            for (const iface of interfaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    ip = iface.address;
+                    break;
+                }
+            }
+            if (ip) break;
+        }
+        
+        let gateway = '';
+        let dns = '';
+        
+        if (process.platform === 'linux') {
+            try {
+                if (fs.existsSync('/proc/net/route')) {
+                    const routeContent = fs.readFileSync('/proc/net/route', 'utf8');
+                    const lines = routeContent.split('\n');
+                    for (let line of lines) {
+                        const parts = line.split('\t');
+                        if (parts.length > 2 && parts[1] === '00000000') {
+                            const gwHex = parts[2];
+                            const gwParts = [
+                                parseInt(gwHex.substring(6, 8), 16),
+                                parseInt(gwHex.substring(4, 6), 16),
+                                parseInt(gwHex.substring(2, 4), 16),
+                                parseInt(gwHex.substring(0, 2), 16)
+                            ];
+                            gateway = gwParts.join('.');
+                            break;
+                        }
+                    }
+                }
+            } catch(e) {}
+            
+            try {
+                if (fs.existsSync('/etc/resolv.conf')) {
+                    const resolv = fs.readFileSync('/etc/resolv.conf', 'utf8');
+                    const matches = resolv.match(/^nameserver\s+([^\s]+)/gm);
+                    if (matches) {
+                        dns = matches.map(m => m.replace('nameserver', '').trim()).join(', ');
+                    }
+                }
+            } catch(e) {}
+        }
+        
+        return {
+            ok: true,
+            connectionName: '',
+            mode: 'auto',
+            ip: ip || '127.0.0.1',
+            cidr: '24',
+            gateway: gateway || '',
+            dns: dns || '',
+            isFallback: true,
+            reason: errorMsg
+        };
+    };
     
     exec('nmcli -t -f NAME,TYPE,STATE con show --active', (err, stdout) => {
-        if (err || !stdout) return res.json({ ok: false, error: 'nmcli no disponible', fallback: true });
+        if (err || !stdout) {
+            return res.json(getFallbackNetworkData('NetworkManager no disponible o inactivo'));
+        }
         
         const lines = stdout.trim().split('\n');
         let activeConn = null;
         for (let line of lines) {
             const [name, type, state] = line.split(':');
-            if ((type === '802-3-ethernet' || type === 'ethernet') && state === 'activated') {
+            // Añadido soporte para WiFi (802-11-wireless, wifi) y puentes de red (bridge) además de Ethernet
+            if ((type === '802-3-ethernet' || type === 'ethernet' || type === '802-11-wireless' || type === 'wifi' || type === 'bridge') && state === 'activated') {
                 activeConn = name;
                 break;
             }
         }
         
-        if (!activeConn) return res.json({ ok: false, error: 'No se encontró conexión Ethernet activa', fallback: true });
+        if (!activeConn) {
+            return res.json(getFallbackNetworkData('No se encontró conexión de red activa compatible con nmcli'));
+        }
         
         exec(`nmcli -t -f ipv4.method,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS con show "${activeConn}"`, (err2, stdout2) => {
-            if (err2 || !stdout2) return res.json({ ok: false, error: 'Error leyendo configuración' });
+            if (err2 || !stdout2) {
+                return res.json(getFallbackNetworkData('Error leyendo la configuración con nmcli'));
+            }
             
             const details = stdout2.trim().split('\n').reduce((acc, line) => {
                 const parts = line.split(':');
@@ -1762,7 +1834,8 @@ app.get('/api/network', (req, res) => {
                 ip: ip || '',
                 cidr: cidr || '24',
                 gateway: details['IP4.GATEWAY'] || '',
-                dns: details['IP4.DNS[1]'] || details['IP4.DNS'] || ''
+                dns: details['IP4.DNS[1]'] || details['IP4.DNS'] || '',
+                isFallback: false
             });
         });
     });
