@@ -151,6 +151,7 @@ function detectExternalDisk() {
 
 // El disco de grabacion se inicializa a null; initMediaRoot() lo asigna desde DB o auto-detect
 let mediaRoot = null;
+let recordingDisabled = false;
 
 // Helper para registrar el middleware de disco de grabaciones en Express
 function registerMediaStatic(rootPath) {
@@ -168,8 +169,13 @@ function registerMediaStatic(rootPath) {
 // Inicializar disco: 1) Disco guardado en DB  2) Auto-detect  3) null
 function initMediaRoot() {
     db.get("SELECT value FROM settings WHERE key = 'recording_disk'", (err, row) => {
-        if (row && row.value && fs.existsSync(row.value)) {
+        if (row && row.value === 'disabled') {
+            mediaRoot = null;
+            recordingDisabled = true;
+            console.log(`[STORAGE] Disco de grabación desactivado por el usuario.`);
+        } else if (row && row.value && fs.existsSync(row.value)) {
             mediaRoot = row.value;
+            recordingDisabled = false;
             registerMediaStatic(mediaRoot);
             console.log(`[STORAGE] Disco cargado desde DB: ${mediaRoot}`);
         } else {
@@ -179,6 +185,7 @@ function initMediaRoot() {
                 const recDir = path.join(detected, 'recordings');
                 try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
                 mediaRoot = recDir;
+                recordingDisabled = false;
                 registerMediaStatic(mediaRoot);
                 console.log(`[STORAGE] Disco detectado: ${mediaRoot}`);
             } else {
@@ -221,8 +228,8 @@ app.get('/api/status', (req, res) => {
 
 // Storage status — informa al frontend si hay disco de grabacion disponible
 app.get('/api/storage/status', (req, res) => {
-    // Re-detectar por si el disco se conectó después de arrancar
-    if (!mediaRoot) {
+    // Re-detectar por si el disco se conectó después de arrancar (solo si no está deshabilitado)
+    if (!mediaRoot && !recordingDisabled) {
         const detected = detectExternalDisk();
         if (detected) {
             const recDir = path.join(detected, 'recordings');
@@ -232,7 +239,7 @@ app.get('/api/storage/status', (req, res) => {
         }
     }
     if (!mediaRoot) {
-        return res.json({ available: false, path: null, message: 'No hay disco externo conectado. Conecta un USB o configura MEDIA_ROOT en .env' });
+        return res.json({ available: false, path: null, message: recordingDisabled ? 'Grabación en disco desactivada por el usuario.' : 'No hay disco externo conectado. Conecta un USB o configura MEDIA_ROOT en .env' });
     }
     try {
         const stat = fs.statfsSync ? fs.statfsSync(mediaRoot) : null;
@@ -1310,7 +1317,7 @@ app.get('/api/disks', async (req, res) => {
                 freeGB:  freeGB  || null,
                 totalGB: totalGB || null,
                 usedPct: usedPct || null,
-                active:  mediaRoot && (mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/'))
+                active:  mediaRoot && (mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/') || mediaRoot.startsWith(mountPath + '\\'))
             });
         };
 
@@ -1362,9 +1369,12 @@ app.get('/api/disks', async (req, res) => {
             } catch (_) {}
         }
 
-        // Fuente 3: mediaRoot activo (incluirlo siempre si existe)
-        if (mediaRoot && fs.existsSync(mediaRoot) && !seen.has(mediaRoot)) {
-            addDrive(mediaRoot, 'activo', null, null, null);
+        // Fuente 3: mediaRoot activo (incluirlo siempre si existe y no está ya representado por un disco padre)
+        if (mediaRoot && fs.existsSync(mediaRoot)) {
+            const isSubpath = Array.from(seen).some(mountPath => mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/') || mediaRoot.startsWith(mountPath + '\\'));
+            if (!isSubpath) {
+                addDrive(mediaRoot, 'activo', null, null, null);
+            }
         }
 
         res.json(drives);
@@ -1377,6 +1387,16 @@ app.get('/api/disks', async (req, res) => {
 app.post('/api/storage/select', (req, res) => {
     const { disk_path } = req.body;
     if (!disk_path) return res.status(400).json({ error: 'Missing disk_path' });
+
+    if (disk_path === 'disabled' || disk_path === 'none') {
+        mediaRoot = null;
+        recordingDisabled = true;
+        db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', 'disabled')", (err) => {
+            if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
+        });
+        console.log(`[STORAGE] Disco de grabación desactivado por el usuario.`);
+        return res.json({ ok: true, path: null });
+    }
 
     // Seguridad: no permitir disco del sistema
     const forbidden = ['/', '/boot', '/usr', '/etc', '/home', '/var', '/sys', '/proc', 'C:\\', 'C:'];
@@ -1395,6 +1415,7 @@ app.post('/api/storage/select', (req, res) => {
 
     // Actualizar mediaRoot en caliente
     mediaRoot = recDir;
+    recordingDisabled = false;
     registerMediaStatic(mediaRoot);
 
     // Persistir en DB
@@ -1598,33 +1619,160 @@ app.post('/api/disks/wipe', (req, res) => {
 
 
 app.get('/api/files', (req, res) => {
-    // ParentDisk es ahora una ruta ABSOLUTA enviada desde el frontend
     const scanPath = req.query.disk;
-    if (!scanPath) return res.json([]);
+    if (!scanPath) return res.json({ currentPath: null, parentPath: null, items: [] });
+    
+    let targetPath = req.query.path ? path.resolve(req.query.path) : path.resolve(scanPath);
+    
+    // Seguridad: asegurar que targetPath empieza con scanPath o está dentro de las rutas permitidas
+    const resolvedScan = path.resolve(scanPath);
+    const allowedRoots = ['/media', '/mnt', '/run/media'];
+    
+    const isAllowed = targetPath === resolvedScan || targetPath.startsWith(resolvedScan + path.sep) ||
+                      allowedRoots.some(root => {
+                          const resolvedRoot = path.resolve(root);
+                          return targetPath === resolvedRoot || targetPath.startsWith(resolvedRoot + path.sep);
+                      });
+    
+    if (!isAllowed) {
+        return res.status(403).json({ error: 'Acceso denegado a la ruta especificada' });
+    }
+    
+    if (!fs.existsSync(targetPath)) {
+        return res.json({ currentPath: targetPath, parentPath: null, items: [] });
+    }
     
     try {
-        if (!fs.existsSync(scanPath)) return res.json([]);
-        const files = [];
+        const items = fs.readdirSync(targetPath, { withFileTypes: true });
+        const results = [];
         
-        // Scan recursivo simple o de 1 nivel
-        const items = fs.readdirSync(scanPath, { withFileTypes: true });
         for (const item of items) {
-            if (item.isFile() && item.name.match(/\.(mp4|mkv|ts|flv|m3u8)$/i)) {
-                const absolutePath = path.join(scanPath, item.name);
-                const stat = fs.statSync(absolutePath);
-                files.push({
-                    name: item.name,
-                    size: stat.size,
-                    date: stat.mtime,
-                    // Devolvemos el absolutePath bruto, y usaremos una url especial para cargar videos absolutos
-                    url: `/api/media/play?path=${encodeURIComponent(absolutePath)}`, 
-                    absolutePath: absolutePath
-                });
+            const absolutePath = path.join(targetPath, item.name);
+            try {
+                if (item.isDirectory()) {
+                    if (item.name.startsWith('.')) continue;
+                    results.push({
+                        name: item.name,
+                        isDir: true,
+                        path: absolutePath
+                    });
+                } else if (item.isFile() && item.name.match(/\.(mp4|mkv|ts|flv|m3u8)$/i)) {
+                    const stat = fs.statSync(absolutePath);
+                    results.push({
+                        name: item.name,
+                        isDir: false,
+                        size: stat.size,
+                        date: stat.mtime,
+                        url: `/api/media/play?path=${encodeURIComponent(absolutePath)}`,
+                        absolutePath: absolutePath
+                    });
+                }
+            } catch (statErr) {
+                // Ignorar archivos inaccesibles
             }
         }
-        res.json(files.sort((a,b) => b.date - a.date)); // Fechas más recientes primero
+        
+        const dirs = results.filter(r => r.isDir).sort((a, b) => a.name.localeCompare(b.name));
+        const files = results.filter(r => !r.isDir).sort((a, b) => b.date - a.date);
+        
+        const isAtDiskRoot = targetPath === resolvedScan;
+        const parentPath = isAtDiskRoot ? null : path.dirname(targetPath);
+        
+        res.json({
+            currentPath: targetPath,
+            parentPath: parentPath,
+            items: [...dirs, ...files]
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// Nuevo endpoint de copia asíncrona de archivos
+app.post('/api/files/copy', (req, res) => {
+    const { sourcePath, destDiskPath } = req.body;
+    if (!sourcePath || !destDiskPath) {
+        return res.status(400).json({ error: 'Faltan parámetros: sourcePath o destDiskPath' });
+    }
+
+    const resolvedSource = path.resolve(sourcePath);
+    const resolvedDestDisk = path.resolve(destDiskPath);
+
+    // Seguridad: verificar rutas permitidas
+    const allowedRoots = ['/media', '/mnt', '/run/media'];
+    const isSourceAllowed = allowedRoots.some(root => {
+        const resolvedRoot = path.resolve(root);
+        return resolvedSource.startsWith(resolvedRoot + path.sep);
+    });
+    const isDestAllowed = allowedRoots.some(root => {
+        const resolvedRoot = path.resolve(root);
+        return resolvedDestDisk === resolvedRoot || resolvedDestDisk.startsWith(resolvedRoot + path.sep);
+    });
+
+    if (!isSourceAllowed || !isDestAllowed) {
+        return res.status(403).json({ error: 'Acceso denegado a las rutas de copia' });
+    }
+
+    if (!fs.existsSync(resolvedSource)) {
+        return res.status(404).json({ error: 'El archivo de origen no existe' });
+    }
+    if (!fs.existsSync(resolvedDestDisk)) {
+        return res.status(404).json({ error: 'El disco de destino no existe o no está montado' });
+    }
+
+    const filename = path.basename(resolvedSource);
+    const targetDir = path.join(resolvedDestDisk, 'recordings');
+    try {
+        fs.mkdirSync(targetDir, { recursive: true });
+    } catch (e) {
+        // Ignorar si no se puede crear, usaremos la raíz del destino
+    }
+    
+    const finalDestPath = path.join(fs.existsSync(targetDir) ? targetDir : resolvedDestDisk, filename);
+
+    if (fs.existsSync(finalDestPath)) {
+        return res.status(409).json({ error: 'El archivo ya existe en el destino' });
+    }
+
+    res.json({ success: true, message: 'Copia iniciada en segundo plano', filename });
+
+    try {
+        const stat = fs.statSync(resolvedSource);
+        const totalBytes = stat.size;
+        let copiedBytes = 0;
+        let lastPercent = -1;
+
+        const readStream = fs.createReadStream(resolvedSource);
+        const writeStream = fs.createWriteStream(finalDestPath);
+
+        io.emit('copy_progress', { filename, progress: 0, status: 'copiando', sourcePath: resolvedSource });
+
+        readStream.on('data', (chunk) => {
+            copiedBytes += chunk.length;
+            const percent = Math.round((copiedBytes / totalBytes) * 100);
+            if (percent !== lastPercent) {
+                lastPercent = percent;
+                io.emit('copy_progress', { filename, progress: percent, status: 'copiando', sourcePath: resolvedSource });
+            }
+        });
+
+        writeStream.on('finish', () => {
+            io.emit('copy_progress', { filename, progress: 100, status: 'completado', sourcePath: resolvedSource });
+        });
+
+        const handleCopyError = (err) => {
+            console.error(`[COPY] Error copiando ${filename}:`, err.message);
+            try { fs.unlinkSync(finalDestPath); } catch (_) {}
+            io.emit('copy_progress', { filename, progress: 0, status: 'error', error: err.message, sourcePath: resolvedSource });
+        };
+
+        readStream.on('error', handleCopyError);
+        writeStream.on('error', handleCopyError);
+
+        readStream.pipe(writeStream);
+    } catch (err) {
+        console.error(`[COPY] Error inicializando copia para ${filename}:`, err.message);
+        io.emit('copy_progress', { filename, progress: 0, status: 'error', error: err.message, sourcePath: resolvedSource });
     }
 });
 

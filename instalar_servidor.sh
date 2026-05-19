@@ -329,8 +329,15 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
         update-grub 2>/dev/null || true
     fi
 
+    # Cargar el driver gráfico i915 al principio del arranque para evitar parpadeos y letras tipo matriz
+    if [ -f "/etc/initramfs-tools/modules" ]; then
+        if ! grep -q "i915" /etc/initramfs-tools/modules; then
+            echo -e "\n# Forzar carga temprana de graficos Intel para Plymouth\ni915" >> /etc/initramfs-tools/modules
+        fi
+    fi
+
     update-initramfs -u 2>/dev/null || true
-    echo "   Tema Plymouth instalado."
+    echo "   Tema Plymouth instalado y initramfs configurado."
 else
     echo "   Sin tema Plymouth (carpeta boot-theme no encontrada)."
 fi
