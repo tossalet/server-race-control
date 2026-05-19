@@ -1432,155 +1432,51 @@ app.post('/api/storage/select', (req, res) => {
 /* =======================================
  *  REST API: LIVE HLS PREVIEW (sin grabar)
  * ======================================= */
-// Mapa en memoria de procesos de preview HLS activos: { channel -> { proc, hlsPath, sock, pending } }
+// Mapa en memoria de procesos de preview HLS activos (mantenido por compatibilidad)
 const livePreviewProcs = {};
-// Lock por canal para evitar requests simultáneos que spawnen múltiples FFmpeg
-const livePreviewPending = {};
+
+// Endpoint para obtener el flujo crudo MPEG-TS directamente del router TCP interno sin usar CPU
+app.get('/api/preview/ts/:channel', (req, res) => {
+    const channel = parseInt(req.params.channel);
+    const routerState = streamManager.activeInputs[channel];
+    
+    if (!routerState || !routerState.router) {
+        return res.status(503).send('Input not ready');
+    }
+    
+    res.writeHead(200, {
+        'Content-Type': 'video/mp2t',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Connection': 'keep-alive',
+        'Pragma': 'no-cache'
+    });
+    
+    const subscribers = routerState.router.subscribers;
+    
+    // res es un Writable Stream. Lo registramos en los suscriptores del multiplexador TCP
+    subscribers.add(res);
+    originalLog(`[HTTP-TS] Cliente conectado a vista en vivo Ch${channel}`);
+    
+    req.on('close', () => {
+        subscribers.delete(res);
+        originalLog(`[HTTP-TS] Cliente desconectado de vista en vivo Ch${channel}`);
+    });
+});
 
 app.post('/api/preview/live/:channel', (req, res) => {
     const channel = parseInt(req.params.channel);
-    const net = require('net');
-
-    // ── Lock: si ya hay una petición en curso para este canal, ESPERAR en lugar de rechazar ──
-    if (livePreviewPending[channel]) {
-        // Esperar hasta 15s a que el proceso en marcha termine y tenga URL
-        const waitStart = Date.now();
-        const waitForPending = () => {
-            if (res.headersSent) return;
-            // Si ya terminó el lock y hay URL disponible, devolverla
-            if (!livePreviewPending[channel] && livePreviewProcs[channel]) {
-                const name = path.basename(livePreviewProcs[channel].hlsPath);
-                if (fs.existsSync(livePreviewProcs[channel].hlsPath)) {
-                    return res.json({ url: `/preview/${name}`, previewId: livePreviewProcs[channel].previewId, reused: true });
-                }
-            }
-            if (Date.now() - waitStart > 15000) {
-                return res.status(504).json({ error: 'Preview timeout waiting for lock', reason: 'lock_timeout' });
-            }
-            setTimeout(waitForPending, 500);
-        };
-        return waitForPending();
-    }
-
-    // ── Si ya hay un preview activo y funcionando, reutilizarlo ──
-    if (livePreviewProcs[channel] && livePreviewProcs[channel].proc && livePreviewProcs[channel].proc.exitCode === null) {
-        const existingHlsName = path.basename(livePreviewProcs[channel].hlsPath);
-        const existingHlsUrl  = `/preview/${existingHlsName}`;
-        if (fs.existsSync(livePreviewProcs[channel].hlsPath)) {
-            return res.json({ url: existingHlsUrl, previewId: livePreviewProcs[channel].previewId, reused: true });
-        }
-    }
-
-    // Detener preview anterior si existe (proceso muerto o inservible)
-    if (livePreviewProcs[channel]) {
-        try { livePreviewProcs[channel].proc.kill('SIGKILL'); } catch(e) {}
-        if (livePreviewProcs[channel].sock) { try { livePreviewProcs[channel].sock.destroy(); } catch(e) {} }
-        delete livePreviewProcs[channel];
-    }
-
     const routerState = streamManager.activeInputs[channel];
+    
     if (!routerState || !routerState.router) {
         return res.status(503).json({ error: 'Input not ready', reason: 'router_not_active' });
     }
-
-    const { spawn } = require('child_process');
-    const ffmpegCmd = streamManager.getFFmpegPath();
-
-    const previewId = `preview_ch${channel}_${Date.now()}`;
-    const hlsPath   = path.join(previewRoot, `${previewId}.m3u8`);
-    const tcpPort   = 43000 + channel;
-
-    const args = [
-        '-hide_banner', '-y',
-        '-fflags', '+genpts+discardcorrupt',
-        '-err_detect', 'ignore_err',
-        '-thread_queue_size', '4096',
-        '-i', `tcp://127.0.0.1:${tcpPort}?listen`,
-        '-map', '0:v?', '-map', '0:a?',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '28',
-        '-vf', 'scale=-2:720',
-        '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
-        '-c:a', 'aac', '-b:a', '96k',
-        '-bsf:a', 'aac_adtstoasc',
-        '-hls_time', '2',
-        '-hls_list_size', '4',
-        '-hls_flags', 'delete_segments+append_list',
-        '-hls_segment_type', 'mpegts',
-        '-f', 'hls', hlsPath
-    ];
-
-    // Activar lock antes de hacer spawn
-    livePreviewPending[channel] = true;
-
-    const proc = spawn(ffmpegCmd, args);
-    livePreviewProcs[channel] = { proc, hlsPath, previewId, sock: null };
-
-    // Log completo de stderr para diagnóstico del preview
-    proc.stderr.on('data', (d) => {
-        const txt = d.toString().trim();
-        if (txt) originalLog(`[PREVIEW-FFMPEG ch${channel}] ${txt.split('\n')[0]}`);
-    });
-
-    proc.on('exit', code => {
-        if (livePreviewProcs[channel] && livePreviewProcs[channel].proc === proc) {
-            delete livePreviewProcs[channel];
-        }
-        delete livePreviewPending[channel];
-    });
-
-    // Conectar al router de la cámara (1.5 s para que FFmpeg abra el socket TCP)
-    // IMPORTANTE: releer streamManager.activeInputs en el momento de conectar,
-    // no usar routerState capturado (puede estar obsoleto si el SRT se reconectó)
-    setTimeout(() => {
-        if (!livePreviewProcs[channel] || livePreviewProcs[channel].proc !== proc) return;
-        const sock = net.createConnection(tcpPort, '127.0.0.1', () => {
-            const currentRouter = streamManager.activeInputs[channel]?.router;
-            if (currentRouter) currentRouter.subscribers.add(sock);
-            originalLog(`[PREVIEW] Ch${channel} conectado al router TCP :${tcpPort}`);
-        });
-        sock.on('error', () => {});
-        sock.on('close', () => {
-            const currentRouter = streamManager.activeInputs[channel]?.router;
-            if (currentRouter) currentRouter.subscribers.delete(sock);
-        });
-        livePreviewProcs[channel].sock = sock;
-    }, 1500);
-
-    // ── Esperar a que FFmpeg genere el .m3u8 ──
-    const hlsName   = path.basename(hlsPath);
-    const hlsUrl    = `/preview/${hlsName}`;
-    const maxWaitMs = 15000;
-    const pollMs    = 500;   // Aumentar intervalo a 500ms (antes 250ms) para reducir CPU
-    let   elapsed   = 0;
-
-    const waitForFile = () => {
-        if (res.headersSent) { delete livePreviewPending[channel]; return; }
-        if (fs.existsSync(hlsPath)) {
-            // Solo log silencioso, no al broadcastLog para no llenar el panel de logs
-            originalLog(`[PREVIEW] Ch${channel} HLS listo: ${hlsName} (${elapsed}ms)`);
-            delete livePreviewPending[channel];
-            return res.json({ url: hlsUrl, previewId });
-        }
-        elapsed += pollMs;
-        if (elapsed >= maxWaitMs) {
-            // Solo log silencioso
-            originalLog(`[PREVIEW] Ch${channel} timeout esperando HLS — FFmpeg pudo fallar`);
-            delete livePreviewPending[channel];
-            return res.status(504).json({ error: 'HLS stream timeout', reason: 'ffmpeg_timeout' });
-        }
-        setTimeout(waitForFile, pollMs);
-    };
-    setTimeout(waitForFile, 2000);
+    
+    // Retornamos directamente el stream HTTP-TS sin arrancar FFmpeg extra
+    return res.json({ url: `/api/preview/ts/${channel}`, previewId: `ts_ch${channel}`, isMpegTs: true });
 });
 
 app.delete('/api/preview/live/:channel', (req, res) => {
-    const channel = parseInt(req.params.channel);
-    if (livePreviewProcs[channel]) {
-        try { livePreviewProcs[channel].proc.kill('SIGKILL'); } catch(e) {}
-        if (livePreviewProcs[channel].sock) { try { livePreviewProcs[channel].sock.destroy(); } catch(e) {} }
-        delete livePreviewProcs[channel];
-    }
-    res.json({ ok: true });
+    res.json({ ok: true, success: true });
 });
 
 
