@@ -1026,7 +1026,7 @@ app.post('/api/recordings/start', (req, res) => {
 
 
             io.emit('db_update', { event: 'recordings_started', session_id: sessionId });
-            res.json({ session_id: sessionId, message: `Started ${inputs.length} recordings.` });
+            res.json({ session_id: sessionId, start_time: startTime, message: `Started ${inputs.length} recordings.` });
         });
     });
 });
@@ -1053,11 +1053,12 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
     delete activeRecordingProcs[sessionId];
 
     // Update end_time
+    const endTime = new Date().toISOString();
     db.run('UPDATE recording_sessions SET end_time = ? WHERE id = ?',
-        [new Date().toISOString(), sessionId]);
-
-    io.emit('db_update', { event: 'outputs_changed' });
-    res.json({ stopped: procs.length, session_id: sessionId });
+        [endTime, sessionId], function(err) {
+            io.emit('db_update', { event: 'outputs_changed' });
+            res.json({ stopped: procs.length, session_id: sessionId, end_time: endTime });
+        });
 });
 
 
@@ -1722,6 +1723,10 @@ app.put('/api/ports', (req, res) => {
     });
 });
 
+app.get('/api/time', (req, res) => {
+    res.json({ time: new Date().toISOString() });
+});
+
 /* =======================================
  *  NETWORK MANAGEMENT (NMCLI)
  * ======================================= */
@@ -1801,17 +1806,53 @@ app.get('/api/network', (req, res) => {
         const lines = stdout.trim().split('\n');
         let activeConn = null;
         let activeDev = null;
+        
+        // 1. Prioritize physical ethernet connection (excluding virtual interfaces)
         for (let line of lines) {
             const parts = line.split(':');
             if (parts.length >= 3) {
                 const name = parts[0];
                 const device = parts[1];
                 const type = parts[2];
-                // Soporte para Ethernet, WiFi y Bridges
-                if (type === '802-3-ethernet' || type === 'ethernet' || type === '802-11-wireless' || type === 'wifi' || type === 'bridge') {
+                if ((type === '802-3-ethernet' || type === 'ethernet') && 
+                    !device.startsWith('veth') && !device.startsWith('docker') && !device.startsWith('br-') && device !== 'lo') {
                     activeConn = name;
                     activeDev = device;
                     break;
+                }
+            }
+        }
+        
+        // 2. Fallback to WiFi
+        if (!activeConn) {
+            for (let line of lines) {
+                const parts = line.split(':');
+                if (parts.length >= 3) {
+                    const name = parts[0];
+                    const device = parts[1];
+                    const type = parts[2];
+                    if (type === '802-11-wireless' || type === 'wifi') {
+                        activeConn = name;
+                        activeDev = device;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback to Bridge (excluding docker / virtual bridges)
+        if (!activeConn) {
+            for (let line of lines) {
+                const parts = line.split(':');
+                if (parts.length >= 3) {
+                    const name = parts[0];
+                    const device = parts[1];
+                    const type = parts[2];
+                    if (type === 'bridge' && !device.startsWith('docker') && !device.startsWith('br-')) {
+                        activeConn = name;
+                        activeDev = device;
+                        break;
+                    }
                 }
             }
         }
@@ -1841,9 +1882,11 @@ app.get('/api/network', (req, res) => {
                 
                 const details = stdout3.trim().split('\n').reduce((acc, line) => {
                     const parts = line.split(':');
-                    const key = parts[0];
-                    const val = parts.slice(1).join(':');
-                    acc[key] = val;
+                    if (parts.length >= 2) {
+                        const key = parts[0].trim();
+                        const val = parts.slice(1).join(':').replace(/\\/g, '').trim();
+                        acc[key] = val;
+                    }
                     return acc;
                 }, {});
                 
@@ -1852,10 +1895,10 @@ app.get('/api/network', (req, res) => {
                 
                 const gateway = details['IP4.GATEWAY'] || '';
                 
-                // Obtener todos los DNS activos
+                // Obtener todos los DNS activos (de forma insensible a mayúsculas)
                 const dnsList = [];
                 for (let k of Object.keys(details)) {
-                    if (k.startsWith('IP4.DNS')) {
+                    if (k.toUpperCase().startsWith('IP4.DNS')) {
                         dnsList.push(details[k]);
                     }
                 }
