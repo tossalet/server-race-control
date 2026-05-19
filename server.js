@@ -1865,6 +1865,29 @@ app.post('/api/network', (req, res) => {
     }, 1000);
 });
 
+app.post('/api/terminal/run', (req, res) => {
+    const { exec } = require('child_process');
+    const { command } = req.body;
+    
+    if (!command) {
+        return res.status(400).json({ error: 'Falta el comando' });
+    }
+    
+    // Filtro de seguridad básico: no permitir comandos destructivos críticos
+    if (command.includes('rm -rf /') || command.includes('mkfs')) {
+        return res.status(403).json({ error: 'Comando no permitido por seguridad' });
+    }
+
+    // Ejecuta el comando con límite de tiempo de 30 segundos
+    exec(command, { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        res.json({
+            stdout: stdout || '',
+            stderr: stderr || '',
+            code: error ? error.code : 0
+        });
+    });
+});
+
 /* =======================================
  *  BOOT SEQUENCE & WEBSOCKETS
  * ======================================= */
