@@ -1765,7 +1765,7 @@ app.get('/api/network', (req, res) => {
                         let count = 0;
                         for (let p of maskParts) {
                             const val = parseInt(p, 10);
-                            count += val.toString(2).replaceAll('0', '').length;
+                            count += val.toString(2).replace(/0/g, '').length;
                         }
                         cidr = count.toString();
                     }
