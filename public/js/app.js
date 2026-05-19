@@ -1087,28 +1087,15 @@ async function fetchNetworkSettings() {
             document.getElementById('net_gateway').value = data.gateway || '';
             document.getElementById('net_dns').value = data.dns || '';
             
+            // Permitir siempre la edición y guardado libre como estaba originalmente
             const modeSelect = document.getElementById('net_mode');
             const saveBtn = document.getElementById('net_saveBtn');
+            modeSelect.disabled = false;
+            saveBtn.disabled = false;
+            saveBtn.style.background = '';
+            saveBtn.style.cursor = '';
             
-            if (data.isFallback) {
-                modeSelect.disabled = true;
-                saveBtn.disabled = true;
-                saveBtn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Conexión no gestionada por NetworkManager — Solo lectura';
-                saveBtn.style.background = '#6c757d';
-                saveBtn.style.cursor = 'not-allowed';
-                
-                // Deshabilitar el resto de inputs de red
-                document.getElementById('net_ip').disabled = true;
-                document.getElementById('net_cidr').disabled = true;
-                document.getElementById('net_gateway').disabled = true;
-                document.getElementById('net_dns').disabled = true;
-            } else {
-                modeSelect.disabled = false;
-                saveBtn.disabled = false;
-                saveBtn.style.background = '';
-                saveBtn.style.cursor = '';
-                toggleNetworkFields();
-            }
+            toggleNetworkFields();
         }
     } catch (e) {
         console.error("Error fetching network settings:", e);
