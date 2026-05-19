@@ -1052,6 +1052,28 @@ function openEditOutput(id) {
     openModal('outputModal');
 }
 
+function cidrToMask(cidr) {
+    const bits = parseInt(cidr, 10);
+    if (isNaN(bits) || bits < 0 || bits > 32) return '255.255.255.0';
+    const mask = [];
+    for (let i = 0; i < 4; i++) {
+        const n = Math.min(Math.max(bits - i * 8, 0), 8);
+        mask.push(256 - Math.pow(2, 8 - n));
+    }
+    return mask.join('.');
+}
+
+function maskToCidr(mask) {
+    if (!mask || !mask.includes('.')) return 24;
+    const parts = mask.split('.').map(Number);
+    let cidr = 0;
+    for (let p of parts) {
+        if (isNaN(p) || p < 0 || p > 255) continue;
+        cidr += p.toString(2).replaceAll('0', '').length;
+    }
+    return cidr || 24;
+}
+
 async function fetchNetworkSettings() {
     try {
         const res = await fetch('/api/network');
@@ -1061,7 +1083,7 @@ async function fetchNetworkSettings() {
             document.getElementById('net_connName').value = data.connectionName || '';
             document.getElementById('net_mode').value = data.mode || 'auto';
             document.getElementById('net_ip').value = data.ip || '';
-            document.getElementById('net_cidr').value = data.cidr || '24';
+            document.getElementById('net_cidr').value = cidrToMask(data.cidr || '24');
             document.getElementById('net_gateway').value = data.gateway || '';
             document.getElementById('net_dns').value = data.dns || '';
             
@@ -1100,11 +1122,13 @@ async function saveNetworkSettings(e) {
     e.preventDefault();
     const mode = document.getElementById('net_mode').value;
     const ip = document.getElementById('net_ip').value;
+    const maskVal = document.getElementById('net_cidr').value;
+    const cidrVal = maskToCidr(maskVal);
     const payload = {
         connectionName: document.getElementById('net_connName').value,
         mode: mode,
         ip: ip,
-        cidr: document.getElementById('net_cidr').value,
+        cidr: cidrVal,
         gateway: document.getElementById('net_gateway').value,
         dns: document.getElementById('net_dns').value
     };
