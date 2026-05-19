@@ -243,6 +243,149 @@ app.get('/api/storage/status', (req, res) => {
     }
 });
 
+// Lista todas las particiones disponibles (montadas o detectables) para selección manual
+app.get('/api/storage/list', (req, res) => {
+    if (process.platform === 'win32') {
+        return res.json([{ device: 'local', mountPoint: path.join(__dirname, 'media'), fsType: 'local', sizeGB: null, freeGB: null, label: 'Carpeta local (Windows dev)' }]);
+    }
+
+    const DATA_FS = new Set(['ext4','ext3','ext2','vfat','exfat','ntfs','xfs','btrfs','f2fs']);
+    const SKIP_FS = new Set(['tmpfs','devtmpfs','sysfs','proc','devpts','cgroup','cgroup2',
+                             'overlay','squashfs','udev','securityfs','fusectl','pstore',
+                             'efivarfs','debugfs','tracefs','hugetlbfs','mqueue','ramfs','bpf','configfs']);
+    // Puntos de montaje del sistema a ignorar
+    const SKIP_PFX = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user', '/run/lock',
+                      '/run/systemd', '/run/credentials', '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
+
+    const partitions = [];
+
+    try {
+        const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
+        for (const line of mounts) {
+            const [device, mountPoint, fsType] = line.split(' ');
+            if (!device || !mountPoint || !fsType) continue;
+            if (SKIP_FS.has(fsType)) continue;
+            if (!device.startsWith('/dev/')) continue;
+            if (!DATA_FS.has(fsType)) continue;
+            // Ignorar rutas del sistema operativo
+            if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
+            if (!fs.existsSync(mountPoint)) continue;
+
+            let sizeGB = null, freeGB = null;
+            try {
+                const stat = fs.statfsSync(mountPoint);
+                sizeGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
+                freeGB = ((stat.bfree  * stat.bsize) / 1e9).toFixed(1);
+            } catch(e) {}
+
+            // Intentar obtener label del dispositivo
+            let label = '';
+            try {
+                const { execSync } = require('child_process');
+                label = execSync(`blkid -s LABEL -o value ${device} 2>/dev/null`, { timeout: 2000 }).toString().trim();
+            } catch(e) {}
+
+            partitions.push({ device, mountPoint, fsType, sizeGB, freeGB, label });
+        }
+    } catch(e) {
+        console.error('[STORAGE] Error leyendo /proc/mounts:', e.message);
+    }
+
+    // También incluir particiones no montadas del NVMe/USB (lsblk)
+    try {
+        const { execSync } = require('child_process');
+        const lsblk = execSync('lsblk -J -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,TYPE 2>/dev/null', { timeout: 3000 }).toString();
+        const data = JSON.parse(lsblk);
+        const systemDev = execSync('lsblk -no PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -1', { timeout: 2000 }).toString().trim();
+
+        function walkBlk(items, parentDisk) {
+            for (const item of (items || [])) {
+                const disk = item.type === 'disk' ? item.name : parentDisk;
+                if (item.type === 'part' && item.fstype && DATA_FS.has(item.fstype)) {
+                    const alreadyListed = partitions.some(p => p.device === `/dev/${item.name}`);
+                    const isMounted = item.mountpoint && SKIP_PFX.some(p => item.mountpoint === p || item.mountpoint.startsWith(p + '/'));
+                    if (!alreadyListed && !isMounted) {
+                        partitions.push({
+                            device: `/dev/${item.name}`,
+                            mountPoint: item.mountpoint || null,
+                            fsType: item.fstype,
+                            sizeGB: item.size ? parseFloat(item.size).toFixed(0) : null,
+                            freeGB: null,
+                            label: item.label || '',
+                            unmounted: !item.mountpoint
+                        });
+                    }
+                }
+                if (item.children) walkBlk(item.children, disk);
+            }
+        }
+        walkBlk(data.blockdevices, '');
+    } catch(e) {
+        // lsblk JSON puede no estar disponible en todos los sistemas — silencioso
+    }
+
+    res.json(partitions);
+});
+
+// Seleccionar partición de grabaciones y guardarla en DB
+app.post('/api/storage/select', (req, res) => {
+    const { mountPoint, device } = req.body;
+    if (!mountPoint && !device) return res.status(400).json({ error: 'Falta mountPoint o device' });
+
+    let targetMount = mountPoint;
+
+    // Si la partición no está montada, montarla primero en /mnt/recordings
+    if (!targetMount && device) {
+        const { execSync } = require('child_process');
+        const mntPoint = '/mnt/recordings';
+        try {
+            fs.mkdirSync(mntPoint, { recursive: true });
+            execSync(`mount ${device} ${mntPoint} 2>/dev/null || mount -t ntfs-3g ${device} ${mntPoint}`, { timeout: 10000 });
+            console.log(`[STORAGE] Montada ${device} en ${mntPoint}`);
+
+            // Añadir a fstab para persistencia
+            const uuid = execSync(`blkid -s UUID -o value ${device} 2>/dev/null`, { timeout: 2000 }).toString().trim();
+            const fstype = execSync(`blkid -s TYPE -o value ${device} 2>/dev/null`, { timeout: 2000 }).toString().trim() || 'auto';
+            if (uuid && !fs.readFileSync('/etc/fstab', 'utf8').includes(uuid)) {
+                fs.appendFileSync('/etc/fstab', `\nUUID=${uuid}  ${mntPoint}  ${fstype}  defaults,nofail  0  2\n`);
+                console.log(`[STORAGE] Montaje permanente añadido a /etc/fstab (UUID=${uuid})`);
+            }
+            targetMount = mntPoint;
+        } catch(e) {
+            console.error('[STORAGE] Error montando partición:', e.message);
+            return res.status(500).json({ error: `No se pudo montar ${device}: ${e.message}` });
+        }
+    }
+
+    if (!targetMount || !fs.existsSync(targetMount)) {
+        return res.status(400).json({ error: `Ruta no existe: ${targetMount}` });
+    }
+
+    // Crear subdirectorio recordings dentro del punto de montaje si no existe
+    const recDir = path.join(targetMount, 'recordings');
+    try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+
+    const finalPath = recDir;
+
+    // Guardar en DB
+    db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', ?)", [finalPath], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+
+        // Actualizar en caliente
+        mediaRoot = finalPath;
+        registerMediaStatic(mediaRoot);
+        console.log(`[STORAGE] Disco de grabación seleccionado: ${mediaRoot}`);
+
+        let freeGB = null;
+        try {
+            const stat = fs.statfsSync(targetMount);
+            freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+        } catch(e) {}
+
+        res.json({ ok: true, path: mediaRoot, freeGB });
+    });
+});
+
 
 /* =======================================
  *  API: LANZAR MONITOR EN SEGUNDO DISPLAY (Linux)
