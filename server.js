@@ -1739,10 +1739,36 @@ app.get('/api/network', (req, res) => {
     const getFallbackNetworkData = (errorMsg) => {
         const interfaces = os.networkInterfaces();
         let ip = '';
-        for (const name of Object.keys(interfaces)) {
+        let cidr = '24';
+        
+        // Priorizar nombres de interfaz físicos reales (eth, eno, enp, ens, wlan, wlp)
+        const keys = Object.keys(interfaces).sort((a, b) => {
+            const aIsPhys = /^(eth|eno|enp|ens|wlan|wlp)/i.test(a);
+            const bIsPhys = /^(eth|eno|enp|ens|wlan|wlp)/i.test(b);
+            if (aIsPhys && !bIsPhys) return -1;
+            if (!aIsPhys && bIsPhys) return 1;
+            return 0;
+        });
+
+        for (const name of keys) {
+            // Ignorar explícitamente loopback, docker y puentes virtuales
+            if (name.startsWith('lo') || name.startsWith('docker') || name.startsWith('veth') || name.startsWith('br-')) {
+                continue;
+            }
             for (const iface of interfaces[name]) {
                 if (iface.family === 'IPv4' && !iface.internal) {
                     ip = iface.address;
+                    if (iface.cidr && iface.cidr.includes('/')) {
+                        cidr = iface.cidr.split('/')[1];
+                    } else if (iface.netmask) {
+                        const maskParts = iface.netmask.split('.');
+                        let count = 0;
+                        for (let p of maskParts) {
+                            const val = parseInt(p, 10);
+                            count += val.toString(2).replaceAll('0', '').length;
+                        }
+                        cidr = count.toString();
+                    }
                     break;
                 }
             }
@@ -1790,7 +1816,7 @@ app.get('/api/network', (req, res) => {
             connectionName: '',
             mode: 'auto',
             ip: ip || '127.0.0.1',
-            cidr: '24',
+            cidr: cidr,
             gateway: gateway || '',
             dns: dns || '',
             isFallback: true,
@@ -1883,22 +1909,34 @@ app.get('/api/network', (req, res) => {
                 const details = stdout3.trim().split('\n').reduce((acc, line) => {
                     const parts = line.split(':');
                     if (parts.length >= 2) {
-                        const key = parts[0].trim();
+                        const key = parts[0].trim().toUpperCase();
                         const val = parts.slice(1).join(':').replace(/\\/g, '').trim();
                         acc[key] = val;
                     }
                     return acc;
                 }, {});
                 
-                const addressRaw = details['IP4.ADDRESS[1]'] || details['IP4.ADDRESS'] || '';
+                let addressRaw = '';
+                for (let k of Object.keys(details)) {
+                    if (k.startsWith('IP4.ADDRESS')) {
+                        addressRaw = details[k];
+                        break;
+                    }
+                }
+                
                 const [ip, cidr] = addressRaw.split('/');
                 
-                const gateway = details['IP4.GATEWAY'] || '';
+                let gateway = '';
+                for (let k of Object.keys(details)) {
+                    if (k.startsWith('IP4.GATEWAY')) {
+                        gateway = details[k];
+                        break;
+                    }
+                }
                 
-                // Obtener todos los DNS activos (de forma insensible a mayúsculas)
                 const dnsList = [];
                 for (let k of Object.keys(details)) {
-                    if (k.toUpperCase().startsWith('IP4.DNS')) {
+                    if (k.startsWith('IP4.DNS')) {
                         dnsList.push(details[k]);
                     }
                 }
