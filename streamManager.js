@@ -108,8 +108,11 @@ function startInput(inputObj) {
     let lastParseTime = 0;
     let codecFound = false;
     
+    const errorLogBuffer = [];
     child.stderr.on('data', (data) => {
         const out = data.toString();
+        errorLogBuffer.push(out);
+        if (errorLogBuffer.length > 30) errorLogBuffer.shift();
         
         // Extraer codec en cuanto aparezca (suele estar en los primeros chunks, no limitarlo por tiempo)
         if (!codecFound) {
@@ -205,6 +208,9 @@ function startInput(inputObj) {
 
     child.on('close', (code) => {
         console.log(`Input ${channel} exited with code ${code}`);
+        if (code !== 0 && !intentionalStop) {
+            console.error(`[FFMPEG CRASH CH-${channel}] Last log output:\n${errorLogBuffer.join('')}`);
+        }
         // Shutdown router safely
         if (router.subscribers) {
             for (const sub of router.subscribers) {

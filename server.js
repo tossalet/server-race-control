@@ -1724,7 +1724,11 @@ app.put('/api/ports', (req, res) => {
 });
 
 app.get('/api/time', (req, res) => {
-    res.json({ time: new Date().toISOString() });
+    const d = new Date();
+    res.json({ 
+        time: d.toISOString(),
+        timezoneOffset: d.getTimezoneOffset()
+    });
 });
 
 /* =======================================
