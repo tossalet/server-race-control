@@ -152,32 +152,63 @@ npm install --omit=dev
 npm install dotenv ws --save 2>/dev/null || true
 
 # =============================================================================
-#  PASO 7 — Detectar y montar disco externo
+#  PASO 7 — Detectar y montar partición de grabaciones
 # =============================================================================
-echo "💽 7/11 — Detectando disco externo para grabaciones..."
+echo "💽 7/11 — Detectando partición de grabaciones..."
 SYSTEM_DEV=$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -1 || echo "")
 EXT_PART=""
+EXT_PART_SIZE=0
 
+# Buscar la partición no-sistema más grande disponible (sin montar y con sistema de archivos de datos)
+# Esto maneja el caso del NVMe con Windows (~100GB) + partición de grabaciones (~400GB)
+# La lógica toma la más grande para evitar elegir la de Windows o la de EFI
 while IFS= read -r line; do
-    DEV=$(echo "$line" | awk '{print $1}')
+    DEV=$(echo "$line"  | awk '{print $1}')
+    SIZE=$(echo "$line" | awk '{print $2}')
     TYPE=$(echo "$line" | awk '{print $4}')
     MOUNT=$(echo "$line" | awk '{print $5}')
     PKNAME=$(lsblk -no PKNAME "/dev/$DEV" 2>/dev/null | head -1)
+
     [ "$TYPE" != "part" ] && continue
-    [ -n "$MOUNT" ] && continue
-    [ "$PKNAME" = "$SYSTEM_DEV" ] && continue
+    # Saltar particiones ya montadas en rutas del sistema
+    if [ -n "$MOUNT" ]; then
+        echo "$MOUNT" | grep -qE '^(/|/boot|/efi|/home|/usr|/var|/opt|/snap)' && continue
+    fi
     [[ "$DEV" == loop* || "$DEV" == zram* ]] && continue
-    EXT_PART="/dev/$DEV"
-    echo "   Encontrado: $EXT_PART"
-    break
+
+    # Obtener sistema de archivos
+    FSTYPE=$(blkid -s TYPE -o value "/dev/$DEV" 2>/dev/null || echo "")
+    # Solo particiones de datos (excluir EFI, swap, etc.)
+    echo "$FSTYPE" | grep -qiE '^(ext4|ext3|ext2|vfat|exfat|ntfs|xfs|btrfs|f2fs)$' || continue
+
+    # Convertir tamaño a bytes para comparar (lsblk devuelve cosas como "400G", "27G")
+    SIZE_BYTES=$(lsblk -b -no SIZE "/dev/$DEV" 2>/dev/null | head -1 || echo 0)
+    [ -z "$SIZE_BYTES" ] && SIZE_BYTES=0
+
+    if [ "$SIZE_BYTES" -gt "$EXT_PART_SIZE" ]; then
+        EXT_PART_SIZE=$SIZE_BYTES
+        EXT_PART="/dev/$DEV"
+        echo "   Candidato: $EXT_PART ($SIZE, $FSTYPE)"
+    fi
 done < <(lsblk -o NAME,SIZE,RM,TYPE,MOUNTPOINT -rn 2>/dev/null)
 
 MEDIA_ROOT=""
 if [ -n "$EXT_PART" ]; then
+    echo "   Seleccionada para grabaciones: $EXT_PART"
     mkdir -p "$MOUNT_POINT"
     if ! mountpoint -q "$MOUNT_POINT"; then
-        mount "$EXT_PART" "$MOUNT_POINT" 2>/dev/null && echo "   Montado en $MOUNT_POINT" \
-            || echo "   No se pudo montar automáticamente — configura desde Ajustes."
+        # Intentar montar; ntfs-3g para particiones NTFS de Windows
+        FSTYPE_REAL=$(blkid -s TYPE -o value "$EXT_PART" 2>/dev/null || echo auto)
+        if echo "$FSTYPE_REAL" | grep -qi ntfs; then
+            mount -t ntfs-3g "$EXT_PART" "$MOUNT_POINT" 2>/dev/null \
+                || mount "$EXT_PART" "$MOUNT_POINT" 2>/dev/null \
+                && echo "   Montado (NTFS) en $MOUNT_POINT" \
+                || echo "   No se pudo montar — configura desde Ajustes del panel web."
+        else
+            mount "$EXT_PART" "$MOUNT_POINT" 2>/dev/null \
+                && echo "   Montado en $MOUNT_POINT" \
+                || echo "   No se pudo montar — configura desde Ajustes del panel web."
+        fi
     fi
     if mountpoint -q "$MOUNT_POINT"; then
         MEDIA_ROOT="$MOUNT_POINT"
@@ -189,7 +220,7 @@ if [ -n "$EXT_PART" ]; then
         fi
     fi
 else
-    echo "   Sin disco externo detectado — configura MEDIA_ROOT en $APP_DIR/.env cuando conectes uno."
+    echo "   Sin partición de datos externa detectada — configura desde Ajustes del panel web."
 fi
 
 # =============================================================================
