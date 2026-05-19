@@ -1793,49 +1793,84 @@ app.get('/api/network', (req, res) => {
         };
     };
     
-    exec('nmcli -t -f NAME,TYPE,STATE con show --active', (err, stdout) => {
+    exec('nmcli -t -f NAME,DEVICE,TYPE con show --active', (err, stdout) => {
         if (err || !stdout) {
             return res.json(getFallbackNetworkData('NetworkManager no disponible o inactivo'));
         }
         
         const lines = stdout.trim().split('\n');
         let activeConn = null;
+        let activeDev = null;
         for (let line of lines) {
-            const [name, type, state] = line.split(':');
-            // Añadido soporte para WiFi (802-11-wireless, wifi) y puentes de red (bridge) además de Ethernet
-            if ((type === '802-3-ethernet' || type === 'ethernet' || type === '802-11-wireless' || type === 'wifi' || type === 'bridge') && state === 'activated') {
-                activeConn = name;
-                break;
+            const parts = line.split(':');
+            if (parts.length >= 3) {
+                const name = parts[0];
+                const device = parts[1];
+                const type = parts[2];
+                // Soporte para Ethernet, WiFi y Bridges
+                if (type === '802-3-ethernet' || type === 'ethernet' || type === '802-11-wireless' || type === 'wifi' || type === 'bridge') {
+                    activeConn = name;
+                    activeDev = device;
+                    break;
+                }
             }
         }
         
-        if (!activeConn) {
+        if (!activeConn || !activeDev) {
             return res.json(getFallbackNetworkData('No se encontró conexión de red activa compatible con nmcli'));
         }
         
-        exec(`nmcli -t -f ipv4.method,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS con show "${activeConn}"`, (err2, stdout2) => {
-            if (err2 || !stdout2) {
-                return res.json(getFallbackNetworkData('Error leyendo la configuración con nmcli'));
+        // 1. Obtener la configuración del método (auto o manual) desde el perfil de conexión
+        exec(`nmcli -t -f ipv4.method con show "${activeConn}"`, (err2, stdout2) => {
+            let mode = 'auto';
+            if (!err2 && stdout2) {
+                const lines2 = stdout2.trim().split('\n');
+                for (let l of lines2) {
+                    if (l.startsWith('ipv4.method:')) {
+                        const m = l.replace('ipv4.method:', '').trim();
+                        if (m === 'manual') mode = 'manual';
+                    }
+                }
             }
             
-            const details = stdout2.trim().split('\n').reduce((acc, line) => {
-                const parts = line.split(':');
-                acc[parts[0]] = parts.slice(1).join(':');
-                return acc;
-            }, {});
-            
-            const addressRaw = details['IP4.ADDRESS[1]'] || details['IP4.ADDRESS'] || '';
-            const [ip, cidr] = addressRaw.split('/');
-            
-            res.json({
-                ok: true,
-                connectionName: activeConn,
-                mode: details['ipv4.method'] === 'manual' ? 'manual' : 'auto',
-                ip: ip || '',
-                cidr: cidr || '24',
-                gateway: details['IP4.GATEWAY'] || '',
-                dns: details['IP4.DNS[1]'] || details['IP4.DNS'] || '',
-                isFallback: false
+            // 2. Obtener la IP, gateway y DNS activos reales del dispositivo en ejecución
+            exec(`nmcli -t dev show "${activeDev}"`, (err3, stdout3) => {
+                if (err3 || !stdout3) {
+                    return res.json(getFallbackNetworkData('Error leyendo detalles del dispositivo con nmcli'));
+                }
+                
+                const details = stdout3.trim().split('\n').reduce((acc, line) => {
+                    const parts = line.split(':');
+                    const key = parts[0];
+                    const val = parts.slice(1).join(':');
+                    acc[key] = val;
+                    return acc;
+                }, {});
+                
+                const addressRaw = details['IP4.ADDRESS[1]'] || details['IP4.ADDRESS'] || '';
+                const [ip, cidr] = addressRaw.split('/');
+                
+                const gateway = details['IP4.GATEWAY'] || '';
+                
+                // Obtener todos los DNS activos
+                const dnsList = [];
+                for (let k of Object.keys(details)) {
+                    if (k.startsWith('IP4.DNS')) {
+                        dnsList.push(details[k]);
+                    }
+                }
+                const dns = dnsList.join(', ');
+                
+                res.json({
+                    ok: true,
+                    connectionName: activeConn,
+                    mode: mode,
+                    ip: ip || '',
+                    cidr: cidr || '24',
+                    gateway: gateway || '',
+                    dns: dns || '',
+                    isFallback: false
+                });
             });
         });
     });
