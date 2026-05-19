@@ -3,8 +3,13 @@
 #  Race Control Server — Instalador Todo-en-Uno
 #  Incluye: servidor, disco externo, Plymouth, Kiosko multi-monitor
 #  Uso: sudo bash instalar_servidor.sh
-#  Compatible: Raspberry Pi OS (bookworm), Ubuntu 22/24 LTS
+#  Compatible: Raspberry Pi OS (bookworm), Ubuntu 22/24 LTS, Debian 12 (Bookworm)
 # =============================================================================
+
+# ── Detectar distribución ────────────────────────────────────────────────────
+DISTRO_ID=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+DISTRO_VER=$(grep '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+echo "   Distribución detectada: ${DISTRO_ID} ${DISTRO_VER}"
 
 # ── Comprobación de root ──────────────────────────────────────────────────────
 if [ "$EUID" -ne 0 ]; then
@@ -81,17 +86,37 @@ rm -rf "$APP_DIR"
 #  PASO 2 — Dependencias del sistema
 # =============================================================================
 echo "🛠️  2/11 — Instalando dependencias del sistema..."
+
+# ── Paquetes base comunes ─────────────────────────────────────────────────────
 apt-get install -y \
     ffmpeg curl git build-essential \
-    ntfs-3g exfatprogs udevil udisks2 \
+    ntfs-3g udevil udisks2 \
     plymouth plymouth-themes \
     xserver-xorg openbox lightdm feh \
     unclutter xdotool 2>/dev/null || true
 
-# Navegador para Kiosko:
-#  - x86_64 (i7): intenta Google Chrome primero (H.264 nativo, aceleración HW)
-#  - ARM (Raspberry Pi): Chromium + codecs extra para H.264
+# ── Soporte exFAT: exfatprogs (kernel nativo) con fallback a exfat-fuse ───────
+if apt-get install -y exfatprogs 2>/dev/null; then
+    echo "   exFAT: exfatprogs instalado (driver kernel nativo)"
+elif apt-get install -y exfat-fuse exfat-utils 2>/dev/null; then
+    echo "   exFAT: exfat-fuse instalado (FUSE)"
+else
+    echo "   ⚠️  exFAT: no se pudo instalar soporte exFAT"
+fi
+
+# ── VAAPI (aceleración hardware Intel iGPU) ───────────────────────────────────
 ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+    # Intel 6ª gen+ (Skylake → Alder Lake): intel-media-va-driver
+    # Intel ≤5ª gen (Broadwell y anteriores): i965-va-driver
+    apt-get install -y vainfo intel-media-va-driver 2>/dev/null || \
+    apt-get install -y vainfo i965-va-driver         2>/dev/null || true
+    echo "   VAAPI: driver Intel instalado"
+fi
+
+# ── Navegador para Kiosko ─────────────────────────────────────────────────────
+#  - x86_64 (i7): Google Chrome primero (H.264 nativo, aceleración HW)
+#  - ARM (Raspberry Pi): Chromium + codecs extra
 if [ "$ARCH" = "x86_64" ]; then
     if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
         echo "   Descargando Google Chrome para x86_64..."
@@ -101,7 +126,9 @@ if [ "$ARCH" = "x86_64" ]; then
             rm -f /tmp/google-chrome.deb || \
             echo "   Chrome no disponible, usando Chromium."
     fi
-    apt-get install -y chromium-browser 2>/dev/null || apt-get install -y chromium 2>/dev/null || true
+    # Debian: paquete se llama 'chromium' (no 'chromium-browser')
+    apt-get install -y chromium 2>/dev/null || \
+    apt-get install -y chromium-browser 2>/dev/null || true
 else
     # Raspberry Pi / ARM: Chromium + códecs H.264
     apt-get install -y chromium-browser chromium-codecs-ffmpeg-extra 2>/dev/null || \
