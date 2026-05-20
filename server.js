@@ -207,22 +207,32 @@ app.get('/thumbs/:filename', (req, res, next) => {
     if (!match) {
         return next();
     }
-    const channel = match[1];
+    const channel = parseInt(match[1]);
     const filePath = path.join(__dirname, 'public', 'thumbs', filename);
+
+    // Comprobar si el canal está realmente online y recibiendo datos
+    const routerState = streamManager.activeInputs[channel];
+    const isOnline = !!(routerState && routerState.router && !routerState.isStopping && (Date.now() - (routerState.lastUpdate || 0) < 8000));
+
+    const serveFallback = () => {
+        const fallbackPath = path.join(__dirname, 'public', 'images', 'bars.svg');
+        fs.readFile(fallbackPath, (err2, fallbackData) => {
+            if (!err2) {
+                res.setHeader('Content-Type', 'image/svg+xml');
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                return res.send(fallbackData);
+            }
+            return res.status(404).send('Not found');
+        });
+    };
+
+    if (!isOnline) {
+        delete thumbCache[channel];
+        fs.unlink(filePath, () => {});
+        return serveFallback();
+    }
     
     fs.readFile(filePath, (err, data) => {
-        const serveFallback = () => {
-            const fallbackPath = path.join(__dirname, 'public', 'images', 'bars.svg');
-            fs.readFile(fallbackPath, (err2, fallbackData) => {
-                if (!err2) {
-                    res.setHeader('Content-Type', 'image/svg+xml');
-                    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                    return res.send(fallbackData);
-                }
-                return res.status(404).send('Not found');
-            });
-        };
-
         if (err) {
             if (thumbCache[channel]) {
                 res.setHeader('Content-Type', 'image/jpeg');

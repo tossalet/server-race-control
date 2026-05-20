@@ -411,6 +411,11 @@ function stopPreview(channel) {
             inp.prevSubscriber = null;
         }
     }
+    // Borrar el archivo de imagen de previsualización para no servir capturas obsoletas
+    const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`);
+    if (fs.existsSync(extPath)) {
+        try { fs.unlinkSync(extPath); } catch(e){}
+    }
 }
 
 /**
