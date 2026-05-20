@@ -215,13 +215,17 @@ app.get('/thumbs/thumb_:channel.jpg', (req, res) => {
             return res.status(404).send('Not found');
         }
         
-        // Verificar si es un JPEG válido escaneando el marcador EOI (0xFF 0xD9) en los últimos bytes
+        // Verificar si es un JPEG válido (debe empezar con SOI 0xFFD8 y terminar con EOI 0xFFD9)
         let isValidJpeg = false;
-        if (data.length > 10) {
-            for (let i = data.length - 10; i < data.length - 1; i++) {
-                if (data[i] === 0xFF && data[i+1] === 0xD9) {
-                    isValidJpeg = true;
-                    break;
+        if (data.length > 2) {
+            const hasStart = data[0] === 0xFF && data[1] === 0xD8;
+            if (hasStart) {
+                const limit = Math.max(0, data.length - 200);
+                for (let i = data.length - 2; i >= limit; i--) {
+                    if (data[i] === 0xFF && data[i+1] === 0xD9) {
+                        isValidJpeg = true;
+                        break;
+                    }
                 }
             }
         }
