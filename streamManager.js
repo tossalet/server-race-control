@@ -294,10 +294,7 @@ function startPreview(channel, singleFrame = false) {
     if (!activeInputs[channel] || !activeInputs[channel].router) return;
     if (activeInputs[channel].prevProcess) stopPreview(channel);
 
-    const prevPort = 30000 + Math.floor(Math.random() * 30000);
-    activeInputs[channel].prevPort = prevPort;
-
-    const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`);
+    const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const ffmpegCmd = getFFmpegPath();
     const args = [ '-hide_banner', '-y' ];
     const inputObj = activeInputs[channel].inputObj || {};
@@ -320,20 +317,19 @@ function startPreview(channel, singleFrame = false) {
         const rtspUrl = `rtsp://${auth}${host}:${port}/cam/realmonitor?channel=1&subtype=1&unicast=true`;
         
         args.push('-rtsp_transport', 'tcp', '-i', rtspUrl);
-        // We do not need -skip_frame nokey for substream because it's low resolution and we need fast extraction
     } else {
-        args.push('-skip_frame', 'nokey', '-i', `tcp://127.0.0.1:${prevPort}?listen`);
+        args.push('-skip_frame', 'nokey', '-f', 'mpegts', '-i', '-');
     }
 
-    // Usamos -map 0:v? solo si no conocemos el layout exacto (seguro para el multiplexer interno)
     if (!useSubstream) {
         args.push('-map', '0:v?');
     }
 
+    const outPath = extPath + '.jpg';
     if (singleFrame) {
-        args.push('-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', extPath);
+        args.push('-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', outPath);
     } else {
-        args.push('-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', extPath);
+        args.push('-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', outPath);
     }
 
     const child = spawn(ffmpegCmd, args);
@@ -343,22 +339,27 @@ function startPreview(channel, singleFrame = false) {
         console.error(`[PREVIEW ERROR CH-${channel}] Failed to run ffmpeg:`, err.message);
     });
 
-    // Connect Node to the FFmpeg preview TCP listener ONLY IF we are using the internal multiplexer
     if (!useSubstream) {
-        setTimeout(() => {
-            if (child.exitCode === null && activeInputs[channel] && activeInputs[channel].router) {
-                const net = require('net');
-                const sock = new net.Socket();
-                sock.connect(prevPort, '127.0.0.1', () => {
-                    if (activeInputs[channel] && activeInputs[channel].router) {
-                        activeInputs[channel].router.subscribers.add(sock);
-                    }
-                });
-                sock.on('error', () => { if (activeInputs[channel] && activeInputs[channel].router) activeInputs[channel].router.subscribers.delete(sock); });
-                sock.on('close', () => { if (activeInputs[channel] && activeInputs[channel].router) activeInputs[channel].router.subscribers.delete(sock); });
-                activeInputs[channel].prevSocket = sock;
+        if (child.stdin) {
+            child.stdin.on('error', (err) => {
+                // Silenciar errores de tubería rota
+            });
+        }
+        const subObj = {
+            writableLength: 0,
+            write(chunk) {
+                if (child.killed || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
+                this.writableLength = child.stdin.writableLength;
+                try {
+                    child.stdin.write(chunk);
+                } catch (e) {}
+            },
+            destroy() {
+                try { child.kill('SIGKILL'); } catch(e) {}
             }
-        }, 1500);
+        };
+        activeInputs[channel].router.subscribers.add(subObj);
+        activeInputs[channel].prevSubscriber = subObj;
     }
 
     if (singleFrame) {
@@ -367,7 +368,12 @@ function startPreview(channel, singleFrame = false) {
 
     child.on('close', () => {
         if (activeInputs[channel]) {
-            if (activeInputs[channel].prevSocket) activeInputs[channel].prevSocket.destroy();
+            if (activeInputs[channel].prevSubscriber) {
+                if (activeInputs[channel].router) {
+                    activeInputs[channel].router.subscribers.delete(activeInputs[channel].prevSubscriber);
+                }
+                activeInputs[channel].prevSubscriber = null;
+            }
             if (activeInputs[channel].prevProcess === child) activeInputs[channel].prevProcess = null;
         }
     });
@@ -375,13 +381,15 @@ function startPreview(channel, singleFrame = false) {
 
 function stopPreview(channel) {
     const inp = activeInputs[channel];
-    if (inp && inp.prevProcess) {
-        inp.prevProcess.kill('SIGKILL');
-        if (inp.prevSocket) {
-            inp.prevSocket.destroy();
-            if (inp.router) inp.router.subscribers.delete(inp.prevSocket);
+    if (inp) {
+        if (inp.prevProcess) {
+            try { inp.prevProcess.kill('SIGKILL'); } catch(e) {}
+            inp.prevProcess = null;
         }
-        inp.prevProcess = null;
+        if (inp.prevSubscriber) {
+            if (inp.router) inp.router.subscribers.delete(inp.prevSubscriber);
+            inp.prevSubscriber = null;
+        }
     }
 }
 

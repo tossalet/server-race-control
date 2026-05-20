@@ -201,18 +201,35 @@ const thumbsDir = path.join(__dirname, 'public', 'thumbs');
 if (!fs.existsSync(thumbsDir)) {
     try { fs.mkdirSync(thumbsDir, { recursive: true }); } catch(e){}
 }const thumbCache = {};
-app.get('/thumbs/thumb_:channel.jpg', (req, res) => {
-    const channel = req.params.channel;
-    const filePath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`);
+app.get('/thumbs/:filename', (req, res, next) => {
+    const filename = req.params.filename;
+    const match = filename.match(/^thumb_(\d+)\.jpg$/);
+    if (!match) {
+        return next();
+    }
+    const channel = match[1];
+    const filePath = path.join(__dirname, 'public', 'thumbs', filename);
     
     fs.readFile(filePath, (err, data) => {
+        const serveFallback = () => {
+            const fallbackPath = path.join(__dirname, 'public', 'images', 'bars.svg');
+            fs.readFile(fallbackPath, (err2, fallbackData) => {
+                if (!err2) {
+                    res.setHeader('Content-Type', 'image/svg+xml');
+                    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                    return res.send(fallbackData);
+                }
+                return res.status(404).send('Not found');
+            });
+        };
+
         if (err) {
             if (thumbCache[channel]) {
                 res.setHeader('Content-Type', 'image/jpeg');
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
                 return res.send(thumbCache[channel]);
             }
-            return res.status(404).send('Not found');
+            return serveFallback();
         }
         
         // Verificar si es un JPEG válido (debe empezar con SOI 0xFFD8 y terminar con EOI 0xFFD9)
@@ -242,9 +259,7 @@ app.get('/thumbs/thumb_:channel.jpg', (req, res) => {
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
                 return res.send(thumbCache[channel]);
             }
-            res.setHeader('Content-Type', 'image/jpeg');
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-            return res.send(data);
+            return serveFallback();
         }
     });
 });
@@ -1506,11 +1521,12 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         'Pragma': 'no-cache'
     });
     
-    // Si el codec es H.264, no hay necesidad de transcodificar; servimos el flujo crudo directo con 0% CPU
-    const isH264 = routerState.codec === 'H.264';
+    // Solo transcodificamos si el códec ha sido detectado explícitamente como H.265/HEVC.
+    // Para H.264, o si no se ha detectado el códec aún (undefined/vacío), usamos streaming directo (0% CPU, cero latencia).
+    const mustTranscode = routerState.codec === 'H.265';
     
-    if (isH264) {
-        originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming directo (sin transcodificación, H.264)`);
+    if (!mustTranscode) {
+        originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming directo (sin transcodificación, codec: ${routerState.codec || 'no detectado aún'})`);
         routerState.router.subscribers.add(res);
         
         const cleanup = () => {
@@ -1524,8 +1540,8 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         return;
     }
     
-    // Si el codec es H.265/HEVC o desconocido, transcodificamos a H.264
-    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado vía transcodificación FFmpeg (codec: ${routerState.codec || 'desconocido'})`);
+    // Si el codec es H.265/HEVC, transcodificamos a H.264 para compatibilidad del navegador
+    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado vía transcodificación FFmpeg (codec: ${routerState.codec})`);
     
     const { spawn } = require('child_process');
     const ffmpegCmd = streamManager.getFFmpegPath();
