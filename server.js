@@ -277,7 +277,15 @@ app.get('/thumbs/:filename', (req, res, next) => {
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+    }
+}));
 
 // NOTA: /media se registra dinámicamente desde registerMediaStatic() al inicializar
 // o al seleccionar un disco en /api/storage/select. No hay bloque estático aquí.
