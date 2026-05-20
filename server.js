@@ -519,7 +519,14 @@ app.get('/api/logs/download', (req, res) => {
 app.get('/api/inputs', (req, res) => {
     db.all('SELECT * FROM inputs ORDER BY channel ASC', [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
+        const decorated = rows.map(row => {
+            const isRunning = streamManager.activeInputs[row.channel] && !streamManager.activeInputs[row.channel].isStopping;
+            return {
+                ...row,
+                online: !!isRunning
+            };
+        });
+        res.json(decorated);
     });
 });
 
