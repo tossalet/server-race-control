@@ -18,6 +18,7 @@ const OUTPUTS_ENABLED = false;
 const activeInputs = {};
 const activeOutputs = {};
 const telemetryCache = {};
+const persistentCodecs = {};
 
 
 // Locate FFmpeg binary (handles Windows local download vs Linux global)
@@ -122,8 +123,18 @@ function startInput(inputObj) {
                 if (parsedCodec === 'HEVC') parsedCodec = 'H.265';
                 else if (parsedCodec === 'H264') parsedCodec = 'H.264';
                 
-                activeInputs[channel].codec = parsedCodec;
                 codecFound = true;
+                
+                if (activeInputs[channel].codec !== parsedCodec) {
+                    activeInputs[channel].codec = parsedCodec;
+                    persistentCodecs[channel] = parsedCodec;
+                    
+                    const db = require('./db');
+                    db.run("UPDATE inputs SET codec = ? WHERE channel = ?", [parsedCodec, channel], (err) => {
+                        if (err) console.error(`[DB-CODEC] Error updating codec for Ch${channel}:`, err.message);
+                        else console.log(`[DB-CODEC] Ch${channel} codec updated to ${parsedCodec} in DB`);
+                    });
+                }
             }
         }
 
@@ -279,7 +290,16 @@ function startInput(inputObj) {
         }
     });
 
-    activeInputs[channel] = { process: child, router: router, lastUpdate: Date.now(), inputObj: inputObj, isStopping: false, prevProcess: null, prevPort: null };
+    activeInputs[channel] = { 
+        process: child, 
+        router: router, 
+        lastUpdate: Date.now(), 
+        inputObj: inputObj, 
+        isStopping: false, 
+        prevProcess: null, 
+        prevPort: null,
+        codec: inputObj.codec || persistentCodecs[channel] || ''
+    };
     
     if (inputObj.preview_enabled !== 0) {
         startPreview(channel, false);
@@ -743,5 +763,6 @@ module.exports = {
     getTotalBitrates,
     activeInputs,
     activeOutputs,
-    getFFmpegPath
+    getFFmpegPath,
+    persistentCodecs
 };

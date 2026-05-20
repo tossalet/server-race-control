@@ -34,12 +34,14 @@ function initDB() {
             enabled INTEGER NOT NULL DEFAULT 1,
             udpsrv INTEGER NOT NULL DEFAULT 0,
             preview_enabled INTEGER NOT NULL DEFAULT 1,
-            buffer INTEGER NOT NULL DEFAULT 0
+            buffer INTEGER NOT NULL DEFAULT 0,
+            codec TEXT NOT NULL DEFAULT ''
         )`);
 
         // Migration for inputs
         db.run("ALTER TABLE inputs ADD COLUMN preview_enabled INTEGER NOT NULL DEFAULT 1", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN buffer INTEGER NOT NULL DEFAULT 0", () => {});
+        db.run("ALTER TABLE inputs ADD COLUMN codec TEXT NOT NULL DEFAULT ''", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN ptz_enabled INTEGER NOT NULL DEFAULT 0", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN ptz_ip TEXT NOT NULL DEFAULT ''", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN ptz_user TEXT NOT NULL DEFAULT ''", () => {});
