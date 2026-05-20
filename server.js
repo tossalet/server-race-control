@@ -200,7 +200,50 @@ initMediaRoot();
 const thumbsDir = path.join(__dirname, 'public', 'thumbs');
 if (!fs.existsSync(thumbsDir)) {
     try { fs.mkdirSync(thumbsDir, { recursive: true }); } catch(e){}
-}
+}const thumbCache = {};
+app.get('/thumbs/thumb_:channel.jpg', (req, res) => {
+    const channel = req.params.channel;
+    const filePath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`);
+    
+    fs.readFile(filePath, (err, data) => {
+        if (err) {
+            if (thumbCache[channel]) {
+                res.setHeader('Content-Type', 'image/jpeg');
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                return res.send(thumbCache[channel]);
+            }
+            return res.status(404).send('Not found');
+        }
+        
+        // Verificar si es un JPEG válido escaneando el marcador EOI (0xFF 0xD9) en los últimos bytes
+        let isValidJpeg = false;
+        if (data.length > 10) {
+            for (let i = data.length - 10; i < data.length - 1; i++) {
+                if (data[i] === 0xFF && data[i+1] === 0xD9) {
+                    isValidJpeg = true;
+                    break;
+                }
+            }
+        }
+        
+        if (isValidJpeg) {
+            thumbCache[channel] = data;
+            res.setHeader('Content-Type', 'image/jpeg');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            return res.send(data);
+        } else {
+            // Si está incompleto o a medio escribir por FFmpeg, servimos el último válido de la caché
+            if (thumbCache[channel]) {
+                res.setHeader('Content-Type', 'image/jpeg');
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                return res.send(thumbCache[channel]);
+            }
+            res.setHeader('Content-Type', 'image/jpeg');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            return res.send(data);
+        }
+    });
+});
 
 // Middleware
 app.use(cors());
@@ -1459,6 +1502,27 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         'Pragma': 'no-cache'
     });
     
+    // Si el codec es H.264, no hay necesidad de transcodificar; servimos el flujo crudo directo con 0% CPU
+    const isH264 = routerState.codec === 'H.264';
+    
+    if (isH264) {
+        originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming directo (sin transcodificación, H.264)`);
+        routerState.router.subscribers.add(res);
+        
+        const cleanup = () => {
+            if (routerState && routerState.router) {
+                routerState.router.subscribers.delete(res);
+            }
+            if (!res.writableEnded) res.end();
+        };
+        
+        req.on('close', cleanup);
+        return;
+    }
+    
+    // Si el codec es H.265/HEVC o desconocido, transcodificamos a H.264
+    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado vía transcodificación FFmpeg (codec: ${routerState.codec || 'desconocido'})`);
+    
     const { spawn } = require('child_process');
     const ffmpegCmd = streamManager.getFFmpegPath();
     
@@ -1474,7 +1538,6 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-crf', '28',
-        '-vf', 'scale=-2:720', // Limitar resolución para optimizar rendimiento
         '-c:a', 'aac',
         '-b:a', '128k',
         '-f', 'mpegts',
@@ -1482,7 +1545,6 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     ];
     
     const child = spawn(ffmpegCmd, args);
-    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado vía stdin pipe`);
     
     if (child.stdin) {
         child.stdin.on('error', (err) => {
