@@ -1460,20 +1460,15 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     });
     
     const { spawn } = require('child_process');
-    const net = require('net');
     const ffmpegCmd = streamManager.getFFmpegPath();
     
-    // Asignar un puerto TCP efímero para conectar el router Node con FFmpeg
-    const prevPort = 50000 + Math.floor(Math.random() * 10000);
-    
-    // FFmpeg escucha en ese puerto TCP local, decodifica el stream (sea H.264 o H.265)
-    // y lo codifica en H.264 de bajísimo retardo para el navegador, volcándolo a stdout (pipe:1)
     const args = [
         '-hide_banner',
         '-y',
         '-fflags', '+genpts+discardcorrupt',
         '-err_detect', 'ignore_err',
-        '-i', `tcp://127.0.0.1:${prevPort}?listen`,
+        '-f', 'mpegts',
+        '-i', '-',
         '-map', '0:v?', '-map', '0:a?',
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
@@ -1487,43 +1482,37 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     ];
     
     const child = spawn(ffmpegCmd, args);
-    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado en puerto ${prevPort}`);
+    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado vía stdin pipe`);
     
-    let sock = null;
-    let connected = false;
+    if (child.stdin) {
+        child.stdin.on('error', (err) => {
+            // Silenciar errores de tubería rota (EPIPE)
+        });
+    }
+    child.on('error', (err) => {
+        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} error de proceso: ${err.message}`);
+    });
     
-    // Conectar el socket después de 1 segundo para dar tiempo a FFmpeg a escuchar
-    const connectTimeout = setTimeout(() => {
-        if (child.killed || child.exitCode !== null) return;
-        
-        sock = new net.Socket();
-        sock.connect(prevPort, '127.0.0.1', () => {
-            connected = true;
-            if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
-                streamManager.activeInputs[channel].router.subscribers.add(sock);
-            }
-        });
-        
-        sock.on('error', (err) => {
-            // Silenciar errores de conexión
-        });
-        
-        sock.on('close', () => {
-            if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
-                streamManager.activeInputs[channel].router.subscribers.delete(sock);
-            }
-        });
-    }, 1000);
+    const subObj = {
+        writableLength: 0,
+        write(chunk) {
+            if (child.killed || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
+            this.writableLength = child.stdin.writableLength;
+            try {
+                child.stdin.write(chunk);
+            } catch (e) {}
+        },
+        destroy() {
+            try { child.kill('SIGKILL'); } catch(e) {}
+        }
+    };
     
+    routerState.router.subscribers.add(subObj);
     child.stdout.pipe(res);
     
     const cleanup = () => {
-        clearTimeout(connectTimeout);
-        if (sock) {
-            sock.destroy();
-            if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
-                streamManager.activeInputs[channel].router.subscribers.delete(sock);
-            }
+        if (routerState && routerState.router) {
+            routerState.router.subscribers.delete(subObj);
         }
         try { child.kill('SIGKILL'); } catch(e) {}
         originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} finalizado`);
