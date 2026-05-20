@@ -1018,15 +1018,27 @@ app.post('/api/recordings/start', (req, res) => {
 
                 // FFmpeg lee del router (TCP local) en lugar de RTSP directo
                 // Evita abrir una 2ª conexión RTSP a la cámara (que la rechazaría)
+                const isH265 = inputState.codec === 'H.265';
+                const hlsCodecArgs = isH265
+                    ? [
+                        '-c:v', 'libx264',
+                        '-preset', 'ultrafast',
+                        '-tune', 'zerolatency',
+                        '-crf', '28',
+                      ]
+                    : [
+                        '-c:v', 'copy',
+                      ];
+
                 const args = [
                     '-hide_banner', '-y',
                     '-fflags', '+genpts',
                     '-thread_queue_size', '4096',
                     '-i', `tcp://127.0.0.1:${recPort}?listen`,
 
-                    // --- HLS output (stream copy, cámara ya es H.264/HEVC) ---
+                    // --- HLS output (transcodificado a H.264 si es H.265 para reproducción en navegador) ---
                     '-map', '0:v?', '-map', '0:a?',
-                    '-c:v', 'copy',
+                    ...hlsCodecArgs,
                     '-c:a', 'aac', '-b:a', '128k',
                     '-bsf:a', 'aac_adtstoasc',  // ← Fix: AAC ADTS→ASC para HLS/MP4
                     '-hls_time', '2',
@@ -1034,7 +1046,7 @@ app.post('/api/recordings/start', (req, res) => {
                     '-hls_segment_type', 'mpegts',
                     '-f', 'hls', hlsPath,
 
-                    // --- MP4 output (stream copy, calidad original) ---
+                    // --- MP4 output (siempre copia de flujo original para rendimiento y exportación ultrarrápida) ---
                     '-map', '0:v?', '-map', '0:a?',
                     '-c', 'copy',
                     '-bsf:a', 'aac_adtstoasc',  // ← Fix: evita "Malformed AAC" y error writing trailer
