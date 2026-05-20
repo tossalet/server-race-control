@@ -1459,15 +1459,79 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         'Pragma': 'no-cache'
     });
     
-    const subscribers = routerState.router.subscribers;
+    const { spawn } = require('child_process');
+    const net = require('net');
+    const ffmpegCmd = streamManager.getFFmpegPath();
     
-    // res es un Writable Stream. Lo registramos en los suscriptores del multiplexador TCP
-    subscribers.add(res);
-    originalLog(`[HTTP-TS] Cliente conectado a vista en vivo Ch${channel}`);
+    // Asignar un puerto TCP efímero para conectar el router Node con FFmpeg
+    const prevPort = 50000 + Math.floor(Math.random() * 10000);
     
-    req.on('close', () => {
-        subscribers.delete(res);
-        originalLog(`[HTTP-TS] Cliente desconectado de vista en vivo Ch${channel}`);
+    // FFmpeg escucha en ese puerto TCP local, decodifica el stream (sea H.264 o H.265)
+    // y lo codifica en H.264 de bajísimo retardo para el navegador, volcándolo a stdout (pipe:1)
+    const args = [
+        '-hide_banner',
+        '-y',
+        '-fflags', '+genpts+discardcorrupt',
+        '-err_detect', 'ignore_err',
+        '-i', `tcp://127.0.0.1:${prevPort}?listen`,
+        '-map', '0:v?', '-map', '0:a?',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-crf', '28',
+        '-vf', 'scale=-2:720', // Limitar resolución para optimizar rendimiento
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-f', 'mpegts',
+        '-'
+    ];
+    
+    const child = spawn(ffmpegCmd, args);
+    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado en puerto ${prevPort}`);
+    
+    let sock = null;
+    let connected = false;
+    
+    // Conectar el socket después de 1 segundo para dar tiempo a FFmpeg a escuchar
+    const connectTimeout = setTimeout(() => {
+        if (child.killed || child.exitCode !== null) return;
+        
+        sock = new net.Socket();
+        sock.connect(prevPort, '127.0.0.1', () => {
+            connected = true;
+            if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
+                streamManager.activeInputs[channel].router.subscribers.add(sock);
+            }
+        });
+        
+        sock.on('error', (err) => {
+            // Silenciar errores de conexión
+        });
+        
+        sock.on('close', () => {
+            if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
+                streamManager.activeInputs[channel].router.subscribers.delete(sock);
+            }
+        });
+    }, 1000);
+    
+    child.stdout.pipe(res);
+    
+    const cleanup = () => {
+        clearTimeout(connectTimeout);
+        if (sock) {
+            sock.destroy();
+            if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
+                streamManager.activeInputs[channel].router.subscribers.delete(sock);
+            }
+        }
+        try { child.kill('SIGKILL'); } catch(e) {}
+        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} finalizado`);
+    };
+    
+    req.on('close', cleanup);
+    child.on('close', () => {
+        if (!res.writableEnded) res.end();
     });
 });
 
