@@ -1518,61 +1518,63 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         'Content-Type': 'video/mp2t',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Connection': 'keep-alive',
-        'Pragma': 'no-cache'
+        'Pragma': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS'
     });
-    
-    // Solo transcodificamos si el códec ha sido detectado explícitamente como H.265/HEVC.
-    // Para H.264, o si no se ha detectado el códec aún (undefined/vacío), usamos streaming directo (0% CPU, cero latencia).
-    const mustTranscode = routerState.codec === 'H.265';
-    
-    if (!mustTranscode) {
-        originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming directo (sin transcodificación, codec: ${routerState.codec || 'no detectado aún'})`);
-        routerState.router.subscribers.add(res);
-        
-        const cleanup = () => {
-            if (routerState && routerState.router) {
-                routerState.router.subscribers.delete(res);
-            }
-            if (!res.writableEnded) res.end();
-        };
-        
-        req.on('close', cleanup);
-        return;
-    }
-    
-    // Si el codec es H.265/HEVC, transcodificamos a H.264 para compatibilidad del navegador
-    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} iniciado vía transcodificación FFmpeg (codec: ${routerState.codec})`);
     
     const { spawn } = require('child_process');
     const ffmpegCmd = streamManager.getFFmpegPath();
     
-    const args = [
-        '-hide_banner',
-        '-y',
-        '-fflags', '+genpts+discardcorrupt',
-        '-err_detect', 'ignore_err',
-        '-f', 'mpegts',
-        '-i', '-',
-        '-map', '0:v?', '-map', '0:a?',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-crf', '28',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-f', 'mpegts',
-        '-'
-    ];
+    const mustTranscode = routerState.codec === 'H.265';
+    
+    let args;
+    if (mustTranscode) {
+        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264`);
+        args = [
+            '-hide_banner',
+            '-y',
+            '-fflags', '+genpts+discardcorrupt',
+            '-err_detect', 'ignore_err',
+            '-f', 'mpegts',
+            '-i', '-',
+            '-map', '0:v?', '-map', '0:a?',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-tune', 'zerolatency',
+            '-crf', '28',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-f', 'mpegts',
+            '-'
+        ];
+    } else {
+        originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming directo (con alineamiento FFmpeg, codec: ${routerState.codec || 'no detectado aún'})`);
+        args = [
+            '-hide_banner',
+            '-y',
+            '-fflags', '+genpts+discardcorrupt',
+            '-err_detect', 'ignore_err',
+            '-f', 'mpegts',
+            '-i', '-',
+            '-map', '0:v?', '-map', '0:a?',
+            '-c:v', 'copy',
+            '-c:a', 'copy',
+            '-f', 'mpegts',
+            '-'
+        ];
+    }
     
     const child = spawn(ffmpegCmd, args);
     
     if (child.stdin) {
         child.stdin.on('error', (err) => {
-            // Silenciar errores de tubería rota (EPIPE)
+            // Silenciar tuberías rotas
         });
     }
     child.on('error', (err) => {
-        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} error de proceso: ${err.message}`);
+        originalLog(`[HTTP-TS] Ch${channel} error de proceso FFmpeg: ${err.message}`);
     });
     
     const subObj = {
@@ -1597,7 +1599,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             routerState.router.subscribers.delete(subObj);
         }
         try { child.kill('SIGKILL'); } catch(e) {}
-        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} finalizado`);
+        originalLog(`[HTTP-TS] Ch${channel} finalizado`);
     };
     
     req.on('close', cleanup);
