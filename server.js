@@ -200,7 +200,9 @@ initMediaRoot();
 const thumbsDir = path.join(__dirname, 'public', 'thumbs');
 if (!fs.existsSync(thumbsDir)) {
     try { fs.mkdirSync(thumbsDir, { recursive: true }); } catch(e){}
-}const thumbCache = {};
+}
+const thumbCache = {};      // channel -> Buffer (último JPEG válido)
+const thumbCacheTs = {};     // channel -> timestamp de cuándo se cacheó
 app.get('/thumbs/:filename', (req, res, next) => {
     const filename = req.params.filename;
     const match = filename.match(/^thumb_(\d+)\.jpg$/);
@@ -228,13 +230,22 @@ app.get('/thumbs/:filename', (req, res, next) => {
 
     if (!isOnline) {
         delete thumbCache[channel];
+        delete thumbCacheTs[channel];
         fs.unlink(filePath, () => {});
         return serveFallback();
     }
     
     fs.readFile(filePath, (err, data) => {
         if (err) {
+            // Archivo no disponible — intentar servir desde caché si es reciente
             if (thumbCache[channel]) {
+                const cacheAge = Date.now() - (thumbCacheTs[channel] || 0);
+                if (cacheAge > 10000) {
+                    // Caché demasiado vieja → servir barras para evitar frames obsoletos
+                    delete thumbCache[channel];
+                    delete thumbCacheTs[channel];
+                    return serveFallback();
+                }
                 res.setHeader('Content-Type', 'image/jpeg');
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
                 return res.send(thumbCache[channel]);
@@ -242,12 +253,15 @@ app.get('/thumbs/:filename', (req, res, next) => {
             return serveFallback();
         }
         
-        // Verificar si es un JPEG válido (debe empezar con SOI 0xFFD8 y terminar con EOI 0xFFD9)
+        // Verificar si es un JPEG válido:
+        // - Debe empezar con SOI (0xFFD8) y terminar con EOI (0xFFD9)
+        // - Tamaño mínimo 1KB (frames de transición de señal son más pequeños)
+        // - Scan más amplio (512 bytes) para encontrar EOI de forma fiable
         let isValidJpeg = false;
-        if (data.length > 2) {
+        if (data.length > 1000) {
             const hasStart = data[0] === 0xFF && data[1] === 0xD8;
             if (hasStart) {
-                const limit = Math.max(0, data.length - 200);
+                const limit = Math.max(0, data.length - 512);
                 for (let i = data.length - 2; i >= limit; i--) {
                     if (data[i] === 0xFF && data[i+1] === 0xD9) {
                         isValidJpeg = true;
@@ -259,12 +273,19 @@ app.get('/thumbs/:filename', (req, res, next) => {
         
         if (isValidJpeg) {
             thumbCache[channel] = data;
+            thumbCacheTs[channel] = Date.now();
             res.setHeader('Content-Type', 'image/jpeg');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             return res.send(data);
         } else {
             // Si está incompleto o a medio escribir por FFmpeg, servimos el último válido de la caché
             if (thumbCache[channel]) {
+                const cacheAge = Date.now() - (thumbCacheTs[channel] || 0);
+                if (cacheAge > 10000) {
+                    delete thumbCache[channel];
+                    delete thumbCacheTs[channel];
+                    return serveFallback();
+                }
                 res.setHeader('Content-Type', 'image/jpeg');
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
                 return res.send(thumbCache[channel]);
