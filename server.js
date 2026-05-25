@@ -1101,8 +1101,8 @@ app.post('/api/recordings/start', (req, res) => {
                 let lastRecLog = 0;
                 child.stderr.on('data', d => {
                     const text = d.toString();
-                    // Ignorar warnings conocidos y no críticos (PPS HEVC, NALU skip, AAC ya corregido)
-                    const isKnownNoise = /PPS id out of range|Skipping invalid undecodable NALU|aac_adtstoasc|Last message repeated|Malformed AAC/i.test(text);
+                    // Ignorar warnings conocidos y no críticos (PPS HEVC, NALU skip, AAC ya corregido, parsing NAL unit, hevc)
+                    const isKnownNoise = /PPS id out of range|Skipping invalid undecodable NALU|aac_adtstoasc|Last message repeated|Malformed AAC|Error parsing NAL unit|hevc/i.test(text);
                     if (isKnownNoise) return;
                     const isImportant = /error|fail|unable|operation not permitted/i.test(text);
                     const now = Date.now();
@@ -1565,12 +1565,18 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     if (!routerState || !routerState.router) {
         return res.status(503).send('Input not ready');
     }
+
+    // Desactivar timeout del socket y habilitar keep-alive para mantener flujo continuo
+    req.socket.setTimeout(0);
+    req.socket.setKeepAlive(true, 5000);
     
     res.writeHead(200, {
         'Content-Type': 'video/mp2t',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Connection': 'keep-alive',
         'Pragma': 'no-cache',
+        'Transfer-Encoding': 'chunked',
+        'X-Accel-Buffering': 'no', // Evita buffering de Nginx u otros proxies reversos
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': '*',
         'Access-Control-Allow-Methods': 'GET, OPTIONS'
