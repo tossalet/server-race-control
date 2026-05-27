@@ -387,32 +387,58 @@ done
 # Detectar navegador disponible
 # Prioridad: Google Chrome > chromium-browser > chromium
 BROWSER=""
-for B in google-chrome-stable google-chrome chromium-browser chromium; do
+# Detectar navegador disponible
+# Prioridad: epiphany > google-chrome-stable > google-chrome > chromium-browser > chromium
+BROWSER=""
+for B in epiphany google-chrome-stable google-chrome chromium-browser chromium; do
     command -v "$B" &>/dev/null && BROWSER="$B" && break
 done
-[ -z "$BROWSER" ] && BROWSER="chromium-browser"  # fallback
+[ -z "$BROWSER" ] && BROWSER="epiphany"  # fallback
 
-# Monitor 1 — App Grabador
-$BROWSER \
-    --noerrdialogs --disable-infobars --disable-features=Translate \
-    --no-first-run --check-for-update-interval=31536000 \
-    --disable-gpu \
-    --kiosk --window-position=0,0 \
-    --user-data-dir=/tmp/chromium_kiosk_1 \
-    "http://localhost:$PORT/grabador" &
-
-sleep 5
-
-# Monitor 2 — Solo si hay 2 o más monitores conectados
-NUM_MONITORS=$(xrandr --listactivemonitors 2>/dev/null | head -n 1 | awk '{print $2}')
-if [ "${NUM_MONITORS:-1}" -gt 1 ]; then
+if [ "$BROWSER" = "epiphany" ]; then
+    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo)..."
+    # Monitor 1 — App Grabador
+    epiphany --kiosk "http://localhost:$PORT/grabador?force_transcode=0" &
+    
+    sleep 5
+    
+    # Monitor 2 — Solo si hay 2 o más monitores conectados
+    NUM_MONITORS=$(xrandr --listactivemonitors 2>/dev/null | head -n 1 | awk '{print $2}')
+    if [ "${NUM_MONITORS:-1}" -gt 1 ]; then
+        epiphany --kiosk "http://localhost:$PORT/grabador/?monitor=1&force_transcode=0#monitor" &
+    fi
+else
+    echo "Iniciando Kiosko con Chrome/Chromium..."
+    # Monitor 1 — App Grabador
     $BROWSER \
         --noerrdialogs --disable-infobars --disable-features=Translate \
         --no-first-run --check-for-update-interval=31536000 \
-        --disable-gpu \
-        --kiosk --window-position=1920,0 \
-        --user-data-dir=/tmp/chromium_kiosk_2 \
-        "http://localhost:$PORT/grabador/?monitor=1#monitor" &
+        --autoplay-policy=no-user-gesture-required \
+        --enable-features=VaapiVideoDecoder,VaapiIgnoreDriverChecks \
+        --ignore-gpu-blocklist \
+        --enable-zero-copy \
+        --use-gl=desktop \
+        --kiosk --window-position=0,0 \
+        --user-data-dir=/tmp/chromium_kiosk_1 \
+        "http://localhost:$PORT/grabador?force_transcode=1" &
+
+    sleep 5
+
+    # Monitor 2 — Solo si hay 2 o más monitores conectados
+    NUM_MONITORS=$(xrandr --listactivemonitors 2>/dev/null | head -n 1 | awk '{print $2}')
+    if [ "${NUM_MONITORS:-1}" -gt 1 ]; then
+        $BROWSER \
+            --noerrdialogs --disable-infobars --disable-features=Translate \
+            --no-first-run --check-for-update-interval=31536000 \
+            --autoplay-policy=no-user-gesture-required \
+            --enable-features=VaapiVideoDecoder,VaapiIgnoreDriverChecks \
+            --ignore-gpu-blocklist \
+            --enable-zero-copy \
+            --use-gl=desktop \
+            --kiosk --window-position=1920,0 \
+            --user-data-dir=/tmp/chromium_kiosk_2 \
+            "http://localhost:$PORT/grabador/?monitor=1&force_transcode=1#monitor" &
+    fi
 fi
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
