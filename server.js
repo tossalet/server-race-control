@@ -621,10 +621,12 @@ app.get('/api/inputs', (req, res) => {
     db.all('SELECT * FROM inputs ORDER BY channel ASC', [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         const decorated = rows.map(row => {
-            const isRunning = streamManager.activeInputs[row.channel] && !streamManager.activeInputs[row.channel].isStopping;
+            const state = streamManager.activeInputs[row.channel];
+            const isRunning = state && !state.isStopping;
             return {
                 ...row,
-                online: !!isRunning
+                online: !!isRunning,
+                codec: isRunning ? (state.codec || '') : ''
             };
         });
         res.json(decorated);
@@ -1578,14 +1580,16 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     const ffmpegCmd = streamManager.getFFmpegPath();
     
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
-    const mustTranscode = false; // Transparente por defecto (cero consumo de CPU para H.265/H.264)
+    // Transcodificar H.265 -> H.264 bajo demanda (solo si el cliente lo solicita explícitamente por limitaciones de compatibilidad)
+    const mustTranscode = codec === 'H.265' && (req.query.transcode === '1' || req.query.transcode === 'true');
     
     let args;
     if (mustTranscode) {
-        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264`);
+        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (Solicitado por el cliente)`);
         args = [
             '-hide_banner',
             '-y',
+            '-threads', '2', // Evita ahogar todos los núcleos de la CPU del I7
             '-fflags', '+genpts+discardcorrupt',
             '-err_detect', 'ignore_err',
             '-probesize', '100000',
@@ -1597,6 +1601,8 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-preset', 'ultrafast',
             '-tune', 'zerolatency',
             '-crf', '28',
+            '-vf', 'scale=-2:720', // Escalar a 720p para reducir la carga de CPU
+            '-r', '30', // Limitar a 30fps para ahorrar recursos
             '-c:a', 'aac',
             '-b:a', '128k',
             '-f', 'mpegts',
