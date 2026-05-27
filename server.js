@@ -1058,17 +1058,9 @@ app.post('/api/recordings/start', (req, res) => {
                 // FFmpeg lee del router (TCP local) en lugar de RTSP directo
                 // Evita abrir una 2ª conexión RTSP a la cámara (que la rechazaría)
                 const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
-                const isH265 = codec === 'H.265';
-                const hlsCodecArgs = isH265
-                    ? [
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-tune', 'zerolatency',
-                        '-crf', '28',
-                      ]
-                    : [
-                        '-c:v', 'copy',
-                      ];
+                const hlsCodecArgs = [
+                    '-c:v', 'copy',
+                ];
 
                 const args = [
                     '-hide_banner', '-y',
@@ -1586,7 +1578,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     const ffmpegCmd = streamManager.getFFmpegPath();
     
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
-    const mustTranscode = codec === 'H.265';
+    const mustTranscode = false; // Transparente por defecto (cero consumo de CPU para H.265/H.264)
     
     let args;
     if (mustTranscode) {
