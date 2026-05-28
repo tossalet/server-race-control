@@ -89,11 +89,29 @@ echo "🛠️  2/11 — Instalando dependencias del sistema..."
 
 # ── Paquetes base comunes ─────────────────────────────────────────────────────
 apt-get install -y \
-    ffmpeg curl git build-essential \
+    ffmpeg curl git build-essential rsync \
     ntfs-3g udevil udisks2 \
     plymouth plymouth-themes \
     xserver-xorg openbox lightdm feh \
     unclutter xdotool 2>/dev/null || true
+
+# ── Epiphany Browser (Soporte H.265 nativo sin transcodificar) ────────────────
+echo "🌐 2.1/11 — Instalando Epiphany Browser para soporte H.265 nativo..."
+if ! apt-get install -y epiphany-browser 2>/dev/null; then
+    echo "   ⚠️  Instalación estándar de Epiphany falló. Intentando resolver conflictos con aptitude..."
+    apt-get install -y aptitude 2>/dev/null || true
+    if command -v aptitude &>/dev/null; then
+        # Correr aptitude en modo no-interactivo para resolver dependencias y forzar la instalación
+        # -y: si, -o Aptitude::Keep-Failed-Dependencies=false resolverá el problema
+        # Le enviamos una opción predeterminada para que elija la solución que instala/actualiza en vez de mantener rotos
+        echo "   Ejecutando aptitude para resolver dependencias..."
+        aptitude install -y -o Aptitude::ProblemResolver::StepLimit=1000 -o Aptitude::Keep-Failed-Dependencies=false epiphany-browser 2>/dev/null || true
+    else
+        echo "   ❌ No se pudo instalar aptitude para resolver conflictos. Se continuará con otros navegadores."
+    fi
+else
+    echo "   ✔ Epiphany Browser instalado correctamente."
+fi
 
 # ── Soporte exFAT: exfatprogs (kernel nativo) con fallback a exfat-fuse ───────
 if apt-get install -y exfatprogs 2>/dev/null; then
@@ -158,10 +176,74 @@ systemctl enable devmon@root 2>/dev/null && systemctl start devmon@root 2>/dev/n
 systemctl enable udisks2     2>/dev/null && systemctl start udisks2     2>/dev/null || true
 
 # =============================================================================
-#  PASO 5 — Clonar repositorio
+#  PASO 5 — Configurar código del servidor
 # =============================================================================
-echo "📂 5/11 — Descargando código del servidor..."
-git clone https://github.com/tossalet/server-race-control.git "$APP_DIR"
+echo "📂 5/11 — Configurando código del servidor..."
+# Obtener el directorio absoluto del script actual
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+mkdir -p "$APP_DIR"
+
+# Si hay package.json local, ofrecer usarlo
+USE_LOCAL=false
+if [ -f "$SCRIPT_DIR/package.json" ]; then
+    if whiptail --title "Código local detectado" --yesno \
+        "Se ha detectado el código del servidor en esta carpeta local ($SCRIPT_DIR).\n\n¿Quieres usar estos archivos locales en lugar de descargar de GitHub?" 10 65; then
+        USE_LOCAL=true
+    fi
+fi
+
+if [ "$USE_LOCAL" = true ]; then
+    echo "   Usando archivos locales..."
+    if command -v rsync &>/dev/null; then
+        rsync -a --exclude='node_modules' --exclude='logs' --exclude='media' --exclude='.git' "$SCRIPT_DIR/" "$APP_DIR/" 2>/dev/null
+    else
+        cp -r "$SCRIPT_DIR/"* "$APP_DIR/" 2>/dev/null || true
+        rm -rf "$APP_DIR/node_modules" "$APP_DIR/logs" "$APP_DIR/media" "$APP_DIR/.git"
+    fi
+else
+    # Ofrecer opciones de descarga desde GitHub
+    GIT_CHOICE=$(whiptail --title "Método de descarga desde GitHub" --menu \
+        "El repositorio 'tossalet/server-race-control' es privado. ¿Cómo deseas descargarlo?" 15 65 4 \
+        "1" "HTTPS estándar (público o pidiendo credenciales)" \
+        "2" "Token de Acceso Personal (GitHub PAT)" \
+        "3" "SSH (requiere clave SSH configurada en tu GitHub)" \
+        "4" "URL Git personalizada" 3>&1 1>&2 2>&3)
+        
+    case "$GIT_CHOICE" in
+        2)
+            PAT=$(whiptail --title "Token de Acceso Personal (PAT)" --inputbox \
+                "Introduce tu Token de Acceso de GitHub (PAT) con permisos de lectura:" 10 65 3>&1 1>&2 2>&3)
+            if [ -n "$PAT" ]; then
+                echo "   Descargando con token PAT..."
+                git clone "https://${PAT}@github.com/tossalet/server-race-control.git" "$APP_DIR"
+            else
+                echo "   No se introdujo token, usando HTTPS por defecto..."
+                git clone "https://github.com/tossalet/server-race-control.git" "$APP_DIR"
+            fi
+            ;;
+        3)
+            echo "   Descargando vía SSH..."
+            git clone "git@github.com:tossalet/server-race-control.git" "$APP_DIR"
+            ;;
+        4)
+            CUSTOM_URL=$(whiptail --title "URL de Git Personalizada" --inputbox \
+                "Introduce la URL de clonado completa (ej: https://usuario:token@github.com/...):" 10 65 3>&1 1>&2 2>&3)
+            if [ -n "$CUSTOM_URL" ]; then
+                echo "   Descargando desde URL personalizada..."
+                git clone "$CUSTOM_URL" "$APP_DIR"
+            else
+                echo "   No se introdujo URL, usando HTTPS por defecto..."
+                git clone "https://github.com/tossalet/server-race-control.git" "$APP_DIR"
+            fi
+            ;;
+        *)
+            echo "   Descargando vía HTTPS estándar..."
+            git clone "https://github.com/tossalet/server-race-control.git" "$APP_DIR"
+            ;;
+    esac
+fi
+
 cd "$APP_DIR"
 
 mkdir -p "$APP_DIR/data" "$APP_DIR/logs"
