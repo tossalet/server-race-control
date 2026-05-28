@@ -301,11 +301,8 @@ function startInput(inputObj) {
         codec: inputObj.codec || persistentCodecs[channel] || ''
     };
     
-    if (inputObj.preview_enabled !== 0) {
-        startPreview(channel, false);
-    } else {
-        startPreview(channel, true);
-    }
+    // Siempre arrancar previsualización continua (generación de thumbnails en vivo y estables)
+    startPreview(channel, false);
 
     return true;
 }
@@ -338,7 +335,7 @@ function startPreview(channel, singleFrame = false) {
         
         args.push('-rtsp_transport', 'tcp', '-i', rtspUrl);
     } else {
-        args.push('-skip_frame', 'nokey', '-f', 'mpegts', '-i', '-');
+        args.push('-f', 'mpegts', '-i', '-');
     }
 
     if (!useSubstream) {
@@ -394,7 +391,18 @@ function startPreview(channel, singleFrame = false) {
                 }
                 activeInputs[channel].prevSubscriber = null;
             }
-            if (activeInputs[channel].prevProcess === child) activeInputs[channel].prevProcess = null;
+            if (activeInputs[channel].prevProcess === child) {
+                activeInputs[channel].prevProcess = null;
+                // Auto-restart preview if the input is still active and it wasn't a singleFrame request
+                if (!singleFrame && activeInputs[channel] && !activeInputs[channel].isStopping) {
+                    console.log(`[PREVIEW CH-${channel}] Process exited. Auto-restarting preview in 3 seconds...`);
+                    setTimeout(() => {
+                        if (activeInputs[channel] && !activeInputs[channel].isStopping && !activeInputs[channel].prevProcess) {
+                            startPreview(channel, false);
+                        }
+                    }, 3000);
+                }
+            }
         }
     });
 }

@@ -222,7 +222,7 @@ app.get('/thumbs/:filename', (req, res, next) => {
             if (!err2) {
                 res.setHeader('Content-Type', 'image/svg+xml');
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                return res.send(fallbackData);
+                return res.status(404).send(fallbackData);
             }
             return res.status(404).send('Not found');
         });
@@ -1060,9 +1060,19 @@ app.post('/api/recordings/start', (req, res) => {
                 // FFmpeg lee del router (TCP local) en lugar de RTSP directo
                 // Evita abrir una 2ª conexión RTSP a la cámara (que la rechazaría)
                 const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
-                const hlsCodecArgs = [
-                    '-c:v', 'copy',
-                ];
+                const isH265 = codec.toLowerCase().includes('265') || codec.toLowerCase().includes('hevc');
+                const hlsCodecArgs = isH265
+                    ? [
+                        '-c:v', 'libx264',
+                        '-preset', 'ultrafast',
+                        '-tune', 'zerolatency',
+                        '-crf', '28',
+                        '-threads', '2',
+                        '-vf', 'scale=-2:720',
+                      ]
+                    : [
+                        '-c:v', 'copy',
+                      ];
 
                 const args = [
                     '-hide_banner', '-y',

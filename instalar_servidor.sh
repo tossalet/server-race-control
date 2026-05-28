@@ -485,14 +485,6 @@ if [ "$BROWSER" = "epiphany" ]; then
     echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo)..."
     # Monitor 1 — App Grabador
     epiphany --kiosk "http://localhost:$PORT/grabador?force_transcode=0" &
-    
-    sleep 5
-    
-    # Monitor 2 — Solo si hay 2 o más monitores conectados
-    NUM_MONITORS=$(xrandr --listactivemonitors 2>/dev/null | head -n 1 | awk '{print $2}')
-    if [ "${NUM_MONITORS:-1}" -gt 1 ]; then
-        epiphany --kiosk "http://localhost:$PORT/grabador/?monitor=1&force_transcode=0#monitor" &
-    fi
 else
     echo "Iniciando Kiosko con Chrome/Chromium..."
     # Monitor 1 — App Grabador
@@ -507,24 +499,6 @@ else
         --kiosk --window-position=0,0 \
         --user-data-dir=/tmp/chromium_kiosk \
         "http://localhost:$PORT/grabador?force_transcode=1" &
-
-    sleep 5
-
-    # Monitor 2 — Solo si hay 2 o más monitores conectados
-    NUM_MONITORS=$(xrandr --listactivemonitors 2>/dev/null | head -n 1 | awk '{print $2}')
-    if [ "${NUM_MONITORS:-1}" -gt 1 ]; then
-        $BROWSER \
-            --noerrdialogs --disable-infobars --disable-features=Translate \
-            --no-first-run --check-for-update-interval=31536000 \
-            --autoplay-policy=no-user-gesture-required \
-            --enable-features=VaapiVideoDecoder,VaapiIgnoreDriverChecks \
-            --ignore-gpu-blocklist \
-            --enable-zero-copy \
-            --use-gl=desktop \
-            --kiosk --window-position=1920,0 \
-            --user-data-dir=/tmp/chromium_kiosk \
-            "http://localhost:$PORT/grabador/?monitor=1&force_transcode=1#monitor" &
-    fi
 fi
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
