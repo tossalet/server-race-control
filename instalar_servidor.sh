@@ -133,24 +133,28 @@ if [ "$ARCH" = "x86_64" ]; then
 fi
 
 # ── Navegador para Kiosko ─────────────────────────────────────────────────────
-#  - x86_64 (i7): Google Chrome primero (H.264 nativo, aceleración HW)
-#  - ARM (Raspberry Pi): Chromium + codecs extra
-if [ "$ARCH" = "x86_64" ]; then
-    if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
-        echo "   Descargando Google Chrome para x86_64..."
-        curl -fsSL -o /tmp/google-chrome.deb \
-            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" 2>/dev/null && \
-            apt-get install -y /tmp/google-chrome.deb 2>/dev/null && \
-            rm -f /tmp/google-chrome.deb || \
-            echo "   Chrome no disponible, usando Chromium."
-    fi
-    # Debian: paquete se llama 'chromium' (no 'chromium-browser')
-    apt-get install -y chromium 2>/dev/null || \
-    apt-get install -y chromium-browser 2>/dev/null || true
+if command -v epiphany &>/dev/null; then
+    echo "   Epiphany Browser detectado. Saltando la instalación de Chrome/Chromium para mantener el sistema limpio."
 else
-    # Raspberry Pi / ARM: Chromium + códecs H.264
-    apt-get install -y chromium-browser chromium-codecs-ffmpeg-extra 2>/dev/null || \
-    apt-get install -y chromium 2>/dev/null || true
+    #  - x86_64 (i7): Google Chrome primero (H.264 nativo, aceleración HW)
+    #  - ARM (Raspberry Pi): Chromium + codecs extra
+    if [ "$ARCH" = "x86_64" ]; then
+        if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
+            echo "   Descargando Google Chrome para x86_64..."
+            curl -fsSL -o /tmp/google-chrome.deb \
+                "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" 2>/dev/null && \
+                apt-get install -y /tmp/google-chrome.deb 2>/dev/null && \
+                rm -f /tmp/google-chrome.deb || \
+                echo "   Chrome no disponible, usando Chromium."
+        fi
+        # Debian: paquete se llama 'chromium' (no 'chromium-browser')
+        apt-get install -y chromium 2>/dev/null || \
+        apt-get install -y chromium-browser 2>/dev/null || true
+    else
+        # Raspberry Pi / ARM: Chromium + códecs H.264
+        apt-get install -y chromium-browser chromium-codecs-ffmpeg-extra 2>/dev/null || \
+        apt-get install -y chromium 2>/dev/null || true
+    fi
 fi
 
 # =============================================================================
