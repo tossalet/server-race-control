@@ -212,9 +212,9 @@ app.get('/thumbs/:filename', (req, res, next) => {
     const channel = parseInt(match[1]);
     const filePath = path.join(__dirname, 'public', 'thumbs', filename);
 
-    // Comprobar si el canal está realmente online y recibiendo datos
+    // Comprobar si el canal está realmente online y activo (criterio idéntico al panel de control)
     const routerState = streamManager.activeInputs[channel];
-    const isOnline = !!(routerState && routerState.router && !routerState.isStopping && (Date.now() - (routerState.lastUpdate || 0) < 8000));
+    const isOnline = !!(routerState && !routerState.isStopping);
 
     const serveFallback = () => {
         const fallbackPath = path.join(__dirname, 'public', 'images', 'bars.svg');
