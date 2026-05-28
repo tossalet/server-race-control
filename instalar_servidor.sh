@@ -453,7 +453,7 @@ xset -dpms
     feh --bg-scale /usr/share/plymouth/themes/racecontrol/bg.png
 
 # Limpiar bloqueos de sesiones anteriores
-rm -rf /tmp/chromium_kiosk_*
+rm -rf /tmp/chromium_kiosk*
 
 # Leer puerto del .env
 ENV_PORT=$(grep '^PORT=' /opt/race-control/.env 2>/dev/null | cut -d'=' -f2)
@@ -501,7 +501,7 @@ else
         --enable-zero-copy \
         --use-gl=desktop \
         --kiosk --window-position=0,0 \
-        --user-data-dir=/tmp/chromium_kiosk_1 \
+        --user-data-dir=/tmp/chromium_kiosk \
         "http://localhost:$PORT/grabador?force_transcode=1" &
 
     sleep 5
@@ -518,7 +518,7 @@ else
             --enable-zero-copy \
             --use-gl=desktop \
             --kiosk --window-position=1920,0 \
-            --user-data-dir=/tmp/chromium_kiosk_2 \
+            --user-data-dir=/tmp/chromium_kiosk \
             "http://localhost:$PORT/grabador/?monitor=1&force_transcode=1#monitor" &
     fi
 fi
