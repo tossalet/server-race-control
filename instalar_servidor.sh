@@ -483,9 +483,12 @@ done
 [ -z "$BROWSER" ] && BROWSER="epiphany"  # fallback
 
 if [ "$BROWSER" = "epiphany" ]; then
-    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Sesión Privada)..."
-    # Monitor 1 — App Grabador (usando --private-instance para evitar bloqueos de perfil)
-    epiphany --private-instance --kiosk "http://localhost:$PORT/grabador?force_transcode=0" &
+    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Aplicación Web)..."
+    # Lanzar en modo aplicación aislada (elimina barra de direcciones y botones)
+    epiphany --application-mode "http://localhost:$PORT/grabador?force_transcode=0" &
+    sleep 5
+    # Forzar pantalla completa simulando la tecla F11 mediante xdotool (instalado en el Paso 2)
+    xdotool key F11
 else
     echo "Iniciando Kiosko con Chrome/Chromium..."
     # Monitor 1 — App Grabador
