@@ -364,57 +364,57 @@ systemctl enable race-control.service
 systemctl start race-control.service
 
 # =============================================================================
-#  PASO 10 — Plymouth (animación de arranque)
+#  PASO 10 — Plymouth (animación de arranque) [DESHABILITADO]
 # =============================================================================
-echo "🎬 10/11 — Instalando animación de arranque (Plymouth)..."
-THEME_DIR="/usr/share/plymouth/themes/racecontrol"
-mkdir -p "$THEME_DIR"
-
-# Intentar copiar desde varias rutas posibles
-cp -r "$APP_DIR/boot-theme/"* "$THEME_DIR/" 2>/dev/null || \
-cp -r /opt/srt-server/boot-theme/*    "$THEME_DIR/" 2>/dev/null || \
-cp -r ./boot-theme/*                  "$THEME_DIR/" 2>/dev/null || true
-chmod -R 755 "$THEME_DIR"
-
-if [ -f "$THEME_DIR/racecontrol.script" ]; then
-    plymouth-set-default-theme -R racecontrol
-
-    # Raspberry Pi — backup + modificar cmdline.txt
-    for CMDLINE in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
-        [ -f "$CMDLINE" ] || continue
-        cp "$CMDLINE" "${CMDLINE}.bak" 2>/dev/null || true
-        command -v raspi-config >/dev/null 2>&1 && raspi-config nonint do_boot_splash 0 2>/dev/null || true
-        for WORD in "quiet" "splash" "plymouth.ignore-serial-consoles" "vt.global_cursor_default=0"; do
-            grep -q "$WORD" "$CMDLINE" || sed -i "s/$/ $WORD/" "$CMDLINE"
-        done
-    done
-
-    # Ubuntu / i7 con GRUB
-    if [ -f "/etc/default/grub" ]; then
-        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
-        update-grub 2>/dev/null || true
-    fi
-
-    # Cargar el driver gráfico i915 al principio del arranque para evitar parpadeos y letras tipo matriz
-    if [ -f "/etc/initramfs-tools/modules" ]; then
-        if ! grep -q "i915" /etc/initramfs-tools/modules; then
-            echo -e "\n# Forzar carga temprana de graficos Intel para Plymouth\ni915" >> /etc/initramfs-tools/modules
-        fi
-    fi
-
-    # Evitar que systemd detenga Plymouth automáticamente (lo detendrá nuestro launch_kiosk.sh)
-    systemctl mask plymouth-quit.service 2>/dev/null || true
-    systemctl mask plymouth-quit-active.service 2>/dev/null || true
-
-    # Crear regla de sudo sin contraseña para que racecontrol pueda llamar a plymouth quit
-    echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/plymouth" > /etc/sudoers.d/racecontrol-plymouth
-    chmod 440 /etc/sudoers.d/racecontrol-plymouth
-
-    update-initramfs -u 2>/dev/null || true
-    echo "   Tema Plymouth instalado y initramfs configurado."
-else
-    echo "   Sin tema Plymouth (carpeta boot-theme no encontrada)."
-fi
+echo "🎬 10/11 — Saltando instalación de animación de arranque (Plymouth)..."
+# THEME_DIR="/usr/share/plymouth/themes/racecontrol"
+# mkdir -p "$THEME_DIR"
+# 
+# # Intentar copiar desde varias rutas posibles
+# cp -r "$APP_DIR/boot-theme/"* "$THEME_DIR/" 2>/dev/null || \
+# cp -r /opt/srt-server/boot-theme/*    "$THEME_DIR/" 2>/dev/null || \
+# cp -r ./boot-theme/*                  "$THEME_DIR/" 2>/dev/null || true
+# chmod -R 755 "$THEME_DIR"
+# 
+# if [ -f "$THEME_DIR/racecontrol.script" ]; then
+#     plymouth-set-default-theme -R racecontrol
+# 
+#     # Raspberry Pi — backup + modificar cmdline.txt
+#     for CMDLINE in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+#         [ -f "$CMDLINE" ] || continue
+#         cp "$CMDLINE" "${CMDLINE}.bak" 2>/dev/null || true
+#         command -v raspi-config >/dev/null 2>&1 && raspi-config nonint do_boot_splash 0 2>/dev/null || true
+#         for WORD in "quiet" "splash" "plymouth.ignore-serial-consoles" "vt.global_cursor_default=0"; do
+#             grep -q "$WORD" "$CMDLINE" || sed -i "s/$/ $WORD/" "$CMDLINE"
+#         done
+#     done
+# 
+#     # Ubuntu / i7 con GRUB
+#     if [ -f "/etc/default/grub" ]; then
+#         sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
+#         update-grub 2>/dev/null || true
+#     fi
+# 
+#     # Cargar el driver gráfico i915 al principio del arranque para evitar parpadeos y letras tipo matriz
+#     if [ -f "/etc/initramfs-tools/modules" ]; then
+#         if ! grep -q "i915" /etc/initramfs-tools/modules; then
+#             echo -e "\n# Forzar carga temprana de graficos Intel para Plymouth\ni915" >> /etc/initramfs-tools/modules
+#         fi
+#     fi
+# 
+#     # Evitar que systemd detenga Plymouth automáticamente (lo detendrá nuestro launch_kiosk.sh)
+#     systemctl mask plymouth-quit.service 2>/dev/null || true
+#     systemctl mask plymouth-quit-active.service 2>/dev/null || true
+# 
+#     # Crear regla de sudo sin contraseña para que racecontrol pueda llamar a plymouth quit
+#     echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/plymouth" > /etc/sudoers.d/racecontrol-plymouth
+#     chmod 440 /etc/sudoers.d/racecontrol-plymouth
+# 
+#     update-initramfs -u 2>/dev/null || true
+#     echo "   Tema Plymouth instalado y initramfs configurado."
+# else
+#     echo "   Sin tema Plymouth (carpeta boot-theme no encontrada)."
+# fi
 
 # =============================================================================
 #  PASO 11 — Modo Kiosko (LightDM + Openbox + Chromium)
@@ -491,7 +491,7 @@ for i in $(seq 1 60); do
 done
 
 # Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
-sudo /usr/bin/plymouth quit 2>/dev/null || true
+# sudo /usr/bin/plymouth quit 2>/dev/null || true
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
 
