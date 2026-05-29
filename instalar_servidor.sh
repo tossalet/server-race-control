@@ -93,7 +93,7 @@ apt-get install -y \
     ntfs-3g udevil udisks2 \
     plymouth plymouth-themes \
     xserver-xorg openbox lightdm feh \
-    unclutter xdotool 2>/dev/null || true
+    unclutter xdotool
 
 # ── Epiphany Browser (Soporte H.265 nativo sin transcodificar) ────────────────
 echo "🌐 2.1/11 — Instalando Epiphany Browser para soporte H.265 nativo..."
@@ -483,12 +483,16 @@ done
 [ -z "$BROWSER" ] && BROWSER="epiphany"  # fallback
 
 if [ "$BROWSER" = "epiphany" ]; then
-    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Aplicación Web)..."
-    # Lanzar en modo aplicación aislada (elimina barra de direcciones y botones)
-    epiphany --application-mode "http://localhost:$PORT/grabador?force_transcode=0" &
+    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Sesión Privada)..."
+    # Abrir en modo privado nativo (evita bloqueos de perfil)
+    epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
     sleep 5
     # Forzar pantalla completa simulando la tecla F11 mediante xdotool (instalado en el Paso 2)
-    xdotool key F11
+    if command -v xdotool &>/dev/null; then
+        xdotool key F11
+    elif [ -f /usr/bin/xdotool ]; then
+        /usr/bin/xdotool key F11
+    fi
 else
     echo "Iniciando Kiosko con Chrome/Chromium..."
     # Monitor 1 — App Grabador
