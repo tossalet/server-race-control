@@ -460,44 +460,41 @@ for i in $(seq 1 15); do
     sleep 2
 done
 
-echo "Iniciando Kiosko con Epiphany Browser (Sesión Privada)..."
-# Abrir la aplicación directamente en modo privado nativo
+# Abrir la aplicación
 epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
 EPIPHANY_PID=$!
 
-# Bucle para enfocar y poner en pantalla completa una vez que la ventana esté lista
-echo "Buscando ventana de Epiphany para aplicar pantalla completa..."
-for i in $(seq 1 60); do
-    # Usar --onlyvisible garantiza que la ventana ya está renderizada
-    WID=$(xdotool search --onlyvisible --class "epiphany-browser" 2>/dev/null | head -n 1 \
-        || xdotool search --onlyvisible --class "epiphany" 2>/dev/null | head -n 1 \
-        || xdotool search --onlyvisible --class "Epiphany" 2>/dev/null | head -n 1 \
-        || xdotool search --onlyvisible --name "Race Control" 2>/dev/null | head -n 1 \
-        || xdotool search --onlyvisible --name "Race Control TssT" 2>/dev/null | head -n 1)
-        
-    if [ -n "$WID" ]; then
-        echo "Ventana Epiphany visible detectada (ID: $WID)."
-        # Dar tiempo a que el navegador termine de inicializar su interfaz
-        sleep 2
-        echo "Enfocando ventana..."
-        xdotool windowactivate --sync "$WID"
-        sleep 0.5
-        echo "Forzando pantalla completa con wmctrl y F11..."
-        wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null || true
-        xdotool key F11
-        break
-    fi
-    sleep 0.5
-done
+echo "Navegador lanzado. Openbox se encargará de forzar la pantalla completa."
 
 # Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
 # sudo /usr/bin/plymouth quit 2>/dev/null || true
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
 
-# Openbox autostart
+# Openbox autostart y configuración de pantalla completa nativa
 mkdir -p "$REAL_HOME/.config/openbox"
 echo "bash $REAL_HOME/.config/race-control/launch_kiosk.sh &" > "$REAL_HOME/.config/openbox/autostart"
+
+# Crear regla en Openbox para que CUALQUIER ventana se abra en Fullscreen sin bordes
+if [ -f /etc/xdg/openbox/rc.xml ]; then
+    cp /etc/xdg/openbox/rc.xml "$REAL_HOME/.config/openbox/rc.xml"
+    # Insertar la regla antes del cierre de </applications>
+    sed -i 's|</applications>|  <application class="*">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n</applications>|' "$REAL_HOME/.config/openbox/rc.xml"
+else
+    # Si no existe el global, crear uno mínimo
+    cat > "$REAL_HOME/.config/openbox/rc.xml" << 'XML_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <applications>
+    <application class="*">
+      <decor>no</decor>
+      <fullscreen>yes</fullscreen>
+      <maximized>true</maximized>
+    </application>
+  </applications>
+</openbox_config>
+XML_EOF
+fi
 
 # .desktop para GNOME/XFCE/KDE autostart
 mkdir -p "$REAL_HOME/.config/autostart"
