@@ -133,24 +133,9 @@ if [ "$ARCH" = "x86_64" ]; then
 fi
 
 # ── Navegador para Kiosko ─────────────────────────────────────────────────────
-# Siempre garantizamos la instalación de Chrome/Chromium para soporte de Kiosko nativo
-if [ "$ARCH" = "x86_64" ]; then
-    if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
-        echo "   Descargando Google Chrome para x86_64..."
-        curl -fsSL -o /tmp/google-chrome.deb \
-            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" 2>/dev/null && \
-            apt-get install -y /tmp/google-chrome.deb 2>/dev/null && \
-            rm -f /tmp/google-chrome.deb || \
-            echo "   Chrome no disponible, usando Chromium."
-    fi
-    # Debian: paquete se llama 'chromium'
-    apt-get install -y chromium 2>/dev/null || \
-    apt-get install -y chromium-browser 2>/dev/null || true
-else
-    # Raspberry Pi / ARM: Chromium + códecs H.264
-    apt-get install -y chromium-browser chromium-codecs-ffmpeg-extra 2>/dev/null || \
-    apt-get install -y chromium 2>/dev/null || true
-fi
+# Instalamos exclusivamente Epiphany Browser por solicitud del usuario
+echo "🌐 2.1/11 — Instalando Epiphany Browser..."
+apt-get install -y epiphany-browser
 
 # =============================================================================
 #  PASO 3 — Node.js 20 LTS
@@ -443,16 +428,6 @@ if [ -f "/etc/lightdm/lightdm.conf" ]; then
 fi
 echo -e "[Desktop]\nSession=openbox" > "/var/lib/AccountsService/users/$REAL_USER" 2>/dev/null || true
 
-# Copiar el fondo de pantalla de Plymouth a public para el splash screen del navegador
-cp "$APP_DIR/boot-theme/bg.png" "$APP_DIR/public/bg.png" 2>/dev/null || true
-
-# Generar archivo de configuración estática para el splash screen del navegador
-cat > "$APP_DIR/public/config.js" << EOF
-window.KIOSK_CONFIG = {
-  port: $WEB_PORT
-};
-EOF
-
 # Script de kiosko independiente (también puede lanzarse manualmente)
 mkdir -p "$REAL_HOME/.config/race-control"
 cat > "$REAL_HOME/.config/race-control/launch_kiosk.sh" << 'KIOSK_EOF'
@@ -474,68 +449,44 @@ if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then
     feh --bg-scale /usr/share/plymouth/themes/racecontrol/bg.png
 fi
 
-# Limpiar bloqueos de sesiones anteriores
-rm -rf /tmp/chromium_kiosk*
-
 # Leer puerto del .env
 ENV_PORT=$(grep '^PORT=' /opt/race-control/.env 2>/dev/null | cut -d'=' -f2)
 PORT=${ENV_PORT:-3000}
 
-# Detectar navegador disponible
-# Prioridad: Chrome/Chromium primero para soporte nativo de Kiosko, fallback a Epiphany
-BROWSER=""
-for B in google-chrome-stable google-chrome chromium-browser chromium epiphany; do
-    command -v "$B" &>/dev/null && BROWSER="$B" && break
+# Esperar al servidor (máx 30s) para garantizar que la web está online antes de abrir el navegador
+echo "Esperando al servidor Race Control en puerto $PORT..."
+for i in $(seq 1 15); do
+    curl -s "http://localhost:$PORT" > /dev/null && break
+    sleep 2
 done
-[ -z "$BROWSER" ] && BROWSER="epiphany"  # fallback
 
-echo "Navegador seleccionado: $BROWSER"
+echo "Iniciando Kiosko con Epiphany Browser (Sesión Privada)..."
+# Abrir la aplicación directamente en modo privado nativo
+epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+EPIPHANY_PID=$!
 
-# Soporte para arrancar Chrome/Chromium como root de forma segura si es necesario (ej: pruebas o modo de mantenimiento)
-SANDBOX_FLAG=""
-if [ "$USER" = "root" ] || [ "$EUID" -eq 0 ] || [ "$(id -u)" -eq 0 ]; then
-    SANDBOX_FLAG="--no-sandbox"
-fi
-
-if [ "$BROWSER" = "epiphany" ]; then
-    echo "Iniciando Kiosko con Epiphany..."
-    # Abrir splash.html inmediatamente
-    epiphany --private-instance "file:///opt/race-control/public/splash.html" &
-    EPIPHANY_PID=$!
-    
-    # Bucle para enfocar y poner en pantalla completa al instante buscando por el título único de la ventana
-    echo "Buscando ventana de Epiphany por título único..."
-    for i in $(seq 1 200); do
-        WID=$(xdotool search --name "Race Control - Cargando..." 2>/dev/null | head -n 1)
-        if [ -n "$WID" ]; then
-            echo "Ventana Epiphany detectada (ID: $WID). Enfocando y enviando F11..."
-            xdotool windowactivate "$WID"
-            xdotool key F11
-            sleep 0.5
-            # Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
-            sudo /usr/bin/plymouth quit 2>/dev/null || true
-            break
-        fi
-        sleep 0.1
-    done
-    # Garantía de seguridad: quitar Plymouth si el bucle termina sin detectar la ventana
-    sudo /usr/bin/plymouth quit 2>/dev/null || true
-else
-    echo "Iniciando Kiosko con Chrome/Chromium..."
-    # Abrir splash.html inmediatamente en modo kiosko nativo
-    # Eliminamos las flags de aceleración GL/VAAPI inestables que causan fallos del proceso GPU en ciertos entornos X11
-    $BROWSER $SANDBOX_FLAG \
-        --noerrdialogs --disable-infobars --disable-features=Translate \
-        --no-first-run --check-for-update-interval=31536000 \
-        --autoplay-policy=no-user-gesture-required \
-        --kiosk --window-position=0,0 \
-        --user-data-dir=/tmp/chromium_kiosk \
-        "file:///opt/race-control/public/splash.html" &
+# Bucle de alta velocidad para enfocar y poner en pantalla completa al instante con xdotool
+echo "Buscando ventana de Epiphany para aplicar pantalla completa..."
+for i in $(seq 1 300); do
+    # Búsqueda robusta combinando clases y títulos de ventana (sin --onlyvisible para mayor tolerancia en arranque rápido)
+    WID=$(xdotool search --class "epiphany-browser" 2>/dev/null | head -n 1 \
+        || xdotool search --class "epiphany" 2>/dev/null | head -n 1 \
+        || xdotool search --class "Epiphany" 2>/dev/null | head -n 1 \
+        || xdotool search --name "Race Control" 2>/dev/null | head -n 1 \
+        || xdotool search --name "Race Control TssT" 2>/dev/null | head -n 1)
         
-    # Esperamos 1.5 segundos a que Chrome dibuje y quitamos Plymouth
-    sleep 1.5
-    sudo /usr/bin/plymouth quit 2>/dev/null || true
-fi
+    if [ -n "$WID" ]; then
+        echo "Ventana Epiphany detectada (ID: $WID). Enfocando y enviando F11..."
+        xdotool windowactivate "$WID"
+        xdotool key F11
+        sleep 0.5
+        break
+    fi
+    sleep 0.1
+done
+
+# Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
+sudo /usr/bin/plymouth quit 2>/dev/null || true
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
 
