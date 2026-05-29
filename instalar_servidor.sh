@@ -444,6 +444,10 @@ echo -e "[Desktop]\nSession=openbox" > "/var/lib/AccountsService/users/$REAL_USE
 mkdir -p "$REAL_HOME/.config/race-control"
 cat > "$REAL_HOME/.config/race-control/launch_kiosk.sh" << 'KIOSK_EOF'
 #!/bin/bash
+# Redirigir toda la salida a un archivo de log para facilitar el diagnóstico
+exec > /tmp/kiosk.log 2>&1
+echo "=== Kiosk Launch at $(date) ==="
+
 # Ocultar cursor tras 3s de inactividad
 unclutter -idle 3 &
 
@@ -471,9 +475,6 @@ for i in $(seq 1 15); do
 done
 
 # Detectar navegador disponible
-# Prioridad: Google Chrome > chromium-browser > chromium
-BROWSER=""
-# Detectar navegador disponible
 # Prioridad: epiphany > google-chrome-stable > google-chrome > chromium-browser > chromium
 BROWSER=""
 for B in epiphany google-chrome-stable google-chrome chromium-browser chromium; do
@@ -482,9 +483,9 @@ done
 [ -z "$BROWSER" ] && BROWSER="epiphany"  # fallback
 
 if [ "$BROWSER" = "epiphany" ]; then
-    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo)..."
-    # Monitor 1 — App Grabador
-    epiphany --kiosk "http://localhost:$PORT/grabador?force_transcode=0" &
+    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Sesión Privada)..."
+    # Monitor 1 — App Grabador (usando --private-instance para evitar bloqueos de perfil)
+    epiphany --private-instance --kiosk "http://localhost:$PORT/grabador?force_transcode=0" &
 else
     echo "Iniciando Kiosko con Chrome/Chromium..."
     # Monitor 1 — App Grabador
