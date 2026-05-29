@@ -422,6 +422,14 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
         fi
     fi
 
+    # Evitar que systemd detenga Plymouth automáticamente (lo detendrá nuestro launch_kiosk.sh)
+    systemctl mask plymouth-quit.service 2>/dev/null || true
+    systemctl mask plymouth-quit-active.service 2>/dev/null || true
+
+    # Crear regla de sudo sin contraseña para que racecontrol pueda llamar a plymouth quit
+    echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/plymouth" > /etc/sudoers.d/racecontrol-plymouth
+    chmod 440 /etc/sudoers.d/racecontrol-plymouth
+
     update-initramfs -u 2>/dev/null || true
     echo "   Tema Plymouth instalado y initramfs configurado."
 else
@@ -456,9 +464,10 @@ xset s noblank
 xset s off
 xset -dpms
 
-# Fondo de pantalla (transición suave desde Plymouth)
-[ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ] && \
+# Fondo de pantalla (transición suave desde Plymouth, detrás de las ventanas)
+if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then
     feh --bg-scale /usr/share/plymouth/themes/racecontrol/bg.png
+fi
 
 # Limpiar bloqueos de sesiones anteriores
 rm -rf /tmp/chromium_kiosk*
@@ -486,13 +495,25 @@ if [ "$BROWSER" = "epiphany" ]; then
     echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Sesión Privada)..."
     # Abrir en modo privado nativo (evita bloqueos de perfil)
     epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
-    sleep 5
-    # Forzar pantalla completa simulando la tecla F11 mediante xdotool (instalado en el Paso 2)
-    if command -v xdotool &>/dev/null; then
-        xdotool key F11
-    elif [ -f /usr/bin/xdotool ]; then
-        /usr/bin/xdotool key F11
-    fi
+    
+    # Bucle ultra-rápido (cada 100ms) para enfocar y poner en pantalla completa al instante
+    # Esto permite ver la animación de carga de cuadrados azules en pantalla completa de inmediato
+    echo "Buscando ventana de Epiphany para aplicar pantalla completa..."
+    for i in $(seq 1 100); do
+        WID=$(xdotool search --onlyvisible --class "epiphany" 2>/dev/null | head -n 1 || xdotool search --onlyvisible --class "Epiphany" 2>/dev/null | head -n 1)
+        if [ -n "$WID" ]; then
+            echo "Ventana Epiphany detectada (ID: $WID). Enfocando y enviando F11..."
+            xdotool windowactivate "$WID"
+            xdotool key F11
+            sleep 0.8
+            # Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
+            sudo /usr/bin/plymouth quit 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+    done
+    # Garantía de seguridad: quitar Plymouth si el bucle termina sin detectar la ventana
+    sudo /usr/bin/plymouth quit 2>/dev/null || true
 else
     echo "Iniciando Kiosko con Chrome/Chromium..."
     # Monitor 1 — App Grabador
