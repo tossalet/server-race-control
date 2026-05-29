@@ -446,6 +446,13 @@ echo -e "[Desktop]\nSession=openbox" > "/var/lib/AccountsService/users/$REAL_USE
 # Copiar el fondo de pantalla de Plymouth a public para el splash screen del navegador
 cp "$APP_DIR/boot-theme/bg.png" "$APP_DIR/public/bg.png" 2>/dev/null || true
 
+# Generar archivo de configuración estática para el splash screen del navegador
+cat > "$APP_DIR/public/config.js" << EOF
+window.KIOSK_CONFIG = {
+  port: $WEB_PORT
+};
+EOF
+
 # Script de kiosko independiente (también puede lanzarse manualmente)
 mkdir -p "$REAL_HOME/.config/race-control"
 cat > "$REAL_HOME/.config/race-control/launch_kiosk.sh" << 'KIOSK_EOF'
@@ -484,10 +491,16 @@ done
 
 echo "Navegador seleccionado: $BROWSER"
 
+# Soporte para arrancar Chrome/Chromium como root de forma segura si es necesario (ej: pruebas o modo de mantenimiento)
+SANDBOX_FLAG=""
+if [ "$USER" = "root" ] || [ "$EUID" -eq 0 ] || [ "$(id -u)" -eq 0 ]; then
+    SANDBOX_FLAG="--no-sandbox"
+fi
+
 if [ "$BROWSER" = "epiphany" ]; then
     echo "Iniciando Kiosko con Epiphany..."
     # Abrir splash.html inmediatamente
-    epiphany --private-instance "file:///opt/race-control/public/splash.html?port=$PORT&force_transcode=0" &
+    epiphany --private-instance "file:///opt/race-control/public/splash.html" &
     EPIPHANY_PID=$!
     
     # Bucle para enfocar y poner en pantalla completa al instante buscando por el título único de la ventana
@@ -510,17 +523,14 @@ if [ "$BROWSER" = "epiphany" ]; then
 else
     echo "Iniciando Kiosko con Chrome/Chromium..."
     # Abrir splash.html inmediatamente en modo kiosko nativo
-    $BROWSER \
+    # Eliminamos las flags de aceleración GL/VAAPI inestables que causan fallos del proceso GPU en ciertos entornos X11
+    $BROWSER $SANDBOX_FLAG \
         --noerrdialogs --disable-infobars --disable-features=Translate \
         --no-first-run --check-for-update-interval=31536000 \
         --autoplay-policy=no-user-gesture-required \
-        --enable-features=VaapiVideoDecoder,VaapiIgnoreDriverChecks \
-        --ignore-gpu-blocklist \
-        --enable-zero-copy \
-        --use-gl=desktop \
         --kiosk --window-position=0,0 \
         --user-data-dir=/tmp/chromium_kiosk \
-        "file:///opt/race-control/public/splash.html?port=$PORT&force_transcode=1" &
+        "file:///opt/race-control/public/splash.html" &
         
     # Esperamos 1.5 segundos a que Chrome dibuje y quitamos Plymouth
     sleep 1.5
@@ -554,6 +564,9 @@ chown -R "$REAL_USER:$REAL_USER" \
     "$REAL_HOME/.config/race-control" \
     "$REAL_HOME/.config/openbox" \
     "$REAL_HOME/.config/autostart" 2>/dev/null || true
+
+# Asegurar permisos de lectura y ejecucion correctos para toda la aplicacion en /opt/race-control
+chmod -R 755 "$APP_DIR"
 
 systemctl enable lightdm 2>/dev/null || true
 
