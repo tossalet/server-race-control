@@ -460,31 +460,114 @@ for i in $(seq 1 15); do
     sleep 2
 done
 
+# Recargar config de Openbox (asegura que rc.xml con regla fullscreen esté activo)
+openbox --reconfigure 2>/dev/null || true
+
+echo "Iniciando Kiosko con Epiphany Browser..."
+
+# Obtener resolución de pantalla para forzar geometría
+SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
+SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
+SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
+echo "Resolución detectada: ${SCREEN_W}x${SCREEN_H}"
+
 # Abrir la aplicación
 epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
 EPIPHANY_PID=$!
 
-echo "Navegador lanzado. Openbox se encargará de forzar la pantalla completa."
+# ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
+echo "Esperando a que la ventana de Epiphany aparezca (xdotool --sync)..."
+WID=$(xdotool search --sync --onlyvisible --pid "$EPIPHANY_PID" 2>/dev/null | head -n 1)
 
-# Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
-# sudo /usr/bin/plymouth quit 2>/dev/null || true
+# Si no lo encontró por PID, intentar por clase
+if [ -z "$WID" ]; then
+    echo "Buscando por clase..."
+    WID=$(xdotool search --sync --onlyvisible --class "epiphany" 2>/dev/null | head -n 1)
+fi
+
+# Si tampoco, último intento con bucle corto por nombre
+if [ -z "$WID" ]; then
+    echo "Buscando por nombre..."
+    for i in $(seq 1 30); do
+        WID=$(xdotool search --name "localhost" 2>/dev/null | head -n 1 \
+           || xdotool search --name "Race" 2>/dev/null | head -n 1 \
+           || xdotool search --name "Epiphany" 2>/dev/null | head -n 1)
+        [ -n "$WID" ] && break
+        sleep 1
+    done
+fi
+
+if [ -n "$WID" ]; then
+    echo "Ventana encontrada: $WID"
+
+    # Esperar a que la ventana se estabilice
+    sleep 3
+
+    # ── MÉTODO 2: Activar ventana y enviar F11 ──
+    echo "Activando ventana y enviando F11..."
+    xdotool windowactivate --sync "$WID" 2>/dev/null
+    sleep 0.3
+    xdotool windowfocus --sync "$WID" 2>/dev/null
+    sleep 0.3
+    xdotool key --window "$WID" F11 2>/dev/null
+    sleep 1
+
+    # ── MÉTODO 3: wmctrl para forzar fullscreen a nivel del WM ──
+    echo "Forzando fullscreen con wmctrl..."
+    wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
+
+    # ── MÉTODO 4: Mover y redimensionar la ventana a pantalla completa manualmente ──
+    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
+        echo "Redimensionando ventana a ${SCREEN_W}x${SCREEN_H}..."
+        xdotool windowmove --sync "$WID" 0 0 2>/dev/null
+        xdotool windowsize --sync "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
+        wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
+    fi
+
+    # ── MÉTODO 5: Segundo intento de F11 por si el primero no cuajó ──
+    sleep 2
+    xdotool windowactivate --sync "$WID" 2>/dev/null
+    xdotool key --window "$WID" F11 2>/dev/null
+    sleep 0.5
+
+    # Comprobar si está fullscreen
+    GEOM=$(xdotool getwindowgeometry "$WID" 2>/dev/null)
+    echo "Geometría final de la ventana: $GEOM"
+else
+    echo "ERROR: No se encontró ninguna ventana de Epiphany."
+fi
+
+echo "=== Kiosk setup finalizado a $(date) ==="
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
 
-# Openbox autostart y configuración de pantalla completa nativa
+# ── Openbox: autostart ──
 mkdir -p "$REAL_HOME/.config/openbox"
 echo "bash $REAL_HOME/.config/race-control/launch_kiosk.sh &" > "$REAL_HOME/.config/openbox/autostart"
 
-# Crear regla en Openbox para que CUALQUIER ventana se abra en Fullscreen sin bordes
+# ── Openbox: rc.xml con regla de fullscreen ──
+# Copiar la config global como base y añadir la regla de aplicaciones
 if [ -f /etc/xdg/openbox/rc.xml ]; then
     cp /etc/xdg/openbox/rc.xml "$REAL_HOME/.config/openbox/rc.xml"
-    # Insertar la regla antes del cierre de </applications>
-    sed -i 's|</applications>|  <application class="*">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n</applications>|' "$REAL_HOME/.config/openbox/rc.xml"
+    # Comprobar si ya tiene sección <applications>
+    if grep -q "</applications>" "$REAL_HOME/.config/openbox/rc.xml"; then
+        # Insertar regla dentro de la sección existente
+        sed -i '/<\/applications>/i \    <application class="*">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
+    elif grep -q "</openbox_config>" "$REAL_HOME/.config/openbox/rc.xml"; then
+        # La sección <applications> no existe, crearla antes de </openbox_config>
+        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="*">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
+    fi
 else
-    # Si no existe el global, crear uno mínimo
+    # Crear rc.xml completo mínimo funcional
     cat > "$REAL_HOME/.config/openbox/rc.xml" << 'XML_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
-<openbox_config xmlns="http://openbox.org/3.4/rc">
+<openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <resistance><strength>10</strength><screen_edge_strength>20</screen_edge_strength></resistance>
+  <focus><focusNew>yes</focusNew><followMouse>no</followMouse></focus>
+  <theme><name>Clearlooks</name></theme>
+  <desktops><number>1</number></desktops>
+  <keyboard/>
+  <mouse/>
   <applications>
     <application class="*">
       <decor>no</decor>
@@ -496,7 +579,7 @@ else
 XML_EOF
 fi
 
-# .desktop para GNOME/XFCE/KDE autostart
+# ── .desktop para GNOME/XFCE/KDE autostart ──
 mkdir -p "$REAL_HOME/.config/autostart"
 cat > "$REAL_HOME/.config/autostart/race-control-kiosk.desktop" << EOF
 [Desktop Entry]
