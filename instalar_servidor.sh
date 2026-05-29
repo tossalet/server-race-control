@@ -93,7 +93,7 @@ apt-get install -y \
     ntfs-3g udevil udisks2 \
     plymouth plymouth-themes \
     xserver-xorg openbox lightdm feh \
-    unclutter xdotool
+    unclutter xdotool wmctrl
 
 # ── Epiphany Browser (Soporte H.265 nativo sin transcodificar) ────────────────
 echo "🌐 2.1/11 — Instalando Epiphany Browser para soporte H.265 nativo..."
@@ -465,24 +465,29 @@ echo "Iniciando Kiosko con Epiphany Browser (Sesión Privada)..."
 epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
 EPIPHANY_PID=$!
 
-# Bucle de alta velocidad para enfocar y poner en pantalla completa al instante con xdotool
+# Bucle para enfocar y poner en pantalla completa una vez que la ventana esté lista
 echo "Buscando ventana de Epiphany para aplicar pantalla completa..."
-for i in $(seq 1 300); do
-    # Búsqueda robusta combinando clases y títulos de ventana (sin --onlyvisible para mayor tolerancia en arranque rápido)
-    WID=$(xdotool search --class "epiphany-browser" 2>/dev/null | head -n 1 \
-        || xdotool search --class "epiphany" 2>/dev/null | head -n 1 \
-        || xdotool search --class "Epiphany" 2>/dev/null | head -n 1 \
-        || xdotool search --name "Race Control" 2>/dev/null | head -n 1 \
-        || xdotool search --name "Race Control TssT" 2>/dev/null | head -n 1)
+for i in $(seq 1 60); do
+    # Usar --onlyvisible garantiza que la ventana ya está renderizada
+    WID=$(xdotool search --onlyvisible --class "epiphany-browser" 2>/dev/null | head -n 1 \
+        || xdotool search --onlyvisible --class "epiphany" 2>/dev/null | head -n 1 \
+        || xdotool search --onlyvisible --class "Epiphany" 2>/dev/null | head -n 1 \
+        || xdotool search --onlyvisible --name "Race Control" 2>/dev/null | head -n 1 \
+        || xdotool search --onlyvisible --name "Race Control TssT" 2>/dev/null | head -n 1)
         
     if [ -n "$WID" ]; then
-        echo "Ventana Epiphany detectada (ID: $WID). Enfocando y enviando F11..."
-        xdotool windowactivate "$WID"
-        xdotool key F11
+        echo "Ventana Epiphany visible detectada (ID: $WID)."
+        # Dar tiempo a que el navegador termine de inicializar su interfaz
+        sleep 2
+        echo "Enfocando ventana..."
+        xdotool windowactivate --sync "$WID"
         sleep 0.5
+        echo "Forzando pantalla completa con wmctrl y F11..."
+        wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null || true
+        xdotool key F11
         break
     fi
-    sleep 0.1
+    sleep 0.5
 done
 
 # Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
