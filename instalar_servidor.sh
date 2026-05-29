@@ -495,12 +495,19 @@ if [ "$BROWSER" = "epiphany" ]; then
     echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Sesión Privada)..."
     # Abrir en modo privado nativo (evita bloqueos de perfil)
     epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+    EPIPHANY_PID=$!
     
-    # Bucle ultra-rápido (cada 100ms) para enfocar y poner en pantalla completa al instante
-    # Esto permite ver la animación de carga de cuadrados azules en pantalla completa de inmediato
+    # Bucle ultra-rápido (cada 100ms, hasta 30 segundos) para enfocar y poner en pantalla completa al instante
     echo "Buscando ventana de Epiphany para aplicar pantalla completa..."
-    for i in $(seq 1 100); do
-        WID=$(xdotool search --onlyvisible --class "epiphany" 2>/dev/null | head -n 1 || xdotool search --onlyvisible --class "Epiphany" 2>/dev/null | head -n 1)
+    for i in $(seq 1 300); do
+        # Buscar por clase debian (epiphany-browser), título o PID del proceso spawned
+        WID=$(xdotool search --onlyvisible --class "epiphany-browser" 2>/dev/null | head -n 1 \
+            || xdotool search --onlyvisible --class "Epiphany-browser" 2>/dev/null | head -n 1 \
+            || xdotool search --onlyvisible --class "epiphany" 2>/dev/null | head -n 1 \
+            || xdotool search --onlyvisible --class "Epiphany" 2>/dev/null | head -n 1 \
+            || xdotool search --name "Race Control" 2>/dev/null | head -n 1 \
+            || xdotool search --pid $EPIPHANY_PID 2>/dev/null | head -n 1)
+            
         if [ -n "$WID" ]; then
             echo "Ventana Epiphany detectada (ID: $WID). Enfocando y enviando F11..."
             xdotool windowactivate "$WID"
