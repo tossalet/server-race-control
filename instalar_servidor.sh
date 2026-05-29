@@ -133,28 +133,23 @@ if [ "$ARCH" = "x86_64" ]; then
 fi
 
 # ── Navegador para Kiosko ─────────────────────────────────────────────────────
-if command -v epiphany &>/dev/null; then
-    echo "   Epiphany Browser detectado. Saltando la instalación de Chrome/Chromium para mantener el sistema limpio."
-else
-    #  - x86_64 (i7): Google Chrome primero (H.264 nativo, aceleración HW)
-    #  - ARM (Raspberry Pi): Chromium + codecs extra
-    if [ "$ARCH" = "x86_64" ]; then
-        if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
-            echo "   Descargando Google Chrome para x86_64..."
-            curl -fsSL -o /tmp/google-chrome.deb \
-                "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" 2>/dev/null && \
-                apt-get install -y /tmp/google-chrome.deb 2>/dev/null && \
-                rm -f /tmp/google-chrome.deb || \
-                echo "   Chrome no disponible, usando Chromium."
-        fi
-        # Debian: paquete se llama 'chromium' (no 'chromium-browser')
-        apt-get install -y chromium 2>/dev/null || \
-        apt-get install -y chromium-browser 2>/dev/null || true
-    else
-        # Raspberry Pi / ARM: Chromium + códecs H.264
-        apt-get install -y chromium-browser chromium-codecs-ffmpeg-extra 2>/dev/null || \
-        apt-get install -y chromium 2>/dev/null || true
+# Siempre garantizamos la instalación de Chrome/Chromium para soporte de Kiosko nativo
+if [ "$ARCH" = "x86_64" ]; then
+    if ! command -v google-chrome &>/dev/null && ! command -v google-chrome-stable &>/dev/null; then
+        echo "   Descargando Google Chrome para x86_64..."
+        curl -fsSL -o /tmp/google-chrome.deb \
+            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" 2>/dev/null && \
+            apt-get install -y /tmp/google-chrome.deb 2>/dev/null && \
+            rm -f /tmp/google-chrome.deb || \
+            echo "   Chrome no disponible, usando Chromium."
     fi
+    # Debian: paquete se llama 'chromium'
+    apt-get install -y chromium 2>/dev/null || \
+    apt-get install -y chromium-browser 2>/dev/null || true
+else
+    # Raspberry Pi / ARM: Chromium + códecs H.264
+    apt-get install -y chromium-browser chromium-codecs-ffmpeg-extra 2>/dev/null || \
+    apt-get install -y chromium 2>/dev/null || true
 fi
 
 # =============================================================================
@@ -448,6 +443,9 @@ if [ -f "/etc/lightdm/lightdm.conf" ]; then
 fi
 echo -e "[Desktop]\nSession=openbox" > "/var/lib/AccountsService/users/$REAL_USER" 2>/dev/null || true
 
+# Copiar el fondo de pantalla de Plymouth a public para el splash screen del navegador
+cp "$APP_DIR/boot-theme/bg.png" "$APP_DIR/public/bg.png" 2>/dev/null || true
+
 # Script de kiosko independiente (también puede lanzarse manualmente)
 mkdir -p "$REAL_HOME/.config/race-control"
 cat > "$REAL_HOME/.config/race-control/launch_kiosk.sh" << 'KIOSK_EOF'
@@ -464,7 +462,7 @@ xset s noblank
 xset s off
 xset -dpms
 
-# Fondo de pantalla (transición suave desde Plymouth, detrás de las ventanas)
+# Fondo de pantalla (detrás de las ventanas)
 if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then
     feh --bg-scale /usr/share/plymouth/themes/racecontrol/bg.png
 fi
@@ -476,43 +474,31 @@ rm -rf /tmp/chromium_kiosk*
 ENV_PORT=$(grep '^PORT=' /opt/race-control/.env 2>/dev/null | cut -d'=' -f2)
 PORT=${ENV_PORT:-3000}
 
-# Esperar al servidor (máx 30s)
-echo "Esperando al servidor Race Control en puerto $PORT..."
-for i in $(seq 1 15); do
-    curl -s "http://localhost:$PORT" > /dev/null && break
-    sleep 2
-done
-
 # Detectar navegador disponible
-# Prioridad: epiphany > google-chrome-stable > google-chrome > chromium-browser > chromium
+# Prioridad: Chrome/Chromium primero para soporte nativo de Kiosko, fallback a Epiphany
 BROWSER=""
-for B in epiphany google-chrome-stable google-chrome chromium-browser chromium; do
+for B in google-chrome-stable google-chrome chromium-browser chromium epiphany; do
     command -v "$B" &>/dev/null && BROWSER="$B" && break
 done
 [ -z "$BROWSER" ] && BROWSER="epiphany"  # fallback
 
+echo "Navegador seleccionado: $BROWSER"
+
 if [ "$BROWSER" = "epiphany" ]; then
-    echo "Iniciando Kiosko con Epiphany (Soporte H.265 Nativo completo, Sesión Privada)..."
-    # Abrir en modo privado nativo (evita bloqueos de perfil)
-    epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+    echo "Iniciando Kiosko con Epiphany..."
+    # Abrir splash.html inmediatamente
+    epiphany --private-instance "file:///opt/race-control/public/splash.html?port=$PORT&force_transcode=0" &
     EPIPHANY_PID=$!
     
-    # Bucle ultra-rápido (cada 100ms, hasta 30 segundos) para enfocar y poner en pantalla completa al instante
-    echo "Buscando ventana de Epiphany para aplicar pantalla completa..."
-    for i in $(seq 1 300); do
-        # Buscar por clase debian (epiphany-browser), título o PID del proceso spawned
-        WID=$(xdotool search --onlyvisible --class "epiphany-browser" 2>/dev/null | head -n 1 \
-            || xdotool search --onlyvisible --class "Epiphany-browser" 2>/dev/null | head -n 1 \
-            || xdotool search --onlyvisible --class "epiphany" 2>/dev/null | head -n 1 \
-            || xdotool search --onlyvisible --class "Epiphany" 2>/dev/null | head -n 1 \
-            || xdotool search --name "Race Control" 2>/dev/null | head -n 1 \
-            || xdotool search --pid $EPIPHANY_PID 2>/dev/null | head -n 1)
-            
+    # Bucle para enfocar y poner en pantalla completa al instante buscando por el título único de la ventana
+    echo "Buscando ventana de Epiphany por título único..."
+    for i in $(seq 1 200); do
+        WID=$(xdotool search --name "Race Control - Cargando..." 2>/dev/null | head -n 1)
         if [ -n "$WID" ]; then
             echo "Ventana Epiphany detectada (ID: $WID). Enfocando y enviando F11..."
             xdotool windowactivate "$WID"
             xdotool key F11
-            sleep 0.8
+            sleep 0.5
             # Quitar Plymouth (animación de arranque) ahora que el navegador está en pantalla completa
             sudo /usr/bin/plymouth quit 2>/dev/null || true
             break
@@ -523,7 +509,7 @@ if [ "$BROWSER" = "epiphany" ]; then
     sudo /usr/bin/plymouth quit 2>/dev/null || true
 else
     echo "Iniciando Kiosko con Chrome/Chromium..."
-    # Monitor 1 — App Grabador
+    # Abrir splash.html inmediatamente en modo kiosko nativo
     $BROWSER \
         --noerrdialogs --disable-infobars --disable-features=Translate \
         --no-first-run --check-for-update-interval=31536000 \
@@ -534,7 +520,11 @@ else
         --use-gl=desktop \
         --kiosk --window-position=0,0 \
         --user-data-dir=/tmp/chromium_kiosk \
-        "http://localhost:$PORT/grabador?force_transcode=1" &
+        "file:///opt/race-control/public/splash.html?port=$PORT&force_transcode=1" &
+        
+    # Esperamos 1.5 segundos a que Chrome dibuje y quitamos Plymouth
+    sleep 1.5
+    sudo /usr/bin/plymouth quit 2>/dev/null || true
 fi
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
