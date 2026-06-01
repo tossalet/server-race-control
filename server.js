@@ -550,17 +550,15 @@ app.post('/api/monitor/open', (req, res) => {
 
         console.log(`[MONITOR] Abriendo en display secundario: ${secondaryDisplay.name} (${secondaryDisplay.width}x${secondaryDisplay.height}+${secondaryDisplay.x}+${secondaryDisplay.y})`);
 
-        // 2. Intentar lanzar Chromium/Chrome en ese display
+        // 2. Lanzar navegador en el display secundario (Epiphany prioritario)
         const candidates = [
-            'chromium-browser',
-            'chromium',
-            'google-chrome',
-            'google-chrome-stable',
-            'brave-browser',
-            'firefox'  // fallback final
+            'epiphany-browser',
+            'epiphany',
+            'firefox'  // fallback
         ];
 
         const isFirefox = (bin) => bin === 'firefox';
+        const isEpiphany = (bin) => bin.startsWith('epiphany');
 
         function tryLaunch(index) {
             if (index >= candidates.length) {
@@ -572,18 +570,15 @@ app.post('/api/monitor/open', (req, res) => {
             exec(`which ${bin}`, (werr, wout) => {
                 if (werr || !wout.trim()) return tryLaunch(index + 1);
 
-                const args = isFirefox(bin)
-                    ? [`--new-window`, monitorUrl,
-                       `--screen`, `${secondaryDisplay.x},${secondaryDisplay.y}`]
-                    : [
-                        `--app=${monitorUrl}`,
-                        `--start-fullscreen`,
-                        `--new-window`,
-                        `--window-position=${secondaryDisplay.x},${secondaryDisplay.y}`,
-                        `--window-size=${secondaryDisplay.width},${secondaryDisplay.height}`,
-                        `--disable-infobars`,
-                        `--noerrdialogs`
-                      ];
+                let args;
+                if (isEpiphany(bin)) {
+                    // Epiphany: --new-window abre en ventana nueva, luego se maximiza vía wmctrl
+                    args = [`--new-window`, monitorUrl];
+                } else if (isFirefox(bin)) {
+                    args = [`--new-window`, monitorUrl, `--kiosk`];
+                } else {
+                    args = [monitorUrl];
+                }
 
                 console.log(`[MONITOR] Lanzando ${bin} ${args.join(' ')}`);
                 const child = spawn(bin, args, {
@@ -592,6 +587,21 @@ app.post('/api/monitor/open', (req, res) => {
                     env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' }
                 });
                 child.unref();
+
+                // Para Epiphany: mover la ventana al display secundario y poner fullscreen con xdotool/wmctrl
+                if (isEpiphany(bin)) {
+                    setTimeout(() => {
+                        // Buscar la ventana de Epiphany recién abierta y moverla al segundo display
+                        const moveCmd = `xdotool search --name "RACE CONTROL" | tail -1 | xargs -I{} sh -c "xdotool windowmove {} ${secondaryDisplay.x} ${secondaryDisplay.y} && xdotool windowsize {} ${secondaryDisplay.width} ${secondaryDisplay.height} && xdotool windowactivate {} && xdotool key F11"`;
+                        exec(moveCmd, (err) => {
+                            if (err) {
+                                // Fallback con wmctrl
+                                exec(`wmctrl -r :ACTIVE: -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r :ACTIVE: -b add,fullscreen`, () => {});
+                            }
+                        });
+                    }, 2500);
+                }
+
                 res.json({ ok: true, browser: bin, display: secondaryDisplay });
             });
         }
