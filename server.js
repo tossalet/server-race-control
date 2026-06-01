@@ -229,8 +229,19 @@ app.get('/thumbs/:filename', (req, res, next) => {
     };
 
     if (!isOnline) {
-        delete thumbCache[channel];
-        delete thumbCacheTs[channel];
+        // Gracia: si hay caché reciente (< 30s), servirla aunque el canal esté offline
+        // Esto cubre reinicios de ffmpeg durante REC/STOP y auto-restart (10s)
+        if (thumbCache[channel]) {
+            const cacheAge = Date.now() - (thumbCacheTs[channel] || 0);
+            if (cacheAge < 30000) {
+                res.setHeader('Content-Type', 'image/jpeg');
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                return res.send(thumbCache[channel]);
+            }
+            // Caché expirada → limpiar y servir barras
+            delete thumbCache[channel];
+            delete thumbCacheTs[channel];
+        }
         fs.unlink(filePath, () => {});
         return serveFallback();
     }
@@ -240,8 +251,8 @@ app.get('/thumbs/:filename', (req, res, next) => {
             // Archivo no disponible — intentar servir desde caché si es reciente
             if (thumbCache[channel]) {
                 const cacheAge = Date.now() - (thumbCacheTs[channel] || 0);
-                if (cacheAge > 10000) {
-                    // Caché demasiado vieja → servir barras para evitar frames obsoletos
+                if (cacheAge > 30000) {
+                    // Caché demasiado vieja (>30s) → servir barras para evitar frames obsoletos
                     delete thumbCache[channel];
                     delete thumbCacheTs[channel];
                     return serveFallback();
@@ -281,7 +292,7 @@ app.get('/thumbs/:filename', (req, res, next) => {
             // Si está incompleto o a medio escribir por FFmpeg, servimos el último válido de la caché
             if (thumbCache[channel]) {
                 const cacheAge = Date.now() - (thumbCacheTs[channel] || 0);
-                if (cacheAge > 10000) {
+                if (cacheAge > 30000) {
                     delete thumbCache[channel];
                     delete thumbCacheTs[channel];
                     return serveFallback();
