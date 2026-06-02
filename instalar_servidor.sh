@@ -85,7 +85,17 @@ rm -rf "$APP_DIR"
 # =============================================================================
 #  PASO 2 — Dependencias del sistema
 # =============================================================================
-echo "🛠️  2/11 — Instalando dependencias del sistema..."
+# ── Purgar Chrome/Chromium para evitar conflictos ─────────────────────────────
+echo "🧹 2.0/11 — Eliminando Chrome/Chromium del sistema..."
+for pkg in google-chrome-stable google-chrome-beta google-chrome-unstable \
+           chromium chromium-browser chromium-browser-l10n chromium-codecs-ffmpeg; do
+    dpkg -l "$pkg" 2>/dev/null | grep -q '^ii' && apt-get purge -y "$pkg" 2>/dev/null || true
+done
+# Eliminar repos de Google Chrome si existen
+rm -f /etc/apt/sources.list.d/google-chrome*.list 2>/dev/null || true
+rm -f /etc/apt/trusted.gpg.d/google-chrome*.gpg 2>/dev/null || true
+apt-get autoremove -y 2>/dev/null || true
+echo "   ✔ Chrome/Chromium eliminados."
 
 # ── Paquetes base comunes ─────────────────────────────────────────────────────
 apt-get install -y \
@@ -101,16 +111,29 @@ if ! apt-get install -y epiphany-browser 2>/dev/null; then
     echo "   ⚠️  Instalación estándar de Epiphany falló. Intentando resolver conflictos con aptitude..."
     apt-get install -y aptitude 2>/dev/null || true
     if command -v aptitude &>/dev/null; then
-        # Correr aptitude en modo no-interactivo para resolver dependencias y forzar la instalación
-        # -y: si, -o Aptitude::Keep-Failed-Dependencies=false resolverá el problema
-        # Le enviamos una opción predeterminada para que elija la solución que instala/actualiza en vez de mantener rotos
         echo "   Ejecutando aptitude para resolver dependencias..."
         aptitude install -y -o Aptitude::ProblemResolver::StepLimit=1000 -o Aptitude::Keep-Failed-Dependencies=false epiphany-browser 2>/dev/null || true
     else
-        echo "   ❌ No se pudo instalar aptitude para resolver conflictos. Se continuará con otros navegadores."
+        echo "   ❌ No se pudo instalar aptitude para resolver conflictos."
     fi
 else
     echo "   ✔ Epiphany Browser instalado correctamente."
+fi
+
+# ── Establecer Epiphany como navegador por defecto ────────────────────────────
+echo "🌐 2.2/11 — Configurando Epiphany como navegador por defecto..."
+if command -v epiphany-browser &>/dev/null; then
+    # xdg-settings para el usuario actual y el usuario del kiosko
+    su - "$REAL_USER" -c "xdg-settings set default-web-browser org.gnome.Epiphany.desktop 2>/dev/null" || true
+    xdg-settings set default-web-browser org.gnome.Epiphany.desktop 2>/dev/null || true
+    # update-alternatives
+    update-alternatives --set x-www-browser /usr/bin/epiphany-browser 2>/dev/null || true
+    update-alternatives --set gnome-www-browser /usr/bin/epiphany-browser 2>/dev/null || true
+    # Crear/actualizar el .desktop si no existe en las rutas habituales
+    if [ ! -f /usr/share/applications/org.gnome.Epiphany.desktop ]; then
+        cp /usr/share/applications/epiphany-browser.desktop /usr/share/applications/org.gnome.Epiphany.desktop 2>/dev/null || true
+    fi
+    echo "   ✔ Epiphany configurado como navegador por defecto."
 fi
 
 # ── Soporte exFAT: exfatprogs (kernel nativo) con fallback a exfat-fuse ───────
@@ -125,17 +148,10 @@ fi
 # ── VAAPI (aceleración hardware Intel iGPU) ───────────────────────────────────
 ARCH=$(uname -m)
 if [ "$ARCH" = "x86_64" ]; then
-    # Intel 6ª gen+ (Skylake → Alder Lake): intel-media-va-driver
-    # Intel ≤5ª gen (Broadwell y anteriores): i965-va-driver
     apt-get install -y vainfo intel-media-va-driver 2>/dev/null || \
     apt-get install -y vainfo i965-va-driver         2>/dev/null || true
     echo "   VAAPI: driver Intel instalado"
 fi
-
-# ── Navegador para Kiosko ─────────────────────────────────────────────────────
-# Instalamos exclusivamente Epiphany Browser por solicitud del usuario
-echo "🌐 2.1/11 — Instalando Epiphany Browser..."
-apt-get install -y epiphany-browser
 
 # =============================================================================
 #  PASO 3 — Node.js 20 LTS
