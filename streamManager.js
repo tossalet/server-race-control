@@ -335,7 +335,14 @@ function startPreview(channel, singleFrame = false) {
         
         args.push('-rtsp_transport', 'tcp', '-i', rtspUrl);
     } else {
-        args.push('-f', 'mpegts', '-i', '-');
+        // ── Flags de tolerancia (idénticas a los transcoders que SÍ funcionan) ──
+        args.push(
+            '-fflags', '+genpts+discardcorrupt',
+            '-err_detect', 'ignore_err',
+            '-probesize', '500000',
+            '-analyzeduration', '500000',
+            '-f', 'mpegts', '-i', '-'
+        );
     }
 
     if (!useSubstream) {
@@ -349,11 +356,26 @@ function startPreview(channel, singleFrame = false) {
         args.push('-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', outPath);
     }
 
+    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'}`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
     
     child.on('error', (err) => {
         console.error(`[PREVIEW ERROR CH-${channel}] Failed to run ffmpeg:`, err.message);
+    });
+
+    // ── Log stderr para diagnóstico ──
+    let lastStderrLog = 0;
+    child.stderr.on('data', (d) => {
+        const text = d.toString().trim();
+        if (!text) return;
+        const isError = /error|fail|unable|invalid/i.test(text);
+        const now = Date.now();
+        if (isError || now - lastStderrLog > 10000) {
+            lastStderrLog = now;
+            const line = text.split('\n')[0].substring(0, 200);
+            console.log(`[PREV-STDERR CH-${channel}] ${line}`);
+        }
     });
 
     if (!useSubstream) {
@@ -391,21 +413,22 @@ function startPreview(channel, singleFrame = false) {
                 }
                 activeInputs[channel].prevSubscriber = null;
             }
-            if (activeInputs[channel].prevProcess === child) {
-                activeInputs[channel].prevProcess = null;
-                // Auto-restart preview if the input is still active and it wasn't a singleFrame request
-                if (!singleFrame && activeInputs[channel] && !activeInputs[channel].isStopping) {
-                    console.log(`[PREVIEW CH-${channel}] Process exited. Auto-restarting preview in 3 seconds...`);
-                    setTimeout(() => {
-                        if (activeInputs[channel] && !activeInputs[channel].isStopping && !activeInputs[channel].prevProcess) {
-                            startPreview(channel, false);
-                        }
-                    }, 3000);
-                }
+            // Limpiar referencia (sea child o null por stopPreview)
+            const wasOurProcess = activeInputs[channel].prevProcess === child || activeInputs[channel].prevProcess === null;
+            activeInputs[channel].prevProcess = null;
+            // Auto-restart: reiniciar SIEMPRE que el input siga activo (fix: antes fallaba si stopPreview ya puso null)
+            if (!singleFrame && wasOurProcess && activeInputs[channel] && !activeInputs[channel].isStopping) {
+                console.log(`[PREVIEW CH-${channel}] Process exited. Auto-restarting preview in 3 seconds...`);
+                setTimeout(() => {
+                    if (activeInputs[channel] && !activeInputs[channel].isStopping && !activeInputs[channel].prevProcess) {
+                        startPreview(channel, false);
+                    }
+                }, 3000);
             }
         }
     });
 }
+
 
 function stopPreview(channel) {
     const inp = activeInputs[channel];
