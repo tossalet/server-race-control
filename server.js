@@ -1210,57 +1210,75 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
 
 // Export clip from MP4 using fast stream-copy (no re-encode)
 app.post('/api/recordings/export', (req, res) => {
-  try {
-    const { session_id, channel, start_time, end_time, label } = req.body;
+    console.log('[EXPORT] ── Petición recibida ──');
+    console.log('[EXPORT] Body:', JSON.stringify(req.body || {}));
 
-    if (!session_id || start_time == null || end_time == null)
-        return res.status(400).json({ error: 'Missing parameters' });
+    const { session_id, channel, start_time, end_time, label } = req.body || {};
+
+    if (!session_id || start_time == null || end_time == null) {
+        console.error('[EXPORT] Parámetros incompletos:', { session_id, channel, start_time, end_time });
+        return res.status(400).json({ error: 'Faltan parámetros: session_id, start_time y end_time son obligatorios' });
+    }
+
+    if (!channel && channel !== 0) {
+        console.error('[EXPORT] Canal no especificado');
+        return res.status(400).json({ error: 'Falta el parámetro channel (canal de cámara)' });
+    }
 
     // First try to get the MP4 path from session_files
     db.get('SELECT * FROM session_files WHERE session_id = ? AND channel = ?',
         [session_id, channel], (dbErr, fileRow) => {
 
-        if (dbErr) {
-            console.error(`[EXPORT] DB error: ${dbErr.message}`);
-            return res.status(500).json({ error: 'Error de base de datos: ' + dbErr.message });
-        }
-
-        const getSourcePath = (cb) => {
-            if (fileRow && fileRow.mp4_path && fs.existsSync(fileRow.mp4_path))
-                return cb(fileRow.mp4_path);
-            // Fallback: try HLS path — SOLO si el MP4 no existe
-            // Nota: exportar desde HLS puede fallar si los segmentos .ts ya no existen
-            if (fileRow && fileRow.hls_path && fs.existsSync(fileRow.hls_path))
-                return cb(fileRow.hls_path);
-            // Fallback manual: buscar el MP4 por nombre convenido en mediaRoot
-            if (mediaRoot) {
-                const guessedMp4 = path.join(mediaRoot, `CAM_${channel}_${session_id}.mp4`);
-                if (fs.existsSync(guessedMp4)) return cb(guessedMp4);
+        // ── try-catch que cubre todo el callback asíncrono ──
+        try {
+            if (dbErr) {
+                console.error(`[EXPORT] DB error: ${dbErr.message}`);
+                return res.status(500).json({ error: 'Error de base de datos: ' + dbErr.message });
             }
-            const detail = fileRow
-                ? `MP4: ${fileRow.mp4_path || 'N/A'} | HLS: ${fileRow.hls_path || 'N/A'}`
-                : `No hay registro en session_files para sesión ${session_id} canal ${channel}`;
-            console.error(`[EXPORT] Archivo fuente no encontrado. ${detail}`);
-            return res.status(404).json({ error: 'Archivo de grabación no encontrado en disco', detail });
-        };
 
-        getSourcePath(sourcePath => {
-            // Nombre: ClipLabel_YYYYMMDD_HHMMSS.mp4
+            console.log('[EXPORT] DB result:', fileRow ? `mp4=${fileRow.mp4_path}, hls=${fileRow.hls_path}` : 'SIN REGISTRO');
+
+            // ── Resolver ruta del archivo fuente ──
+            let sourcePath = null;
+
+            if (fileRow && fileRow.mp4_path && fs.existsSync(fileRow.mp4_path)) {
+                sourcePath = fileRow.mp4_path;
+            } else if (fileRow && fileRow.hls_path && fs.existsSync(fileRow.hls_path)) {
+                sourcePath = fileRow.hls_path;
+            } else if (mediaRoot) {
+                const guessedMp4 = path.join(mediaRoot, `CAM_${channel}_${session_id}.mp4`);
+                if (fs.existsSync(guessedMp4)) sourcePath = guessedMp4;
+            }
+
+            if (!sourcePath) {
+                const detail = fileRow
+                    ? `MP4: ${fileRow.mp4_path || 'N/A'} (existe: ${fileRow.mp4_path ? fs.existsSync(fileRow.mp4_path) : 'N/A'}) | HLS: ${fileRow.hls_path || 'N/A'} (existe: ${fileRow.hls_path ? fs.existsSync(fileRow.hls_path) : 'N/A'})`
+                    : `No hay registro en session_files para sesión ${session_id} canal ${channel}`;
+                console.error(`[EXPORT] Archivo fuente no encontrado. ${detail}`);
+                return res.status(404).json({ error: 'Archivo de grabación no encontrado en disco', detail });
+            }
+
+            console.log(`[EXPORT] Fuente: ${sourcePath}`);
+
+            // ── Nombre del clip ──
             const now = new Date();
             const dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
             const timeStr = `${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
             const clipLabel = (label || `clip_${Math.floor(start_time)}s`).replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
             const exportName = `${clipLabel}_${dateStr}_${timeStr}.mp4`;
 
-            // Destino: si envían dest_path usarlo, si no, usar local mediaRoot
-            // Crear subdirectorio 'clips' dentro del destino para no mezclar con grabaciones
+            // ── Destino ──
             const baseDestDir = req.body.dest_path || mediaRoot;
-            if (!baseDestDir) return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+            if (!baseDestDir) {
+                console.error('[EXPORT] Sin disco de destino configurado');
+                return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+            }
 
             const destDir = path.join(baseDestDir, 'clips');
+            console.log(`[EXPORT] Destino: ${destDir}/${exportName}`);
+
             try {
                 fs.mkdirSync(destDir, { recursive: true });
-                // Verificar permisos de escritura
                 fs.accessSync(destDir, fs.constants.W_OK);
             } catch(mkErr) {
                 const isPermission = mkErr.code === 'EACCES' || mkErr.code === 'EPERM';
@@ -1275,90 +1293,112 @@ app.post('/api/recordings/export', (req, res) => {
             }
 
             const exportPath = path.join(destDir, exportName);
-
-            // Determinar si el destino es el disco interno (para ofrecer descarga HTTP)
             const isInternalDest = mediaRoot && (baseDestDir === mediaRoot || baseDestDir.startsWith(mediaRoot));
 
-            const ffmpegBin = streamManager.getFFmpegPath();
+            // ── FFmpeg ──
+            let ffmpegBin;
+            try {
+                ffmpegBin = streamManager.getFFmpegPath();
+            } catch (e) {
+                ffmpegBin = 'ffmpeg'; // fallback al PATH del sistema
+            }
+            console.log(`[EXPORT] FFmpeg: ${ffmpegBin}`);
 
-            // Verificar existencia solo si es ruta absoluta (en Linux es simplemente 'ffmpeg' del PATH)
             if (path.isAbsolute(ffmpegBin) && !fs.existsSync(ffmpegBin)) {
+                console.error(`[EXPORT] FFmpeg no encontrado en: ${ffmpegBin}`);
                 return res.status(500).json({ error: `FFmpeg no encontrado en: ${ffmpegBin}` });
             }
 
             const args = [
                 '-hide_banner', '-y',
-                '-ss', start_time.toString(),
+                '-ss', String(start_time),
                 '-i', sourcePath,
-                '-t', (end_time - start_time).toString(),
+                '-t', String(end_time - start_time),
                 '-c', 'copy',
                 '-movflags', '+faststart',
                 exportPath
             ];
 
-            console.log(`[EXPORT] ${exportName} — fuente: ${sourcePath} → destino: ${exportPath}`);
-            console.log(`[EXPORT] Segmento: ${start_time}s → ${end_time}s (${(end_time - start_time).toFixed(1)}s)`);
+            console.log(`[EXPORT] Comando: ${ffmpegBin} ${args.join(' ')}`);
 
             let responded = false;
-            let stderrLines = [];
-            const child = spawn(ffmpegBin, args);
+            const safeRespond = (fn) => {
+                if (!responded && !res.headersSent) {
+                    responded = true;
+                    try { fn(); } catch(e) { console.error('[EXPORT] Error al enviar respuesta:', e.message); }
+                }
+            };
 
-            // Capturar stderr para diagnóstico en caso de error
+            let stderrLines = [];
+            let child;
+            try {
+                child = spawn(ffmpegBin, args);
+            } catch (spawnErr) {
+                console.error(`[EXPORT] Error al lanzar FFmpeg: ${spawnErr.message}`);
+                return res.status(500).json({ error: `No se pudo lanzar FFmpeg: ${spawnErr.message}` });
+            }
+
             child.stderr.on('data', (d) => {
                 const line = d.toString().trim();
                 if (line) stderrLines.push(line);
-                // Mantener solo las últimas 20 líneas para no acumular RAM
                 if (stderrLines.length > 20) stderrLines.shift();
             });
 
             child.on('error', (err) => {
                 console.error(`[EXPORT] FFmpeg spawn error: ${err.message}`);
-                if (!responded) {
-                    responded = true;
-                    res.status(500).json({ error: `FFmpeg no se pudo ejecutar: ${err.message}` });
-                }
+                safeRespond(() => res.status(500).json({ error: `FFmpeg no se pudo ejecutar: ${err.message}` }));
             });
 
-            // Esperar a que FFmpeg termine para responder con el resultado real
             child.on('close', code => {
-                const lastErr = stderrLines.slice(-3).join(' | ');
-                if (code === 0) {
-                    console.log(`[EXPORT] OK: ${exportName}`);
-                    io.emit('server_log', { timestamp: new Date().toISOString(), level: 'INFO',
-                        message: `✓ Clip exportado: ${exportName}` });
-                    if (!responded) {
-                        responded = true;
-                        const response = { ok: true, filename: exportName, path: exportPath };
-                        // Si se exportó al disco interno, incluir URL de descarga HTTP
-                        if (isInternalDest) {
-                            response.downloadUrl = `/api/exports/download/${encodeURIComponent(exportName)}`;
-                        }
-                        res.json(response);
-                    }
-                } else {
-                    console.error(`[EXPORT] FALLO: ${exportName} (código ${code}) — ${lastErr}`);
-                    io.emit('server_log', { timestamp: new Date().toISOString(), level: 'ERROR',
-                        message: `✗ Export fallido (${code}): ${lastErr}` });
-                    if (!responded) {
-                        responded = true;
-                        res.status(500).json({
+                try {
+                    const lastErr = stderrLines.slice(-3).join(' | ');
+                    if (code === 0) {
+                        console.log(`[EXPORT] ✓ OK: ${exportName}`);
+                        io.emit('server_log', { timestamp: new Date().toISOString(), level: 'INFO',
+                            message: `✓ Clip exportado: ${exportName}` });
+                        safeRespond(() => {
+                            const response = { ok: true, filename: exportName, path: exportPath };
+                            if (isInternalDest) {
+                                response.downloadUrl = `/api/exports/download/${encodeURIComponent(exportName)}`;
+                            }
+                            res.json(response);
+                        });
+                    } else {
+                        console.error(`[EXPORT] ✗ FALLO: ${exportName} (código ${code}) — ${lastErr}`);
+                        io.emit('server_log', { timestamp: new Date().toISOString(), level: 'ERROR',
+                            message: `✗ Export fallido (${code}): ${lastErr}` });
+                        safeRespond(() => res.status(500).json({
                             error: `FFmpeg falló con código ${code}`,
                             detail: lastErr || 'Sin detalle disponible',
                             source: sourcePath,
                             dest: exportPath
-                        });
+                        }));
                     }
+                } catch (closeErr) {
+                    console.error(`[EXPORT] Error en close handler: ${closeErr.message}`);
+                    safeRespond(() => res.status(500).json({ error: `Error procesando resultado: ${closeErr.message}` }));
                 }
             });
-        });
 
+            // Timeout de seguridad: si FFmpeg no responde en 120s, matar y devolver error
+            setTimeout(() => {
+                if (!responded) {
+                    console.error(`[EXPORT] Timeout 120s — matando FFmpeg`);
+                    try { child.kill('SIGKILL'); } catch (_) {}
+                    safeRespond(() => res.status(504).json({
+                        error: 'Tiempo de espera agotado (120s). El clip puede ser demasiado largo o el disco demasiado lento.',
+                        detail: stderrLines.slice(-3).join(' | ')
+                    }));
+                }
+            }, 120000);
+
+        } catch (asyncErr) {
+            console.error(`[EXPORT] Error inesperado en callback: ${asyncErr.stack || asyncErr.message}`);
+            if (!res.headersSent) {
+                res.status(500).json({ error: `Error inesperado: ${asyncErr.message}` });
+            }
+        }
     });
-  } catch (err) {
-    console.error(`[EXPORT] Error inesperado: ${err.message}`);
-    if (!res.headersSent) {
-        res.status(500).json({ error: `Error inesperado del servidor: ${err.message}` });
-    }
-  }
 });
 
 // ── Descarga HTTP de clips exportados al disco interno ──────────────────────
