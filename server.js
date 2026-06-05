@@ -1210,6 +1210,7 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
 
 // Export clip from MP4 using fast stream-copy (no re-encode)
 app.post('/api/recordings/export', (req, res) => {
+  try {
     const { session_id, channel, start_time, end_time, label } = req.body;
 
     if (!session_id || start_time == null || end_time == null)
@@ -1352,6 +1353,12 @@ app.post('/api/recordings/export', (req, res) => {
         });
 
     });
+  } catch (err) {
+    console.error(`[EXPORT] Error inesperado: ${err.message}`);
+    if (!res.headersSent) {
+        res.status(500).json({ error: `Error inesperado del servidor: ${err.message}` });
+    }
+  }
 });
 
 // ── Descarga HTTP de clips exportados al disco interno ──────────────────────
