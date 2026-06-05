@@ -1259,12 +1259,24 @@ app.post('/api/recordings/export', (req, res) => {
             const destDir = path.join(baseDestDir, 'clips');
             try {
                 fs.mkdirSync(destDir, { recursive: true });
+                // Verificar permisos de escritura
+                fs.accessSync(destDir, fs.constants.W_OK);
             } catch(mkErr) {
-                console.error(`[EXPORT] No se puede crear directorio destino: ${mkErr.message}`);
-                return res.status(500).json({ error: `No se puede escribir en el disco: ${mkErr.message}` });
+                const isPermission = mkErr.code === 'EACCES' || mkErr.code === 'EPERM';
+                const hint = isPermission
+                    ? ' Ejecuta: sudo chmod 777 "' + baseDestDir + '" o comprueba que el disco no está montado como solo lectura.'
+                    : '';
+                console.error(`[EXPORT] No se puede crear/escribir en destino: ${mkErr.message}${hint}`);
+                return res.status(500).json({
+                    error: `No se puede escribir en el disco: ${mkErr.message}`,
+                    hint: hint || undefined
+                });
             }
 
             const exportPath = path.join(destDir, exportName);
+
+            // Determinar si el destino es el disco interno (para ofrecer descarga HTTP)
+            const isInternalDest = mediaRoot && (baseDestDir === mediaRoot || baseDestDir.startsWith(mediaRoot));
 
             const ffmpegBin = streamManager.getFFmpegPath();
 
@@ -1315,7 +1327,12 @@ app.post('/api/recordings/export', (req, res) => {
                         message: `✓ Clip exportado: ${exportName}` });
                     if (!responded) {
                         responded = true;
-                        res.json({ ok: true, filename: exportName, path: exportPath });
+                        const response = { ok: true, filename: exportName, path: exportPath };
+                        // Si se exportó al disco interno, incluir URL de descarga HTTP
+                        if (isInternalDest) {
+                            response.downloadUrl = `/api/exports/download/${encodeURIComponent(exportName)}`;
+                        }
+                        res.json(response);
                     }
                 } else {
                     console.error(`[EXPORT] FALLO: ${exportName} (código ${code}) — ${lastErr}`);
@@ -1335,6 +1352,54 @@ app.post('/api/recordings/export', (req, res) => {
         });
 
     });
+});
+
+// ── Descarga HTTP de clips exportados al disco interno ──────────────────────
+// Permite descargar al navegador los clips que se guardaron en mediaRoot/clips/
+app.get('/api/exports/download/:filename', (req, res) => {
+    const filename = req.params.filename;
+    // Sanear nombre: no permitir path traversal
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+        return res.status(400).json({ error: 'Nombre de archivo inválido' });
+    }
+    if (!mediaRoot) {
+        return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+    }
+    const filePath = path.join(mediaRoot, 'clips', filename);
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'Archivo no encontrado: ' + filename });
+    }
+    // Forzar descarga con Content-Disposition
+    res.download(filePath, filename, (err) => {
+        if (err && !res.headersSent) {
+            console.error(`[EXPORT-DOWNLOAD] Error descargando ${filename}: ${err.message}`);
+            res.status(500).json({ error: 'Error al descargar: ' + err.message });
+        }
+    });
+});
+
+// ── Listar clips exportados disponibles para descarga ──────────────────────
+app.get('/api/exports', (req, res) => {
+    if (!mediaRoot) return res.json([]);
+    const clipsDir = path.join(mediaRoot, 'clips');
+    if (!fs.existsSync(clipsDir)) return res.json([]);
+    try {
+        const files = fs.readdirSync(clipsDir)
+            .filter(f => f.endsWith('.mp4'))
+            .map(f => {
+                const stat = fs.statSync(path.join(clipsDir, f));
+                return {
+                    filename: f,
+                    sizeMB: (stat.size / 1e6).toFixed(1),
+                    created: stat.mtime.toISOString(),
+                    downloadUrl: `/api/exports/download/${encodeURIComponent(f)}`
+                };
+            })
+            .sort((a, b) => new Date(b.created) - new Date(a.created));
+        res.json(files);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ── Clips (IN/OUT pairs) ────────────────────────────
@@ -1454,21 +1519,44 @@ app.get('/api/disks', async (req, res) => {
         const drives = [];
         const seen   = new Set();
 
-        const addDrive = (mountPath, label, freeGB, totalGB, usedPct) => {
+        // Helper para obtener espacio libre via df (Linux)
+        const getDiskSpace = (mountPath) => {
+            try {
+                if (process.platform === 'win32') return { freeGB: null, totalGB: null, usedPct: null };
+                const { execSync } = require('child_process');
+                const dfOut = execSync(`df -B1 "${mountPath}" 2>/dev/null | tail -1`, { timeout: 3000 }).toString().trim();
+                const parts = dfOut.split(/\s+/);
+                return {
+                    freeGB:  parts[3] ? (parseInt(parts[3]) / 1e9).toFixed(1) : null,
+                    totalGB: parts[1] ? (parseInt(parts[1]) / 1e9).toFixed(1) : null,
+                    usedPct: parts[4] ? parseInt(parts[4]) : null
+                };
+            } catch (_) { return { freeGB: null, totalGB: null, usedPct: null }; }
+        };
+
+        const addDrive = (mountPath, label, freeGB, totalGB, usedPct, isInternal = false) => {
             if (seen.has(mountPath)) return;
             seen.add(mountPath);
             drives.push({
-                id:      mountPath.replace(/[:\\/]/g, '_'),
-                name:    `[${label}] ${mountPath}`,
-                path:    mountPath,
-                freeGB:  freeGB  || null,
-                totalGB: totalGB || null,
-                usedPct: usedPct || null,
-                active:  mediaRoot && (mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/') || mediaRoot.startsWith(mountPath + '\\'))
+                id:       mountPath.replace(/[:\\/]/g, '_'),
+                name:     `[${label}] ${mountPath}`,
+                path:     mountPath,
+                freeGB:   freeGB  || null,
+                totalGB:  totalGB || null,
+                usedPct:  usedPct || null,
+                internal: isInternal,
+                active:   mediaRoot && (mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/') || mediaRoot.startsWith(mountPath + '\\'))
             });
         };
 
-        // Fuente 1: systeminformation
+        // ── Fuente 0: Disco interno (mediaRoot / grabaciones) — SIEMPRE visible ──
+        // El disco donde se graban las sesiones es el destino más natural para exportar clips.
+        if (mediaRoot && fs.existsSync(mediaRoot)) {
+            const space = getDiskSpace(mediaRoot);
+            addDrive(mediaRoot, '💾 Disco de grabación', space.freeGB, space.totalGB, space.usedPct, true);
+        }
+
+        // ── Fuente 1: systeminformation (discos externos) ──
         try {
             const fsSizes = await si.fsSize();
             const EXT = ['/media', '/mnt', '/run/media'];
@@ -1481,11 +1569,11 @@ app.get('/api/disks', async (req, res) => {
                 const freeGB  = f.available ? (f.available / 1e9).toFixed(1) : null;
                 const totalGB = f.size      ? (f.size      / 1e9).toFixed(1) : null;
                 const usedPct = f.size && f.use ? Math.round(f.use) : null;
-                addDrive(f.mount, f.fs || 'disk', freeGB, totalGB, usedPct);
+                addDrive(f.mount, f.fs || 'USB', freeGB, totalGB, usedPct, false);
             });
         } catch (_) {}
 
-        // Fuente 2: /proc/mounts (Linux, más fiable en ARM/Raspberry)
+        // ── Fuente 2: /proc/mounts (Linux, más fiable en ARM/Raspberry) ──
         if (process.platform !== 'win32') {
             try {
                 const DATA_FS = new Set(['ext4','ext3','ext2','vfat','exfat','ntfs','xfs','btrfs','f2fs','fuseblk']);
@@ -1501,27 +1589,10 @@ app.get('/api/disks', async (req, res) => {
                     if (SKIP.some(p => mount === p || mount.startsWith(p + '/'))) continue;
                     if (!/^\/(media|mnt|run\/media)/.test(mount)) continue;
                     if (!fs.existsSync(mount)) continue;
-                    try {
-                        const { execSync } = require('child_process');
-                        const dfOut = execSync(`df -B1 "${mount}" 2>/dev/null | tail -1`, { timeout: 3000 }).toString().trim();
-                        const parts = dfOut.split(/\s+/);
-                        addDrive(mount, fsType,
-                            parts[3] ? (parseInt(parts[3]) / 1e9).toFixed(1) : null,
-                            parts[1] ? (parseInt(parts[1]) / 1e9).toFixed(1) : null,
-                            parts[4] ? parseInt(parts[4]) : null);
-                    } catch (_) {
-                        addDrive(mount, fsType, null, null, null);
-                    }
+                    const space = getDiskSpace(mount);
+                    addDrive(mount, `🔌 ${fsType.toUpperCase()}`, space.freeGB, space.totalGB, space.usedPct, false);
                 }
             } catch (_) {}
-        }
-
-        // Fuente 3: mediaRoot activo (incluirlo siempre si existe y no está ya representado por un disco padre)
-        if (mediaRoot && fs.existsSync(mediaRoot)) {
-            const isSubpath = Array.from(seen).some(mountPath => mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/') || mediaRoot.startsWith(mountPath + '\\'));
-            if (!isSubpath) {
-                addDrive(mediaRoot, 'activo', null, null, null);
-            }
         }
 
         res.json(drives);
