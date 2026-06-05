@@ -487,9 +487,23 @@ SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 echo "Resolución detectada: ${SCREEN_W}x${SCREEN_H}"
 
-# Abrir la aplicación
-epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+# Desactivar barras de navegación de Epiphany (gsettings)
+# Esto evita que al mover el ratón arriba aparezca la barra del navegador
+su - "$REAL_USER" -c "gsettings set org.gnome.Epiphany.ui expand-tabs-bar false 2>/dev/null" || true
+su - "$REAL_USER" -c "gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/null" || true
+# Desactivar hot-corners de GNOME si están activos (evita activar overview al mover el ratón arriba)
+su - "$REAL_USER" -c "gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null" || true
+su - "$REAL_USER" -c "gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null" || true
+
+# Abrir la aplicación en modo web-app (sin barras de navegación)
+epiphany --new-window --application-mode "http://localhost:$PORT/grabador?force_transcode=0" 2>/dev/null &
 EPIPHANY_PID=$!
+# Fallback: si --application-mode no funciona en esta versión de Epiphany
+if ! kill -0 "$EPIPHANY_PID" 2>/dev/null; then
+    echo "Fallback: abriendo sin --application-mode"
+    epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+    EPIPHANY_PID=$!
+fi
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
 echo "Esperando a que la ventana de Epiphany aparezca (xdotool --sync)..."
