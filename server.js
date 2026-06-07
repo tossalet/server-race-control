@@ -1210,6 +1210,7 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
 
 // Export clip from MP4 using fast stream-copy (no re-encode)
 app.post('/api/recordings/export', (req, res) => {
+    const { spawn } = require('child_process');
     console.log('[EXPORT] ── Petición recibida ──');
     console.log('[EXPORT] Body:', JSON.stringify(req.body || {}));
 
