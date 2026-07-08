@@ -1000,6 +1000,24 @@ app.delete('/api/outputs/:id', (req, res) => {
 // In-memory map of active recording FFmpeg processes { sessionId -> [childProcess, ...] }
 const activeRecordingProcs = {};
 
+// Endpoint para comprobar si hay una sesión grabando activamente (procesos FFmpeg en memoria)
+app.get('/api/recordings/active', (req, res) => {
+    const activeSessions = Object.keys(activeRecordingProcs);
+    if (activeSessions.length === 0) {
+        return res.json({ active: false, session_id: null });
+    }
+    // Devolver la sesión más reciente que tenga procesos vivos
+    const sessionId = activeSessions[activeSessions.length - 1];
+    const procs = activeRecordingProcs[sessionId] || [];
+    const aliveCount = procs.filter(p => p.exitCode === null).length;
+    if (aliveCount === 0) {
+        // Todos los procesos terminaron — limpiar
+        delete activeRecordingProcs[sessionId];
+        return res.json({ active: false, session_id: null });
+    }
+    res.json({ active: true, session_id: sessionId, alive_processes: aliveCount });
+});
+
 // Helper: kill ALL active recording processes (used before starting a new session)
 function stopAllRecordings() {
     const activeSessions = Object.keys(activeRecordingProcs);
@@ -1083,14 +1101,7 @@ app.post('/api/recordings/start', (req, res) => {
                 const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
                 const isH265 = codec.toLowerCase().includes('265') || codec.toLowerCase().includes('hevc');
                 const hlsCodecArgs = isH265
-                    ? [
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-tune', 'zerolatency',
-                        '-crf', '28',
-                        '-threads', '2',
-                        '-vf', 'scale=-2:720',
-                      ]
+                    ? streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28 })
                     : [
                         '-c:v', 'copy',
                       ];
@@ -1735,11 +1746,12 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     
     let args;
     if (mustTranscode) {
-        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (Solicitado por el cliente)`);
+        const encoderType = streamManager.nvencAvailable ? 'GPU NVENC' : 'CPU libx264';
+        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (${encoderType})`);
+        const encoderArgs = streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28 });
         args = [
             '-hide_banner',
             '-y',
-            '-threads', '2', // Evita ahogar todos los núcleos de la CPU del I7
             '-fflags', '+genpts+discardcorrupt',
             '-err_detect', 'ignore_err',
             '-probesize', '100000',
@@ -1747,11 +1759,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-f', 'mpegts',
             '-i', '-',
             '-map', '0:v?', '-map', '0:a?',
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-tune', 'zerolatency',
-            '-crf', '28',
-            '-vf', 'scale=-2:720', // Escalar a 720p para reducir la carga de CPU
+            ...encoderArgs,
             '-r', '30', // Limitar a 30fps para ahorrar recursos
             '-c:a', 'aac',
             '-b:a', '128k',

@@ -3,7 +3,7 @@
 #  Race Control Server — Instalador Todo-en-Uno
 #  Incluye: servidor, disco externo, Plymouth, Kiosko multi-monitor
 #  Uso: sudo bash instalar_servidor.sh
-#  Compatible: Raspberry Pi OS (bookworm), Ubuntu 22/24 LTS, Debian 12 (Bookworm)
+#  Compatible: Raspberry Pi OS (bookworm), Ubuntu 22/24 LTS, Debian 12/13 (Bookworm/Trixie)
 # =============================================================================
 
 # ── Detectar distribución ────────────────────────────────────────────────────
@@ -151,6 +151,51 @@ if [ "$ARCH" = "x86_64" ]; then
     apt-get install -y vainfo intel-media-va-driver 2>/dev/null || \
     apt-get install -y vainfo i965-va-driver         2>/dev/null || true
     echo "   VAAPI: driver Intel instalado"
+fi
+
+# ── NVIDIA GPU (aceleración NVENC para transcodificación H.265→H.264) ─────────
+if [ "$ARCH" = "x86_64" ]; then
+    # Detectar si hay una GPU NVIDIA en el sistema (lspci)
+    if lspci 2>/dev/null | grep -qi 'nvidia'; then
+        echo "🎮 2.3/11 — GPU NVIDIA detectada. Instalando drivers propietarios..."
+        
+        # Habilitar repositorios non-free si no están habilitados
+        # Debian Trixie (13): sources.list usa 'main non-free-firmware' por defecto
+        if grep -q 'main non-free-firmware' /etc/apt/sources.list 2>/dev/null && \
+           ! grep -q 'contrib non-free non-free-firmware' /etc/apt/sources.list 2>/dev/null; then
+            echo "   Habilitando repositorios contrib + non-free..."
+            sed -i 's/main non-free-firmware/main contrib non-free non-free-firmware/g' /etc/apt/sources.list
+            apt-get update -qq
+        fi
+        # Debian Bookworm (12): sources.list usa 'main' por defecto
+        if grep -q 'bookworm main$' /etc/apt/sources.list 2>/dev/null; then
+            echo "   Habilitando repositorios contrib + non-free (Bookworm)..."
+            sed -i 's/bookworm main$/bookworm main contrib non-free non-free-firmware/' /etc/apt/sources.list
+            apt-get update -qq
+        fi
+        # deb822 format (Debian Trixie alternativo)
+        if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+            if ! grep -q 'non-free' /etc/apt/sources.list.d/debian.sources 2>/dev/null; then
+                echo "   Habilitando non-free en debian.sources (deb822)..."
+                sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
+                apt-get update -qq
+            fi
+        fi
+
+        # Instalar headers del kernel + driver NVIDIA
+        apt-get install -y linux-headers-$(uname -r) 2>/dev/null || true
+        if apt-get install -y nvidia-driver firmware-misc-nonfree 2>/dev/null; then
+            echo "   ✔ Driver NVIDIA instalado. NVENC disponible para FFmpeg."
+            echo "   ⚠️  Se requiere reinicio para activar el driver NVIDIA."
+            NVIDIA_INSTALLED=true
+        else
+            echo "   ⚠️  No se pudo instalar el driver NVIDIA. Transcodificación usará CPU."
+            NVIDIA_INSTALLED=false
+        fi
+    else
+        echo "   No se detectó GPU NVIDIA. Transcodificación usará CPU (libx264)."
+        NVIDIA_INSTALLED=false
+    fi
 fi
 
 # =============================================================================

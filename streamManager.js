@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -12,6 +12,57 @@ function setIo(io) { ioInstance = io; }
 // Re-emitir a destinos externos (SRT/RTMP/disk outputs) nunca se usa en producción
 // y consume procesos FFmpeg innecesarios. Para reactivarlos, cambiar a true.
 const OUTPUTS_ENABLED = false;
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── DETECCIÓN AUTOMÁTICA DE GPU NVIDIA NVENC ─────────────────────────────────
+// Al arrancar, verificamos si FFmpeg tiene soporte h264_nvenc (GPU NVIDIA).
+// Si la GPU no está presente o no tiene drivers, se usa libx264 (CPU) como fallback.
+let nvencAvailable = false;
+(function detectNvenc() {
+    try {
+        const ffmpegCmd = os.platform() === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+        const output = execSync(`${ffmpegCmd} -encoders 2>&1`, { encoding: 'utf8', timeout: 5000 });
+        if (output.includes('h264_nvenc')) {
+            nvencAvailable = true;
+            console.log('[GPU] ✅ NVIDIA NVENC detectado — transcodificación H.265→H.264 usará GPU');
+        } else {
+            console.log('[GPU] ℹ️  NVENC no disponible — transcodificación usará CPU (libx264)');
+        }
+    } catch (e) {
+        console.log('[GPU] ℹ️  No se pudo detectar NVENC — usando CPU (libx264)');
+    }
+})();
+
+/**
+ * Devuelve los argumentos de FFmpeg para transcodificar a H.264.
+ * Si NVENC está disponible, usa GPU; si no, usa CPU con libx264.
+ * @param {object} opts - Opciones opcionales { scale: '-2:720', cq: 28 }
+ * @returns {string[]} Array de argumentos FFmpeg para el encoder de vídeo
+ */
+function getH264EncoderArgs(opts = {}) {
+    const scale = opts.scale || '-2:720';
+    if (nvencAvailable) {
+        // NVENC: aceleración GPU NVIDIA
+        // -preset p4 = equilibrio velocidad/calidad, -rc vbr -cq = calidad variable
+        return [
+            '-c:v', 'h264_nvenc',
+            '-preset', 'p4',
+            '-rc', 'vbr',
+            '-cq', String(opts.cq || 28),
+            '-vf', `scale=${scale}`,
+        ];
+    } else {
+        // CPU fallback: libx264 ultrafast
+        return [
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-tune', 'zerolatency',
+            '-crf', String(opts.cq || 28),
+            '-threads', '2',
+            '-vf', `scale=${scale}`,
+        ];
+    }
+}
 // ─────────────────────────────────────────────────────────────────────────────
 
 // In-memory store for active processes
@@ -800,5 +851,7 @@ module.exports = {
     activeInputs,
     activeOutputs,
     getFFmpegPath,
-    persistentCodecs
+    persistentCodecs,
+    nvencAvailable,
+    getH264EncoderArgs
 };
