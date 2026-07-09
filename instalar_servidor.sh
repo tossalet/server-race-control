@@ -555,7 +555,11 @@ done
 # Recargar config de Openbox (asegura que rc.xml con regla fullscreen esté activo)
 openbox --reconfigure 2>/dev/null || true
 
-echo "Iniciando Kiosko con Epiphany Browser..."
+# Asegurar fondo de pantalla negro sólido inmediato en Openbox
+# Oculta el fondo gris de Xorg durante la carga de Epiphany
+feh --bg-color black 2>/dev/null || true
+
+echo "Iniciando Kiosko con Epiphany Browser en segundo plano..."
 
 # Obtener resolución de pantalla para forzar geometría
 SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
@@ -572,7 +576,10 @@ gsettings set org.gnome.Epiphany.ui navbar-visible false 2>/dev/null || true
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
-# Abrir la aplicación en modo ventana privada limpia (evita las validaciones de .desktop y portales en Debian Trixie)
+
+# Abrir Epiphany en segundo plano (off-screen, a la coordenada +9999+9999)
+# para que el usuario no vea la barra de direcciones ni la carga inicial.
+# Usamos un perfil temporal para forzar que empiece limpio
 epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
 EPIPHANY_PID=$!
 
@@ -599,38 +606,46 @@ if [ -z "$WID" ]; then
 fi
 
 if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID"
+    echo "Ventana encontrada: $WID. Configurando en segundo plano..."
 
-    # ── Redimensionado instantáneo ──
-    # Forzar posición inmediata en el Xorg antes de forzar F11
-    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
-        echo "Forzando geometría inicial ${SCREEN_W}x${SCREEN_H}..."
-        xdotool windowmove "$WID" 0 0 2>/dev/null
-        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
-        wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
-    fi
+    # ── Mover fuera de la pantalla inmediatamente para ocultar el ajuste ──
+    xdotool windowmove "$WID" 9999 9999 2>/dev/null
 
-    # Activar ventana y enviar F11
+    # Quitar los bordes de la ventana y poner a pantalla completa de forma silenciosa
     xdotool windowactivate --sync "$WID" 2>/dev/null
     xdotool windowfocus --sync "$WID" 2>/dev/null
     xdotool key --window "$WID" F11 2>/dev/null
     sleep 0.5
     wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
 
-    # Comprobar si está fullscreen
-    GEOM=$(xdotool getwindowgeometry "$WID" 2>/dev/null)
-    echo "Geometría final de la ventana: $GEOM"
+    # Forzar dimensiones finales
+    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
+        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
+        wmctrl -i -r "$WID" -e "0,9999,9999,$SCREEN_W,$SCREEN_H" 2>/dev/null
+    fi
+
+    # Esperar un instante para que el renderizado de la web termine de pintar el fondo negro
+    sleep 1
+
+    # ── DESVELAR VENTANA: Mover de golpe al centro de la pantalla principal ──
+    echo "Desvelando ventana en pantalla principal (0,0)..."
+    xdotool windowmove "$WID" 0 0 2>/dev/null
+    wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
     
-    # ── APAGAR CARGA PLYMOUTH AL FINAL ──
-    # Solo cuando el Xorg ha dibujado todo y la ventana está posicionada,
-    # matamos Plymouth para desvelar el panel web al instante.
+    # Asegurar foco
+    xdotool windowactivate "$WID" 2>/dev/null
+
+    # ── CERRAR PLYMOUTH AL FINAL ──
+    # Ahora sí: quitamos la pantalla de carga solo cuando el navegador ya está pintado
     if command -v plymouth &>/dev/null; then
         echo "Apagando pantalla de carga (Plymouth)..."
         sudo plymouth quit 2>/dev/null || true
     fi
 else
     echo "ERROR: No se encontró la ventana del navegador."
-    sudo plymouth quit 2>/dev/null || true
+    if command -v plymouth &>/dev/null; then
+        sudo plymouth quit 2>/dev/null || true
+    fi
 fi
 
 echo "=== Kiosk setup finalizado a $(date) ==="
