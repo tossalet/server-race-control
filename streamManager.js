@@ -42,14 +42,17 @@ let nvencAvailable = false;
 function getH264EncoderArgs(opts = {}) {
     const scale = opts.scale || '-2:720';
     if (nvencAvailable) {
-        // NVENC: aceleración GPU NVIDIA
-        // -preset p4 = equilibrio velocidad/calidad, -rc vbr -cq = calidad variable
+        // Si usamos hwaccel cuda completo, usamos scale_cuda en la GPU
+        const scaleFilter = opts.hwaccel === 'cuda' 
+            ? `scale_cuda=${scale.replace('-2', '1280')}:format=yuv420p` // scale_cuda requiere dimensiones explícitas (por ejemplo 1280:720)
+            : `scale=${scale}`;
+
         return [
             '-c:v', 'h264_nvenc',
             '-preset', 'p4',
             '-rc', 'vbr',
             '-cq', String(opts.cq || 28),
-            '-vf', `scale=${scale}`,
+            '-vf', scaleFilter,
         ];
     } else {
         // CPU fallback: libx264 ultrafast

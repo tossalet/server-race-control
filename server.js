@@ -1106,7 +1106,7 @@ app.post('/api/recordings/start', (req, res) => {
                 const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
                 const isH265 = codec.toLowerCase().includes('265') || codec.toLowerCase().includes('hevc');
                 const hlsCodecArgs = isH265
-                    ? streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28 })
+                    ? streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28, hwaccel: streamManager.nvencAvailable ? 'cuda' : undefined })
                     : [
                         '-c:v', 'copy',
                       ];
@@ -1119,7 +1119,7 @@ app.post('/api/recordings/start', (req, res) => {
 
                 // Si es H.265 y la GPU NVIDIA está disponible, activar decodificación acelerada por hardware (NVIDIA CUDA)
                 if (isH265 && streamManager.nvencAvailable) {
-                    args.push('-hwaccel', 'cuda', '-c:v', 'hevc_cuvid');
+                    args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
                 }
 
                 args.push('-i', `tcp://127.0.0.1:${recPort}?listen`);
@@ -1766,7 +1766,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     if (mustTranscode) {
         const encoderType = streamManager.nvencAvailable ? 'GPU NVENC' : 'CPU libx264';
         originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (${encoderType})`);
-        const encoderArgs = streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28 });
+        const encoderArgs = streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28, hwaccel: streamManager.nvencAvailable ? 'cuda' : undefined });
         
         args = [
             '-hide_banner',
@@ -1779,7 +1779,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
 
         // Decodificación acelerada por GPU si está disponible
         if (streamManager.nvencAvailable) {
-            args.push('-hwaccel', 'cuda', '-c:v', 'hevc_cuvid');
+            args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
         }
 
         args.push(
@@ -2218,68 +2218,34 @@ app.get('/api/network', (req, res) => {
         };
     };
     
-    exec('nmcli -t -f NAME,DEVICE,TYPE con show --active', (err, stdout) => {
-        if (err || !stdout) {
-            return res.json(getFallbackNetworkData('NetworkManager no disponible o inactivo'));
-        }
-        
-        const lines = stdout.trim().split('\n');
-        let activeConn = null;
-        let activeDev = null;
-        
-        // 1. Prioritize physical ethernet connection (excluding virtual interfaces)
-        for (let line of lines) {
-            const parts = line.split(':');
-            if (parts.length >= 3) {
-                const name = parts[0];
-                const device = parts[1];
-                const type = parts[2];
-                if ((type === '802-3-ethernet' || type === 'ethernet') && 
-                    !device.startsWith('veth') && !device.startsWith('docker') && !device.startsWith('br-') && device !== 'lo') {
-                    activeConn = name;
-                    activeDev = device;
-                    break;
-                }
+    // 1. Detectar dispositivo físico activo con salida a internet usando la tabla de rutas del Kernel
+    const getActiveDevice = () => new Promise((resolve) => {
+        exec("ip route show | grep default | awk '{print $5}'", (errRoute, stdoutRoute) => {
+            let dev = stdoutRoute ? stdoutRoute.trim().split('\n')[0] : null;
+            if (dev && dev !== 'lo') {
+                return resolve(dev);
             }
-        }
-        
-        // 2. Fallback to WiFi
-        if (!activeConn) {
-            for (let line of lines) {
-                const parts = line.split(':');
-                if (parts.length >= 3) {
-                    const name = parts[0];
-                    const device = parts[1];
-                    const type = parts[2];
-                    if (type === '802-11-wireless' || type === 'wifi') {
-                        activeConn = name;
-                        activeDev = device;
-                        break;
-                    }
-                }
-            }
-        }
+            // Fallback: listar interfaces ethernet físicas activas en nmcli
+            exec("nmcli -t -f DEVICE,TYPE,STATE dev | grep -E ':ethernet|:wifi' | grep ':connected' | cut -d: -f1", (errDev, stdoutDev) => {
+                dev = stdoutDev ? stdoutDev.trim().split('\n')[0] : null;
+                resolve(dev || 'eth0'); // eth0 como último recurso
+            });
+        });
+    });
 
-        // 3. Fallback to Bridge (excluding docker / virtual bridges)
-        if (!activeConn) {
-            for (let line of lines) {
-                const parts = line.split(':');
-                if (parts.length >= 3) {
-                    const name = parts[0];
-                    const device = parts[1];
-                    const type = parts[2];
-                    if (type === 'bridge' && !device.startsWith('docker') && !device.startsWith('br-')) {
-                        activeConn = name;
-                        activeDev = device;
-                        break;
-                    }
-                }
+    getActiveDevice().then((activeDev) => {
+        // Encontrar el nombre de la conexión activa de NetworkManager asociada al dispositivo
+        exec(`nmcli -t -f NAME,DEVICE con show --active | grep -E ':${activeDev}$' | cut -d: -f1`, (errConn, stdoutConn) => {
+            let activeConn = stdoutConn ? stdoutConn.trim().split('\n')[0] : null;
+            
+            // Si el dispositivo está conectado pero no tiene un perfil/conexión activa en NetworkManager, crear uno auto temporal
+            if (!activeConn) {
+                activeConn = "Conexion Cableada Auto";
+                console.log(`[NETWORK] Creando perfil auto para el dispositivo ${activeDev}...`);
+                exec(`nmcli con add type ethernet con-name "${activeConn}" ifname "${activeDev}" 2>/dev/null || true`);
             }
-        }
-        
-        if (!activeConn || !activeDev) {
-            return res.json(getFallbackNetworkData('No se encontró conexión de red activa compatible con nmcli'));
-        }
+
+            // Continuar leyendo detalles usando la conexión y el dispositivo detectados de forma robusta
         
         // 1. Obtener la configuración del método (auto o manual) desde el perfil de conexión
         exec(`nmcli -t -f ipv4.method con show "${activeConn}"`, (err2, stdout2) => {
@@ -2349,6 +2315,7 @@ app.get('/api/network', (req, res) => {
             });
         });
     });
+  });
 });
 
 app.post('/api/network', (req, res) => {
