@@ -196,6 +196,21 @@
                             <span id="sys_tx" class="sys-number">--</span><span class="sys-unit">Mbps</span>
                         </div>
                     </div>
+                    <!-- NVIDIA GPU Cards (Hidden by default, displayed dynamically if active) -->
+                    <div class="sys-card" id="sys_gpu_card" style="display: none;">
+                        <h3><i class="fa-solid fa-video"></i> GPU NVIDIA Load</h3>
+                        <div class="sys-value">
+                            <span id="sys_gpu" class="sys-number">--</span><span class="sys-unit">% | <span id="sys_gpu_temp">--</span>°C</span>
+                        </div>
+                        <div class="sys-bar"><div class="sys-bar-fill" id="sys_gpu_bar" style="width:0%; background:var(--accent-blue);"></div></div>
+                    </div>
+                    <div class="sys-card" id="sys_vram_card" style="display: none;">
+                        <h3><i class="fa-solid fa-microchip"></i> GPU VRAM</h3>
+                        <div class="sys-value">
+                            <span id="sys_vram" class="sys-number">--</span><span class="sys-unit">GB / <span id="sys_vram_total">--</span> GB</span>
+                        </div>
+                        <div class="sys-bar"><div class="sys-bar-fill" id="sys_vram_bar" style="width:0%; background:var(--color-green);"></div></div>
+                    </div>
                 </div>
 
                 <div class="system-overview-grid" style="margin-top:20px;">
