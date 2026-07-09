@@ -550,8 +550,29 @@ gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/nu
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
-# Abrir la aplicación en modo ventana privada limpia (evita las validaciones de .desktop y portales en Debian Trixie)
-epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+# Crear el archivo .desktop que Epiphany y xdg-desktop-portal exigen para el modo aplicación
+PORTAL_APP_DIR="$HOME/.local/share/xdg-desktop-portal/applications"
+mkdir -p "$PORTAL_APP_DIR"
+cat > "$PORTAL_APP_DIR/org.gnome.Epiphany.WebApp_racecontrol.desktop" << EOF
+[Desktop Entry]
+Version=1.0
+Name=Race Control
+Exec=epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol"
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=GNOME;GTK;Network;WebBrowser;
+X-GNOME-Bugzilla-Bugzilla=GNOME
+X-GNOME-Bugzilla-Product=epiphany
+X-GNOME-Bugzilla-Component=general
+X-GNOME-Bugzilla-Version=43.0
+EOF
+
+# Asegurar que el directorio de perfil existe
+mkdir -p "$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol"
+
+# Abrir la aplicación en modo App real (elimina barras de navegación de raíz por diseño)
+epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
