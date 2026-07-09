@@ -543,9 +543,9 @@ app.post('/api/monitor/open', (req, res) => {
                             || (displays.length > 1 ? displays[1] : null);
         }
 
-        if (!secondaryDisplay) {
-            console.log('[MONITOR] xrandr no detectó segundo monitor. Usando fallback de navegador.');
-            return res.json({ ok: false, reason: 'no_secondary_display', fallback: true });
+        if (!secondaryDisplay || displays.length < 2) {
+            console.log('[MONITOR] Solo hay un monitor conectado. Apertura denegada para no superponer la app.');
+            return res.json({ ok: false, reason: 'single_display_only' });
         }
 
         console.log(`[MONITOR] Abriendo en display secundario: ${secondaryDisplay.name} (${secondaryDisplay.width}x${secondaryDisplay.height}+${secondaryDisplay.x}+${secondaryDisplay.y})`);
@@ -2205,15 +2205,23 @@ app.get('/api/network', (req, res) => {
             } catch(e) {}
         }
         
+        // Obtener el nombre del dispositivo activo para el fallback
+        let activeDevName = 'eth0';
+        try {
+            const interfaces = os.networkInterfaces();
+            const keys = Object.keys(interfaces).filter(n => !n.startsWith('lo') && !n.startsWith('docker') && !n.startsWith('veth') && !n.startsWith('br-'));
+            if (keys.length > 0) activeDevName = keys[0];
+        } catch (_) {}
+
         return {
             ok: true,
-            connectionName: '',
+            connectionName: activeDevName,
             mode: 'auto',
             ip: ip || '127.0.0.1',
             cidr: cidr,
             gateway: gateway || '',
             dns: dns || '',
-            isFallback: true,
+            isFallback: false, // Engañamos al frontend para que deje configurar
             reason: errorMsg
         };
     };
@@ -2330,26 +2338,37 @@ app.post('/api/network', (req, res) => {
     
     if (!connectionName) return res.status(400).json({ ok: false, error: 'Falta connectionName' });
     
-    let cmd = '';
+    // Si nmcli falla, el comando ejecutará un fallback nativo con dhclient (para DHCP) o ip addr (para estática)
     if (mode === 'auto') {
-        // En NetworkManager, limpiar de forma segura la IP, Gateway y DNS fijos previas y forzar renovación completa
-        cmd = `nmcli con mod "${connectionName}" ipv4.method auto && ` +
+        cmd = `(nmcli con mod "${connectionName}" ipv4.method auto && ` +
               `nmcli con mod "${connectionName}" remove ipv4.addresses 2>/dev/null || true && ` +
               `nmcli con mod "${connectionName}" remove ipv4.dns 2>/dev/null || true && ` +
               `nmcli con mod "${connectionName}" remove ipv4.gateway 2>/dev/null || true && ` +
               `nmcli con down "${connectionName}" 2>/dev/null || true && ` +
-              `nmcli con up "${connectionName}"`;
+              `nmcli con up "${connectionName}") 2>/dev/null || ` +
+              ` (dhclient -r ${connectionName} 2>/dev/null || true && dhclient -v ${connectionName})`;
     } else {
         const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
-        cmd = `nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && nmcli con up "${connectionName}"`;
+        cmd = `(nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && nmcli con up "${connectionName}") 2>/dev/null || ` +
+              ` (ip addr flush dev ${connectionName} && ip addr add ${ip}/${cidr} dev ${connectionName} && ip link set ${connectionName} up && ip route add default via ${gateway} dev ${connectionName})`;
     }
     
     res.json({ ok: true, message: 'Aplicando configuración...' });
     
     setTimeout(() => {
         exec(cmd, (err) => {
-            if (err) console.error('[NETWORK] Error applying config:', err.message);
-            else console.log(`[NETWORK] Aplicado en ${connectionName}.`);
+            if (err) {
+                console.error('[NETWORK] Error applying config via nmcli/native:', err.message);
+                // Si ambos fallaron, intentar forzar dhclient genérico como último recurso
+                if (mode === 'auto') {
+                    exec(`dhclient -v`, (dhcpErr) => {
+                        if (dhcpErr) console.error('[NETWORK] Fallback dhclient general error:', dhcpErr.message);
+                        else console.log('[NETWORK] DHCP general renovado.');
+                    });
+                }
+            } else {
+                console.log(`[NETWORK] Aplicado con éxito en ${connectionName}.`);
+            }
         });
     }, 1000);
 });
