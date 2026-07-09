@@ -613,8 +613,19 @@ if [ -n "$WID" ]; then
     # Comprobar si está fullscreen
     GEOM=$(xdotool getwindowgeometry "$WID" 2>/dev/null)
     echo "Geometría final de la ventana: $GEOM"
+    
+    # ── CERRAR PLYMOUTH AL FINAL ──
+    # Una vez la ventana de la aplicación ya está perfectamente posicionada,
+    # maximizada y en pantalla completa, apagamos los cuadraditos de carga.
+    # Esto elimina visualmente el parpadeo de carga.
+    if command -v plymouth &>/dev/null; then
+        echo "Cerrando Plymouth (Carga finalizada)..."
+        sudo plymouth quit 2>/dev/null || true
+    fi
 else
     echo "ERROR: No se encontró ninguna ventana de Epiphany."
+    # Asegurar que Plymouth se cierra de todas formas si hay fallo
+    sudo plymouth quit 2>/dev/null || true
 fi
 
 echo "=== Kiosk setup finalizado a $(date) ==="
