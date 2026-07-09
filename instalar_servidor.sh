@@ -549,6 +549,9 @@ gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/nu
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
+# Asegurar que el directorio de perfil existe antes de abrir Epiphany
+mkdir -p "$REAL_HOME/.config/race-control/epiphany-profile"
+
 # Abrir la aplicación en modo App real (elimina barras de navegación de raíz por diseño)
 # En Epiphany moderno (Debian Trixie) la opción es --application-mode=URL
 epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$REAL_HOME/.config/race-control/epiphany-profile" &
