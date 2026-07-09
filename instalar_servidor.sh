@@ -545,42 +545,27 @@ fi
 ENV_PORT=$(grep '^PORT=' /opt/race-control/.env 2>/dev/null | cut -d'=' -f2)
 PORT=${ENV_PORT:-3000}
 
-# Esperar al servidor (máx 30s) para garantizar que la web está online antes de abrir el navegador
-echo "Esperando al servidor Race Control en puerto $PORT..."
-for i in $(seq 1 15); do
-    curl -s "http://localhost:$PORT" > /dev/null && break
-    sleep 2
-done
+# Escribir el puerto en config.js dinámicamente para que el splash sepa a dónde redirigir
+echo "window.KIOSK_CONFIG = { port: '$PORT' };" > /opt/race-control/public/config.js
 
-# Recargar config de Openbox (asegura que rc.xml con regla fullscreen esté activo)
-openbox --reconfigure 2>/dev/null || true
-
-# Asegurar fondo de pantalla negro sólido inmediato en Openbox
-# Oculta el fondo gris de Xorg durante la carga de Epiphany
-feh --bg-color black 2>/dev/null || true
-
-echo "Iniciando Kiosko con Epiphany Browser en segundo plano..."
-
-# Obtener resolución de pantalla para forzar geometría
-SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
-SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
-SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
-echo "Resolución detectada: ${SCREEN_W}x${SCREEN_H}"
+# Apagar Plymouth de inmediato porque el navegador va a pintar su propio splash idéntico
+if command -v plymouth &>/dev/null; then
+    sudo plymouth quit 2>/dev/null || true
+fi
 
 # Desactivar barras de navegación y pestañas de Epiphany de forma forzada (gsettings)
 gsettings set org.gnome.Epiphany.ui expand-tabs-bar false 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui keep-present-bars false 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui navbar-visible false 2>/dev/null || true
-# Desactivar hot-corners de GNOME si están activos (evita activar overview al mover el ratón arriba)
-gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
-gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
+# Obtener resolución de pantalla para forzar geometría
+SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
+SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
+SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 
-# Abrir Epiphany en segundo plano (off-screen, a la coordenada +9999+9999)
-# para que el usuario no vea la barra de direcciones ni la carga inicial.
-# Usamos un perfil temporal para forzar que empiece limpio
-epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+# Abrir Epiphany apuntando al Splash local de inmediato (cero esperas)
+epiphany --private-instance "file:///opt/race-control/public/splash.html" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
@@ -606,46 +591,24 @@ if [ -z "$WID" ]; then
 fi
 
 if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID. Configurando en segundo plano..."
+    echo "Ventana encontrada: $WID. Configurando pantalla completa..."
 
-    # ── Mover fuera de la pantalla inmediatamente para ocultar el ajuste ──
-    xdotool windowmove "$WID" 9999 9999 2>/dev/null
+    # Al ser la pantalla de carga (splash.html), la colocamos a 0,0 directamente.
+    # El usuario verá la animación de carga (los cuadraditos) en pantalla completa.
+    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
+        xdotool windowmove "$WID" 0 0 2>/dev/null
+        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
+        wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
+    fi
 
-    # Quitar los bordes de la ventana y poner a pantalla completa de forma silenciosa
+    # Poner en pantalla completa
     xdotool windowactivate --sync "$WID" 2>/dev/null
     xdotool windowfocus --sync "$WID" 2>/dev/null
     xdotool key --window "$WID" F11 2>/dev/null
-    sleep 0.5
+    sleep 0.3
     wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
-
-    # Forzar dimensiones finales
-    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
-        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
-        wmctrl -i -r "$WID" -e "0,9999,9999,$SCREEN_W,$SCREEN_H" 2>/dev/null
-    fi
-
-    # Esperar un instante para que el renderizado de la web termine de pintar el fondo negro
-    sleep 1
-
-    # ── DESVELAR VENTANA: Mover de golpe al centro de la pantalla principal ──
-    echo "Desvelando ventana en pantalla principal (0,0)..."
-    xdotool windowmove "$WID" 0 0 2>/dev/null
-    wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
-    
-    # Asegurar foco
-    xdotool windowactivate "$WID" 2>/dev/null
-
-    # ── CERRAR PLYMOUTH AL FINAL ──
-    # Ahora sí: quitamos la pantalla de carga solo cuando el navegador ya está pintado
-    if command -v plymouth &>/dev/null; then
-        echo "Apagando pantalla de carga (Plymouth)..."
-        sudo plymouth quit 2>/dev/null || true
-    fi
 else
     echo "ERROR: No se encontró la ventana del navegador."
-    if command -v plymouth &>/dev/null; then
-        sudo plymouth quit 2>/dev/null || true
-    fi
 fi
 
 echo "=== Kiosk setup finalizado a $(date) ==="
