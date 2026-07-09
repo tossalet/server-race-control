@@ -455,8 +455,8 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
 
     # Configuración de GRUB para PC UEFI/BIOS
     if [ -f "/etc/default/grub" ]; then
-        # Asegurar quiet splash y blacklist de i915 (gráfica Intel) para que no dé el error 'Failed to probe lspcon'
-        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nvidia-drm.modeset=1 module_blacklist=i915 initcall_blacklist=syscon_init plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
+        # Asegurar quiet splash, loglevel=3 para silenciar VMX/SGX, y blacklist de i915
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nvidia-drm.modeset=1 module_blacklist=i915 initcall_blacklist=syscon_init loglevel=3 systemd.show_status=false plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
         update-grub 2>/dev/null || true
     fi
 
@@ -551,29 +551,8 @@ gsettings set org.gnome.Epiphany.ui navbar-visible false 2>/dev/null || true
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
-# Crear el archivo .desktop que Epiphany y xdg-desktop-portal exigen para el modo aplicación
-PORTAL_APP_DIR="$HOME/.local/share/xdg-desktop-portal/applications"
-mkdir -p "$PORTAL_APP_DIR"
-cat > "$PORTAL_APP_DIR/org.gnome.Epiphany.WebApp_racecontrol.desktop" << EOF
-[Desktop Entry]
-Version=1.0
-Name=Race Control
-Exec=epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol"
-Terminal=false
-Type=Application
-StartupNotify=true
-Categories=GNOME;GTK;Network;WebBrowser;
-X-GNOME-Bugzilla-Bugzilla=GNOME
-X-GNOME-Bugzilla-Product=epiphany
-X-GNOME-Bugzilla-Component=general
-X-GNOME-Bugzilla-Version=43.0
-EOF
-
-# Asegurar que el directorio de perfil existe
-mkdir -p "$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol"
-
-# Abrir la aplicación en modo App real (elimina barras de navegación de raíz por diseño)
-epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol" &
+# Abrir la aplicación en modo ventana privada limpia (evita las validaciones de .desktop y portales en Debian Trixie)
+epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
