@@ -496,6 +496,7 @@ if [ -f "/etc/lightdm/lightdm.conf" ]; then
     sed -i "s/^#\?autologin-user=.*/autologin-user=$REAL_USER/"         /etc/lightdm/lightdm.conf
     sed -i "s/^#\?autologin-user-timeout=.*/autologin-user-timeout=0/" /etc/lightdm/lightdm.conf
 fi
+mkdir -p /var/lib/AccountsService/users
 echo -e "[Desktop]\nSession=openbox" > "/var/lib/AccountsService/users/$REAL_USER" 2>/dev/null || true
 
 # Script de kiosko independiente (también puede lanzarse manualmente)
