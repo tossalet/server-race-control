@@ -551,11 +551,11 @@ gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null |
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
 # Asegurar que el directorio de perfil existe antes de abrir Epiphany
-mkdir -p "$REAL_HOME/.config/race-control/epiphany-profile"
+mkdir -p "$HOME/.config/race-control/epiphany-profile"
 
 # Abrir la aplicación en modo App real (elimina barras de navegación de raíz por diseño)
 # En Epiphany moderno (Debian Trixie) la opción es --application-mode=URL
-epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$REAL_HOME/.config/race-control/epiphany-profile" &
+epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$HOME/.config/race-control/epiphany-profile" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
