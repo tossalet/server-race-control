@@ -179,7 +179,24 @@ if [ "$ARCH" = "x86_64" ]; then
         apt-get install -y linux-headers-$(uname -r) 2>/dev/null || true
         if apt-get install -y nvidia-driver firmware-misc-nonfree 2>/dev/null; then
             echo "   ✔ Driver NVIDIA instalado. NVENC disponible para FFmpeg."
-            echo "   ⚠️  Se requiere reinicio para activar el driver NVIDIA."
+            
+            # ── DESBLOQUEAR LÍMITE DE STREAMS (nvidia-patch) ──
+            echo "   🔓 Aplicando parche nvidia-patch para eliminar el límite de streams simultáneos de la GPU..."
+            # Asegurar dependencias necesarias para descargar y compilar
+            apt-get install -y git wget 2>/dev/null || true
+            
+            # Descargar y aplicar el parche de forma temporal
+            TEMP_PATCH_DIR=$(mktemp -d)
+            if git clone https://github.com/keylase/nvidia-patch.git "$TEMP_PATCH_DIR" --depth=1 2>/dev/null; then
+                # Ejecutar el script parcheador oficial de keylase
+                bash "$TEMP_PATCH_DIR/patch.sh" -s || true
+                rm -rf "$TEMP_PATCH_DIR"
+                echo "   ✔ Límite de codificación simultánea NVENC eliminado con éxito."
+            else
+                echo "   ⚠️ No se pudo descargar el parche. Se mantendrán las restricciones por defecto de la GPU."
+            fi
+            
+            echo "   ⚠️  Se requiere reinicio para activar el driver NVIDIA y los cambios."
             NVIDIA_INSTALLED=true
         else
             echo "   ⚠️  No se pudo instalar el driver NVIDIA. Transcodificación usará CPU."
