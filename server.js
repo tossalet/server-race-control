@@ -2238,84 +2238,90 @@ app.get('/api/network', (req, res) => {
         exec(`nmcli -t -f NAME,DEVICE con show --active | grep -E ':${activeDev}$' | cut -d: -f1`, (errConn, stdoutConn) => {
             let activeConn = stdoutConn ? stdoutConn.trim().split('\n')[0] : null;
             
-            // Si el dispositivo está conectado pero no tiene un perfil/conexión activa en NetworkManager, crear uno auto temporal
+            const proceedWithDetails = (connName) => {
+                // 1. Obtener la configuración del método (auto o manual) desde el perfil de conexión
+                exec(`nmcli -t -f ipv4.method con show "${connName}"`, (err2, stdout2) => {
+                    let mode = 'auto';
+                    if (!err2 && stdout2) {
+                        const lines2 = stdout2.trim().split('\n');
+                        for (let l of lines2) {
+                            if (l.startsWith('ipv4.method:')) {
+                                const m = l.replace('ipv4.method:', '').trim();
+                                if (m === 'manual') mode = 'manual';
+                            }
+                        }
+                    }
+                    
+                    // 2. Obtener la IP, gateway y DNS activos reales del dispositivo en ejecución
+                    exec(`nmcli -t dev show "${activeDev}"`, (err3, stdout3) => {
+                        if (err3 || !stdout3) {
+                            return res.json(getFallbackNetworkData('Error leyendo detalles del dispositivo con nmcli'));
+                        }
+                        
+                        const details = stdout3.trim().split('\n').reduce((acc, line) => {
+                            const parts = line.split(':');
+                            if (parts.length >= 2) {
+                                const key = parts[0].trim().toUpperCase();
+                                const val = parts.slice(1).join(':').replace(/\\/g, '').trim();
+                                acc[key] = val;
+                            }
+                            return acc;
+                        }, {});
+                        
+                        let addressRaw = '';
+                        for (let k of Object.keys(details)) {
+                            if (k.startsWith('IP4.ADDRESS')) {
+                                addressRaw = details[k];
+                                break;
+                            }
+                        }
+                        
+                        const [ip, cidr] = addressRaw.split('/');
+                        
+                        let gateway = '';
+                        for (let k of Object.keys(details)) {
+                            if (k.startsWith('IP4.GATEWAY')) {
+                                gateway = details[k];
+                                break;
+                            }
+                        }
+                        
+                        const dnsList = [];
+                        for (let k of Object.keys(details)) {
+                            if (k.startsWith('IP4.DNS')) {
+                                dnsList.push(details[k]);
+                            }
+                        }
+                        const dns = dnsList.join(', ');
+                        
+                        res.json({
+                            ok: true,
+                            connectionName: connName,
+                            mode: mode,
+                            ip: ip || '',
+                            cidr: cidr || '24',
+                            gateway: gateway || '',
+                            dns: dns || '',
+                            isFallback: false
+                        });
+                    });
+                });
+            };
+
             if (!activeConn) {
                 activeConn = "Conexion Cableada Auto";
                 console.log(`[NETWORK] Creando perfil auto para el dispositivo ${activeDev}...`);
-                exec(`nmcli con add type ethernet con-name "${activeConn}" ifname "${activeDev}" 2>/dev/null || true`);
-            }
-
-            // Continuar leyendo detalles usando la conexión y el dispositivo detectados de forma robusta
-        
-        // 1. Obtener la configuración del método (auto o manual) desde el perfil de conexión
-        exec(`nmcli -t -f ipv4.method con show "${activeConn}"`, (err2, stdout2) => {
-            let mode = 'auto';
-            if (!err2 && stdout2) {
-                const lines2 = stdout2.trim().split('\n');
-                for (let l of lines2) {
-                    if (l.startsWith('ipv4.method:')) {
-                        const m = l.replace('ipv4.method:', '').trim();
-                        if (m === 'manual') mode = 'manual';
-                    }
-                }
-            }
-            
-            // 2. Obtener la IP, gateway y DNS activos reales del dispositivo en ejecución
-            exec(`nmcli -t dev show "${activeDev}"`, (err3, stdout3) => {
-                if (err3 || !stdout3) {
-                    return res.json(getFallbackNetworkData('Error leyendo detalles del dispositivo con nmcli'));
-                }
-                
-                const details = stdout3.trim().split('\n').reduce((acc, line) => {
-                    const parts = line.split(':');
-                    if (parts.length >= 2) {
-                        const key = parts[0].trim().toUpperCase();
-                        const val = parts.slice(1).join(':').replace(/\\/g, '').trim();
-                        acc[key] = val;
-                    }
-                    return acc;
-                }, {});
-                
-                let addressRaw = '';
-                for (let k of Object.keys(details)) {
-                    if (k.startsWith('IP4.ADDRESS')) {
-                        addressRaw = details[k];
-                        break;
-                    }
-                }
-                
-                const [ip, cidr] = addressRaw.split('/');
-                
-                let gateway = '';
-                for (let k of Object.keys(details)) {
-                    if (k.startsWith('IP4.GATEWAY')) {
-                        gateway = details[k];
-                        break;
-                    }
-                }
-                
-                const dnsList = [];
-                for (let k of Object.keys(details)) {
-                    if (k.startsWith('IP4.DNS')) {
-                        dnsList.push(details[k]);
-                    }
-                }
-                const dns = dnsList.join(', ');
-                
-                res.json({
-                    ok: true,
-                    connectionName: activeConn,
-                    mode: mode,
-                    ip: ip || '',
-                    cidr: cidr || '24',
-                    gateway: gateway || '',
-                    dns: dns || '',
-                    isFallback: false
+                exec(`nmcli con add type ethernet con-name "${activeConn}" ifname "${activeDev}"`, (errAdd) => {
+                    // Una vez creada, la levantamos y leemos sus detalles de forma secuencial
+                    exec(`nmcli con up "${activeConn}" 2>/dev/null || true`, () => {
+                        proceedWithDetails(activeConn);
+                    });
                 });
-            });
+            } else {
+                proceedWithDetails(activeConn);
+            }
         });
     });
-  });
 });
 
 app.post('/api/network', (req, res) => {
