@@ -550,13 +550,8 @@ gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/nu
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
-# Asegurar que el directorio de perfil existe antes de abrir Epiphany
-# En Epiphany moderno, el nombre de la carpeta debe empezar obligatoriamente por org.gnome.Epiphany.WebApp_
-mkdir -p "$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol"
-
-# Abrir la aplicación en modo App real (elimina barras de navegación de raíz por diseño)
-# En Epiphany moderno (Debian Trixie) la opción es --application-mode=URL
-epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$HOME/.config/race-control/org.gnome.Epiphany.WebApp_racecontrol" &
+# Abrir la aplicación en modo ventana privada limpia (evita las validaciones de .desktop y portales en Debian Trixie)
+epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
