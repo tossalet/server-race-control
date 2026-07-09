@@ -112,7 +112,7 @@ apt-get install -y \
     ntfs-3g udevil udisks2 \
     plymouth plymouth-themes \
     xserver-xorg openbox lightdm feh \
-    unclutter xdotool wmctrl
+    unclutter xdotool wmctrl x11-xserver-utils
 
 # ── Epiphany Browser (Soporte H.265 nativo sin transcodificar) ────────────────
 echo "🌐 2.1/11 — Instalando Epiphany Browser para soporte H.265 nativo..."
@@ -550,7 +550,8 @@ gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null |
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
 # Abrir la aplicación en modo App real (elimina barras de navegación de raíz por diseño)
-epiphany --app="http://localhost:$PORT/grabador?force_transcode=0" --profile="$REAL_HOME/.config/race-control/epiphany-profile" &
+# En Epiphany moderno (Debian Trixie) la opción es --application-mode=URL
+epiphany --application-mode="http://localhost:$PORT/grabador?force_transcode=0" --profile="$REAL_HOME/.config/race-control/epiphany-profile" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
