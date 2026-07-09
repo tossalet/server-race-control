@@ -620,19 +620,18 @@ mkdir -p "$REAL_HOME/.config/openbox"
 echo "bash $REAL_HOME/.config/race-control/launch_kiosk.sh &" > "$REAL_HOME/.config/openbox/autostart"
 
 # ── Openbox: rc.xml con regla de fullscreen ──
-# Copiar la config global como base y añadir la regla de aplicaciones
+# Forzar a nivel de Openbox que el navegador Epiphany se dibuje sin decoraciones (bordes) 
+# y en pantalla completa nativa desde el primer milisegundo de su creación.
 if [ -f /etc/xdg/openbox/rc.xml ]; then
     cp /etc/xdg/openbox/rc.xml "$REAL_HOME/.config/openbox/rc.xml"
-    # Comprobar si ya tiene sección <applications>
+    # Insertar reglas específicas de Epiphany en la sección <applications>
     if grep -q "</applications>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        # Insertar regla dentro de la sección existente
-        sed -i '/<\/applications>/i \    <application class="*">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
+        sed -i '/<\/applications>/i \    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
     elif grep -q "</openbox_config>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        # La sección <applications> no existe, crearla antes de </openbox_config>
-        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="*">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
+        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
     fi
 else
-    # Crear rc.xml completo mínimo funcional
+    # Crear rc.xml mínimo con la regla nativa de fullscreen para Epiphany
     cat > "$REAL_HOME/.config/openbox/rc.xml" << 'XML_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -643,6 +642,16 @@ else
   <keyboard/>
   <mouse/>
   <applications>
+    <application class="epiphany">
+      <decor>no</decor>
+      <fullscreen>yes</fullscreen>
+      <maximized>true</maximized>
+    </application>
+    <application class="Epiphany">
+      <decor>no</decor>
+      <fullscreen>yes</fullscreen>
+      <maximized>true</maximized>
+    </application>
     <application class="*">
       <decor>no</decor>
       <fullscreen>yes</fullscreen>
