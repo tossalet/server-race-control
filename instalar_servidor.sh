@@ -19,11 +19,15 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ── Usuario real (para el kiosko) ─────────────────────────────────────────────
-if [ -n "$SUDO_USER" ]; then
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     REAL_USER="$SUDO_USER"
 else
+    # Intentar buscar el usuario real con ID 1000, o por carpetas en /home
     REAL_USER=$(id -un 1000 2>/dev/null)
-    [ -z "$REAL_USER" ] && REAL_USER="root"
+    if [ -z "$REAL_USER" ] || [ "$REAL_USER" = "root" ]; then
+        REAL_USER=$(ls /home/ | head -n 1)
+    fi
+    [ -z "$REAL_USER" ] && REAL_USER="racecontrol"
 fi
 REAL_HOME=$(eval echo ~$REAL_USER)
 APP_DIR="/opt/race-control"
@@ -451,8 +455,8 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
 
     # Configuración de GRUB para PC UEFI/BIOS
     if [ -f "/etc/default/grub" ]; then
-        # Asegurar quiet splash y parámetros de NVIDIA
-        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nvidia-drm.modeset=1 plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
+        # Asegurar quiet splash y blacklist de i915 (gráfica Intel) para que no dé el error 'Failed to probe lspcon'
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nvidia-drm.modeset=1 module_blacklist=i915 initcall_blacklist=syscon_init plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
         update-grub 2>/dev/null || true
     fi
 
