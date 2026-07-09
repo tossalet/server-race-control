@@ -76,6 +76,30 @@ function startMonitoring() {
 
             const cpuTempData = await require('systeminformation').cpuTemperature();
 
+            // Consultar datos de la GPU NVIDIA mediante nvidia-smi de forma no bloqueante
+            let gpuStats = { active: false };
+            try {
+                const { execSync } = require('child_process');
+                // nvidia-smi devuelve los campos separados por comas: uso_gpu, temp, vram_usada, vram_total
+                const nvidiaOutput = execSync('nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null', { timeout: 800 }).toString().trim();
+                
+                if (nvidiaOutput) {
+                    const [load, temp, memUsed, memTotal] = nvidiaOutput.split(',').map(v => parseFloat(v.trim()));
+                    if (!isNaN(load)) {
+                        gpuStats = {
+                            active: true,
+                            load: load.toFixed(0),
+                            temp: temp.toFixed(0),
+                            memUsed: (memUsed / 1024).toFixed(2), // convertir MB a GB
+                            memTotal: (memTotal / 1024).toFixed(2),
+                            memPercent: ((memUsed / memTotal) * 100).toFixed(0)
+                        };
+                    }
+                }
+            } catch (gpuErr) {
+                // Silenciar error si no hay nvidia-smi o falla la lectura temporal
+            }
+
             const stats = {
                 cpuLoad: currentCpuLoad.toFixed(1),
                 cpuTemp: cpuTempData && cpuTempData.main ? cpuTempData.main.toFixed(1) : '--',
@@ -86,8 +110,12 @@ function startMonitoring() {
                 netRx: netStats.rx, // Mbps
                 streamsTotal: dbCache.streamsTotal,
                 streamsActive: dbCache.streamsActive,
-                streamsError: dbCache.streamsError
+                streamsError: dbCache.streamsError,
+                gpu: gpuStats
             };
+
+            // Guardar en la caché global para que pueda ser leída por HTTP GET
+            module.exports.lastStats = stats;
 
             ioInstance.emit('sys_stats', stats);
         } catch (e) {
@@ -100,4 +128,7 @@ function startMonitoring() {
     loop(); // init
 }
 
-module.exports = { setIo };
+module.exports = { 
+    setIo,
+    lastStats: { gpu: { active: false } } // valor inicial por defecto
+};

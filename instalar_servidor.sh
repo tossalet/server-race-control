@@ -230,6 +230,22 @@ echo "💾 4/11 — Activando auto-montador de discos..."
 systemctl enable devmon@root 2>/dev/null && systemctl start devmon@root 2>/dev/null || true
 systemctl enable udisks2     2>/dev/null && systemctl start udisks2     2>/dev/null || true
 
+# ── OPTIMIZACIÓN DE RED PARA VIDEO (Evita pixelaciones/macrobloques por pérdida de paquetes UDP) ──
+echo "⚡ 4.1/11 — Optimizando buffers de red de Linux (sysctl)..."
+cat > /etc/sysctl.d/99-racecontrol-network.conf << EOF
+# Incrementar el buffer de recepción y envío máximo del socket a 16MB
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+# Incrementar el buffer por defecto a 4MB
+net.core.rmem_default=4194304
+net.core.wmem_default=4194304
+# Cola de recepción del adaptador de red (evita descartes en ráfagas de datos)
+net.core.netdev_max_backlog=10000
+# Evitar que TCP colisione con el buffer UDP
+net.ipv4.udp_rmem_min=16384
+EOF
+sysctl -p /etc/sysctl.d/99-racecontrol-network.conf 2>/dev/null || true
+
 # =============================================================================
 #  PASO 5 — Configurar código del servidor
 # =============================================================================

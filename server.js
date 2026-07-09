@@ -623,6 +623,11 @@ app.get('/api/server-ip', (req, res) => {
     res.json({ ip: '127.0.0.1' });
 });
 
+// Endpoint para consultar estadísticas del sistema (CPU, RAM, GPU) en tiempo real
+app.get('/api/system/stats', (req, res) => {
+    res.json(sysMonitor.lastStats);
+});
+
 app.get('/api/logs', (req, res) => {
     res.json(logHistory);
 });
@@ -2406,6 +2411,9 @@ bootActiveStreams();
 
 io.on('connection', (socket) => {
     console.log(`Frontend Connected: ${socket.id}`);
+    
+    // Al conectarse el frontend, le enviamos las estadísticas inmediatamente
+    // a través del Socket.io global (sysMonitor lo emite automáticamente a todos los conectados)
 });
 
 // Redirigir el handshake WebSocket al wss (comparte puerto 4000)
