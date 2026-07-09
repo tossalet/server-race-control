@@ -553,28 +553,24 @@ if command -v plymouth &>/dev/null; then
     sudo plymouth quit 2>/dev/null || true
 fi
 
-# Asegurar que el directorio temporal de perfil de Epiphany existe y está limpio
-# Esto nos permite aislar la configuración de gsettings para esta sesión de kiosko
-mkdir -p /tmp/epiphany-kiosk
-rm -rf /tmp/epiphany-kiosk/*
-
-# Desactivar barras de navegación y pestañas de Epiphany de forma forzada para el perfil del kiosko
-export GSETTINGS_SCHEMA_DIR=/usr/share/glib-2.0/schemas
-gsettings set org.gnome.Epiphany.ui expand-tabs-bar false 2>/dev/null || true
-gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/null || true
+# Forzar a nivel de GSettings que Epiphany se inicie maximizado y sin barras
+# Esto se ejecuta directamente en la sesión gráfica activa
+gsettings set org.gnome.Epiphany.state window-maximized true 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui keep-present-bars false 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui navbar-visible false 2>/dev/null || true
+gsettings set org.gnome.Epiphany.ui expand-tabs-bar false 2>/dev/null || true
+gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/null || true
 
 # Obtener resolución de pantalla para forzar geometría
 SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
 SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 
-# Abrir Epiphany apuntando al Splash local usando el perfil temporal aislado
-epiphany --private-instance --profile="/tmp/epiphany-kiosk" "file:///opt/race-control/public/splash.html" &
+# Abrir Epiphany apuntando al Splash local (modo privado, sin perfil tmp inestable)
+epiphany --private-instance "file:///opt/race-control/public/splash.html" &
 EPIPHANY_PID=$!
 
-# ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
+# Esperar a que la ventana de Epiphany aparezca (xdotool --sync)
 echo "Esperando a que la ventana de Epiphany aparezca (xdotool --sync)..."
 WID=$(xdotool search --sync --onlyvisible --class "epiphany" 2>/dev/null | head -n 1)
 
@@ -589,36 +585,22 @@ if [ -z "$WID" ]; then
 fi
 
 if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID (oculta en +9999+9999). Configurando..."
-
-    # Poner a pantalla completa de forma invisible
+    echo "Ventana encontrada: $WID. Forzando foco y fullscreen..."
+    
+    # Openbox rc.xml ya aplica el fullscreen en su nacimiento,
+    # pero forzamos por si acaso para asegurar que no se dibuje el marco
     xdotool windowactivate --sync "$WID" 2>/dev/null
     xdotool windowfocus --sync "$WID" 2>/dev/null
     
-    # Enviar F11 de forma repetida y activar pantalla completa con wmctrl
-    xdotool key F11 2>/dev/null
-    sleep 0.2
+    # Forzar dimensiones y pantalla completa a nivel del Xorg
+    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
+        xdotool windowmove "$WID" 0 0 2>/dev/null
+        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
+        wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
+    fi
+    
     wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
     xdotool key F11 2>/dev/null
-    sleep 0.3
-
-    # Forzar dimensiones finales
-    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
-        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
-        wmctrl -i -r "$WID" -e "0,9999,9999,$SCREEN_W,$SCREEN_H" 2>/dev/null
-    fi
-
-    # Espera para renderizado
-    sleep 0.5
-
-    # ── DESVELAR VENTANA ──
-    echo "Desvelando ventana a pantalla principal (0,0)..."
-    xdotool windowmove "$WID" 0 0 2>/dev/null
-    wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
-    
-    # Forzar foco y un último envío de F11 si hiciera falta
-    xdotool windowactivate "$WID" 2>/dev/null
-    xdotool windowfocus "$WID" 2>/dev/null
 else
     echo "ERROR: No se encontró la ventana del navegador."
 fi
@@ -632,15 +614,16 @@ mkdir -p "$REAL_HOME/.config/openbox"
 echo "bash $REAL_HOME/.config/race-control/launch_kiosk.sh &" > "$REAL_HOME/.config/openbox/autostart"
 
 # ── Openbox: rc.xml con regla de fullscreen ──
+# ── Openbox: rc.xml con regla de fullscreen ──
 # Forzar a nivel de Openbox que el navegador Epiphany se dibuje sin decoraciones (bordes) 
 # y en pantalla completa nativa desde el primer milisegundo de su creación.
 if [ -f /etc/xdg/openbox/rc.xml ]; then
     cp /etc/xdg/openbox/rc.xml "$REAL_HOME/.config/openbox/rc.xml"
     # Insertar reglas específicas de Epiphany en la sección <applications>
     if grep -q "</applications>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        sed -i '/<\/applications>/i \    <application class="epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
+        sed -i '/<\/applications>/i \    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
     elif grep -q "</openbox_config>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
+        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
     fi
 else
     # Crear rc.xml mínimo con la regla nativa de fullscreen para Epiphany
@@ -653,22 +636,21 @@ else
   <desktops><number>1</number></desktops>
   <keyboard/>
   <mouse/>
+  <applications>
     <application class="epiphany">
       <decor>no</decor>
-      <position force="yes">
-        <x>9999</x>
-        <y>9999</y>
-      </position>
+      <fullscreen>yes</fullscreen>
+      <maximized>true</maximized>
     </application>
     <application class="Epiphany">
       <decor>no</decor>
-      <position force="yes">
-        <x>9999</x>
-        <y>9999</y>
-      </position>
+      <fullscreen>yes</fullscreen>
+      <maximized>true</maximized>
     </application>
     <application class="*">
       <decor>no</decor>
+      <fullscreen>yes</fullscreen>
+      <maximized>true</maximized>
     </application>
   </applications>
 </openbox_config>
