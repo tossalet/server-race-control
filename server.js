@@ -590,15 +590,22 @@ app.post('/api/monitor/open', (req, res) => {
 
                 // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
                 setTimeout(() => {
-                    // Buscar la ventana por su título de la app "RACE CONTROL" o "Mozilla Firefox" y moverla al display secundario
-                    const moveCmd = `xdotool search --name "RACE CONTROL" | tail -1 | xargs -I{} sh -c "xdotool windowmove {} ${secondaryDisplay.x} ${secondaryDisplay.y} && xdotool windowsize {} ${secondaryDisplay.width} ${secondaryDisplay.height} && xdotool windowactivate {} && xdotool key F11"`;
+                    // 1. Intentar buscar por clase de ventana firefox/epiphany o por título parcial "RACE CONTROL"
+                    // Usamos un script robusto que busca IDs y mueve cada ventana coincidente al display secundario
+                    const moveCmd = `(xdotool search --class "firefox" || xdotool search --class "Epiphany" || xdotool search --name "RACE CONTROL") | while read id; do ` +
+                                    `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
+                                    `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
+                                    `  xdotool windowactivate "$id" 2>/dev/null && ` +
+                                    `  xdotool key --window "$id" F11 2>/dev/null; ` +
+                                    `done || ` +
+                                    `(wmctrl -r "RACE CONTROL" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL" -b add,fullscreen)`;
+                    
+                    console.log(`[MONITOR] Ejecutando comando de reposicionamiento: ${moveCmd}`);
                     exec(moveCmd, (err) => {
-                        if (err) {
-                            // Fallback secundario genérico con wmctrl
-                            exec(`wmctrl -r :ACTIVE: -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r :ACTIVE: -b add,fullscreen`, () => {});
-                        }
+                        if (err) console.error('[MONITOR] Error reposicionando ventana:', err.message);
+                        else console.log('[MONITOR] Ventana reposicionada con éxito.');
                     });
-                }, 2000);
+                }, 3000); // Damos 3 segundos de margen para que el navegador cree e inicialice la ventana en X11
 
                 res.json({ ok: true, browser: bin, display: secondaryDisplay });
             });
