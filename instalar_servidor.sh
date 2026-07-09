@@ -542,10 +542,11 @@ SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 echo "Resolución detectada: ${SCREEN_W}x${SCREEN_H}"
 
-# Desactivar barras de navegación de Epiphany (gsettings)
-# Esto evita que al mover el ratón arriba aparezca la barra del navegador
+# Desactivar barras de navegación y pestañas de Epiphany de forma forzada (gsettings)
 gsettings set org.gnome.Epiphany.ui expand-tabs-bar false 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/null || true
+gsettings set org.gnome.Epiphany.ui keep-present-bars false 2>/dev/null || true
+gsettings set org.gnome.Epiphany.ui navbar-visible false 2>/dev/null || true
 # Desactivar hot-corners de GNOME si están activos (evita activar overview al mover el ratón arriba)
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
