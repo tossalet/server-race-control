@@ -2471,6 +2471,16 @@ function startListen() {
     server.listen(PORT, '0.0.0.0', () => {
         _listenRetries = 0;
         console.log(`TSST SERVER running on port ${PORT}`);
+        
+        // Escribir diagnóstico de pantallas X11 localmente para depuración sin conexión externa
+        const { exec } = require('child_process');
+        const fs = require('fs');
+        const logPath = require('path').join(__dirname, 'xrandr_debug.txt');
+        exec('xrandr --query && echo "DISPLAY env is: $DISPLAY"', (err, stdout) => {
+            const outContent = err ? `Error: ${err.message}` : stdout;
+            fs.writeFileSync(logPath, `--- LOG DE DIAGNOSTICO X11 DE PANTALLAS CONNECTADAS ---\nFecha: ${new Date().toISOString()}\n\n${outContent}\n`);
+            console.log(`[DEBUG X11] Diagnóstico de pantallas escrito en: ${logPath}`);
+        });
     });
 }
 
