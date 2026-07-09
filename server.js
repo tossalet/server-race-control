@@ -1114,26 +1114,39 @@ app.post('/api/recordings/start', (req, res) => {
                 const args = [
                     '-hide_banner', '-y',
                     '-fflags', '+genpts',
-                    '-thread_queue_size', '4096',
-                    '-i', `tcp://127.0.0.1:${recPort}?listen`,
+                    '-thread_queue_size', '4096'
+                ];
 
-                    // --- HLS output (transcodificado a H.264 si es H.265 para reproducción en navegador) ---
+                // Si es H.265 y la GPU NVIDIA está disponible, activar decodificación acelerada por hardware (NVIDIA CUDA)
+                if (isH265 && streamManager.nvencAvailable) {
+                    args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
+                }
+
+                args.push('-i', `tcp://127.0.0.1:${recPort}?listen`);
+
+                // --- HLS output (transcodificado a H.264 si es H.265 para reproducción en navegador) ---
+                const hlsOutArgs = [
                     '-map', '0:v?', '-map', '0:a?',
                     ...hlsCodecArgs,
                     '-c:a', 'aac', '-b:a', '128k',
-                    '-bsf:a', 'aac_adtstoasc',  // ← Fix: AAC ADTS→ASC para HLS/MP4
+                    '-bsf:a', 'aac_adtstoasc',
                     '-hls_time', '2',
                     '-hls_list_size', '0',
                     '-hls_segment_type', 'mpegts',
-                    '-f', 'hls', hlsPath,
+                    '-f', 'hls', hlsPath
+                ];
 
-                    // --- MP4 output (siempre copia de flujo original para rendimiento y exportación ultrarrápida) ---
+                // --- MP4 output (siempre copia de flujo original para rendimiento y exportación ultrarrápida) ---
+                // Para el output copia, necesitamos leer del stream mapeado (sin pasar por CUDA)
+                const mp4OutArgs = [
                     '-map', '0:v?', '-map', '0:a?',
                     '-c', 'copy',
-                    '-bsf:a', 'aac_adtstoasc',  // ← Fix: evita "Malformed AAC" y error writing trailer
+                    '-bsf:a', 'aac_adtstoasc',
                     '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
                     '-f', 'mp4', mp4Path
                 ];
+
+                args.push(...hlsOutArgs, ...mp4OutArgs);
 
                 console.log(`[REC-START] Session ${sessionId} ch${input.channel} via TCP router :${recPort}`);
                 const child = spawn(ffmpegCmd, args);
@@ -1754,13 +1767,22 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         const encoderType = streamManager.nvencAvailable ? 'GPU NVENC' : 'CPU libx264';
         originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (${encoderType})`);
         const encoderArgs = streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28 });
+        
         args = [
             '-hide_banner',
             '-y',
             '-fflags', '+genpts+discardcorrupt',
             '-err_detect', 'ignore_err',
             '-probesize', '100000',
-            '-analyzeduration', '100000',
+            '-analyzeduration', '100000'
+        ];
+
+        // Decodificación acelerada por GPU si está disponible
+        if (streamManager.nvencAvailable) {
+            args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
+        }
+
+        args.push(
             '-f', 'mpegts',
             '-i', '-',
             '-map', '0:v?', '-map', '0:a?',
@@ -1770,7 +1792,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-b:a', '128k',
             '-f', 'mpegts',
             '-'
-        ];
+        );
     } else {
         originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming directo (con alineamiento FFmpeg, codec: ${codec || 'no detectado aún'})`);
         args = [
