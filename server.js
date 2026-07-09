@@ -550,14 +550,15 @@ app.post('/api/monitor/open', (req, res) => {
 
         console.log(`[MONITOR] Abriendo en display secundario: ${secondaryDisplay.name} (${secondaryDisplay.width}x${secondaryDisplay.height}+${secondaryDisplay.x}+${secondaryDisplay.y})`);
 
-        // 2. Lanzar navegador en el display secundario (Epiphany prioritario)
+        // 2. Lanzar navegador en el display secundario (Firefox prioritario para modo kiosk real)
         const candidates = [
+            'firefox',
+            'firefox-esr',
             'epiphany-browser',
-            'epiphany',
-            'firefox'  // fallback
+            'epiphany'
         ];
 
-        const isFirefox = (bin) => bin === 'firefox';
+        const isFirefox = (bin) => bin.startsWith('firefox');
         const isEpiphany = (bin) => bin.startsWith('epiphany');
 
         function tryLaunch(index) {
@@ -571,11 +572,10 @@ app.post('/api/monitor/open', (req, res) => {
                 if (werr || !wout.trim()) return tryLaunch(index + 1);
 
                 let args;
-                if (isEpiphany(bin)) {
-                    // Epiphany: --new-window abre en ventana nueva, luego se maximiza vía wmctrl
-                    args = [`--new-window`, monitorUrl];
-                } else if (isFirefox(bin)) {
+                if (isFirefox(bin)) {
                     args = [`--new-window`, monitorUrl, `--kiosk`];
+                } else if (isEpiphany(bin)) {
+                    args = [`--new-window`, monitorUrl];
                 } else {
                     args = [monitorUrl];
                 }

@@ -112,37 +112,21 @@ apt-get install -y \
     ntfs-3g udevil udisks2 \
     plymouth plymouth-themes \
     xserver-xorg openbox lightdm feh \
-    unclutter xdotool wmctrl x11-xserver-utils
+    unclutter xdotool wmctrl x11-xserver-utils firefox-esr
 
-# ── Epiphany Browser (Soporte H.265 nativo sin transcodificar) ────────────────
-echo "🌐 2.1/11 — Instalando Epiphany Browser para soporte H.265 nativo..."
-if ! apt-get install -y epiphany-browser 2>/dev/null; then
-    echo "   ⚠️  Instalación estándar de Epiphany falló. Intentando resolver conflictos con aptitude..."
-    apt-get install -y aptitude 2>/dev/null || true
-    if command -v aptitude &>/dev/null; then
-        echo "   Ejecutando aptitude para resolver dependencias..."
-        aptitude install -y -o Aptitude::ProblemResolver::StepLimit=1000 -o Aptitude::Keep-Failed-Dependencies=false epiphany-browser 2>/dev/null || true
-    else
-        echo "   ❌ No se pudo instalar aptitude para resolver conflictos."
-    fi
-else
-    echo "   ✔ Epiphany Browser instalado correctamente."
-fi
+# Purgar Epiphany Browser para limpiar el sistema y liberar recursos
+echo "🌐 2.1/11 — Desinstalando Epiphany Browser..."
+apt-get purge -y epiphany-browser epiphany-browser-data 2>/dev/null || true
+apt-get autoremove -y 2>/dev/null || true
 
-# ── Establecer Epiphany como navegador por defecto ────────────────────────────
-echo "🌐 2.2/11 — Configurando Epiphany como navegador por defecto..."
-if command -v epiphany-browser &>/dev/null; then
-    # xdg-settings para el usuario actual y el usuario del kiosko
-    su - "$REAL_USER" -c "xdg-settings set default-web-browser org.gnome.Epiphany.desktop 2>/dev/null" || true
-    xdg-settings set default-web-browser org.gnome.Epiphany.desktop 2>/dev/null || true
-    # update-alternatives
-    update-alternatives --set x-www-browser /usr/bin/epiphany-browser 2>/dev/null || true
-    update-alternatives --set gnome-www-browser /usr/bin/epiphany-browser 2>/dev/null || true
-    # Crear/actualizar el .desktop si no existe en las rutas habituales
-    if [ ! -f /usr/share/applications/org.gnome.Epiphany.desktop ]; then
-        cp /usr/share/applications/epiphany-browser.desktop /usr/share/applications/org.gnome.Epiphany.desktop 2>/dev/null || true
-    fi
-    echo "   ✔ Epiphany configurado como navegador por defecto."
+# ── Establecer Firefox como navegador por defecto ────────────────────────────
+echo "🌐 2.2/11 — Configurando Firefox como navegador por defecto..."
+if command -v firefox-esr &>/dev/null; then
+    su - "$REAL_USER" -c "xdg-settings set default-web-browser firefox-esr.desktop 2>/dev/null" || true
+    xdg-settings set default-web-browser firefox-esr.desktop 2>/dev/null || true
+    update-alternatives --set x-www-browser /usr/bin/firefox-esr 2>/dev/null || true
+    update-alternatives --set gnome-www-browser /usr/bin/firefox-esr 2>/dev/null || true
+    echo "   ✔ Firefox configurado como navegador por defecto."
 fi
 
 # ── Soporte exFAT: exfatprogs (kernel nativo) con fallback a exfat-fuse ───────
@@ -570,58 +554,28 @@ SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
 SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 
-# Abrir Epiphany apuntando al Splash local (modo privado, sin perfil tmp inestable)
-epiphany --private-instance "file:///opt/race-control/public/splash.html" &
-EPIPHANY_PID=$!
+# Abrir Firefox ESR en modo Kiosko nativo (oculta al 100% barras de direcciones y marcos por diseño)
+firefox-esr --kiosk "file:///opt/race-control/public/splash.html" &
+FIREFOX_PID=$!
 
-# Esperar a que la ventana de Epiphany aparezca (xdotool --sync)
-echo "Esperando a que la ventana de Epiphany aparezca (xdotool --sync)..."
-WID=$(xdotool search --sync --onlyvisible --class "epiphany" 2>/dev/null | head -n 1)
+# Esperar a que la ventana de Firefox aparezca (xdotool --sync)
+echo "Esperando a que la ventana de Firefox aparezca (xdotool --sync)..."
+WID=$(xdotool search --sync --onlyvisible --class "firefox" 2>/dev/null | head -n 1)
 
 if [ -z "$WID" ]; then
     for i in $(seq 1 30); do
-        WID=$(xdotool search --name "localhost" 2>/dev/null | head -n 1 \
+        WID=$(xdotool search --name "Mozilla" 2>/dev/null | head -n 1 \
            || xdotool search --name "Race" 2>/dev/null | head -n 1 \
-           || xdotool search --name "Epiphany" 2>/dev/null | head -n 1)
+           || xdotool search --class "firefox" 2>/dev/null | head -n 1)
         [ -n "$WID" ] && break
         sleep 1
     done
 fi
 
 if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID. Forzando foco y resolviendo fullscreen mediante bucle activo..."
-    
-    # Bucle persistente de maximizado (máximo 10 intentos o hasta alcanzar la resolución completa)
-    for attempt in $(seq 1 10); do
-        # Forzar activación y foco
-        xdotool windowactivate "$WID" 2>/dev/null
-        xdotool windowfocus "$WID" 2>/dev/null
-        
-        # Enviar comandos de posicionamiento y tamaño
-        if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
-            xdotool windowmove "$WID" 0 0 2>/dev/null
-            xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
-            wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
-        fi
-        
-        # Forzar fullscreen a nivel de Openbox y enviando tecla física F11
-        wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
-        xdotool key F11 2>/dev/null
-        
-        sleep 0.8
-        
-        # Comprobar la geometría actual del navegador
-        CURR_W=$(xdotool getwindowgeometry "$WID" 2>/dev/null | grep Geometry | awk '{print $2}' | cut -d'x' -f1)
-        CURR_H=$(xdotool getwindowgeometry "$WID" 2>/dev/null | grep Geometry | awk '{print $2}' | cut -d'x' -f2)
-        
-        echo "   [Intento $attempt] Geometría actual: ${CURR_W}x${CURR_H} (Esperada: ${SCREEN_W}x${SCREEN_H})"
-        
-        # Si ya está a pantalla completa real (medidas coinciden con las del monitor), paramos el bucle
-        if [ "$CURR_W" = "$SCREEN_W" ] && [ "$CURR_H" = "$SCREEN_H" ]; then
-            echo "   ✔ Pantalla completa confirmada y establecida."
-            break
-        fi
-    done
+    echo "Ventana encontrada: $WID. Asegurando foco..."
+    xdotool windowactivate "$WID" 2>/dev/null
+    xdotool windowfocus "$WID" 2>/dev/null
 else
     echo "ERROR: No se encontró la ventana del navegador."
 fi
