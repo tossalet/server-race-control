@@ -528,6 +528,10 @@ cat > "$REAL_HOME/.config/race-control/launch_kiosk.sh" << 'KIOSK_EOF'
 exec > /tmp/kiosk.log 2>&1
 echo "=== Kiosk Launch at $(date) ==="
 
+# Cargar el mapa de teclado X11 estándar de forma explícita
+# Esto previene que xdotool no encuentre o ignore la asignación de F11 física
+setxkbmap es 2>/dev/null || setxkbmap us 2>/dev/null || true
+
 # Ocultar cursor tras 3s de inactividad
 unclutter -idle 3 &
 
@@ -585,23 +589,39 @@ if [ -z "$WID" ]; then
 fi
 
 if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID. Esperando estabilización para fullscreen..."
-    sleep 1.5
+    echo "Ventana encontrada: $WID. Forzando foco y resolviendo fullscreen mediante bucle activo..."
     
-    # Openbox rc.xml ya aplica el fullscreen en su nacimiento,
-    # pero forzamos por si acaso para asegurar que no se dibuje el marco
-    xdotool windowactivate --sync "$WID" 2>/dev/null
-    xdotool windowfocus --sync "$WID" 2>/dev/null
-    
-    # Forzar dimensiones y pantalla completa a nivel del Xorg
-    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
-        xdotool windowmove "$WID" 0 0 2>/dev/null
-        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
-        wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
-    fi
-    
-    wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
-    xdotool key F11 2>/dev/null
+    # Bucle persistente de maximizado (máximo 10 intentos o hasta alcanzar la resolución completa)
+    for attempt in $(seq 1 10); do
+        # Forzar activación y foco
+        xdotool windowactivate "$WID" 2>/dev/null
+        xdotool windowfocus "$WID" 2>/dev/null
+        
+        # Enviar comandos de posicionamiento y tamaño
+        if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
+            xdotool windowmove "$WID" 0 0 2>/dev/null
+            xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
+            wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
+        fi
+        
+        # Forzar fullscreen a nivel de Openbox y enviando tecla física F11
+        wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
+        xdotool key F11 2>/dev/null
+        
+        sleep 0.8
+        
+        # Comprobar la geometría actual del navegador
+        CURR_W=$(xdotool getwindowgeometry "$WID" 2>/dev/null | grep Geometry | awk '{print $2}' | cut -d'x' -f1)
+        CURR_H=$(xdotool getwindowgeometry "$WID" 2>/dev/null | grep Geometry | awk '{print $2}' | cut -d'x' -f2)
+        
+        echo "   [Intento $attempt] Geometría actual: ${CURR_W}x${CURR_H} (Esperada: ${SCREEN_W}x${SCREEN_H})"
+        
+        # Si ya está a pantalla completa real (medidas coinciden con las del monitor), paramos el bucle
+        if [ "$CURR_W" = "$SCREEN_W" ] && [ "$CURR_H" = "$SCREEN_H" ]; then
+            echo "   ✔ Pantalla completa confirmada y establecida."
+            break
+        fi
+    done
 else
     echo "ERROR: No se encontró la ventana del navegador."
 fi
