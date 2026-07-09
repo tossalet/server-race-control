@@ -500,6 +500,31 @@ document.addEventListener('DOMContentLoaded', () => {
             rxLabel.innerText = stats.netRx;
         }
 
+        // GPU NVIDIA
+        const gpuCard = document.getElementById('sys_gpu_card');
+        const vramCard = document.getElementById('sys_vram_card');
+        if (gpuCard && vramCard) {
+            if (stats.gpu && stats.gpu.active) {
+                gpuCard.style.display = 'block';
+                vramCard.style.display = 'block';
+
+                document.getElementById('sys_gpu').innerText = stats.gpu.load;
+                document.getElementById('sys_gpu_temp').innerText = stats.gpu.temp;
+                const gpuBar = document.getElementById('sys_gpu_bar');
+                gpuBar.style.width = stats.gpu.load + '%';
+                gpuBar.style.background = stats.gpu.load > 85 ? 'var(--color-red)' : 'var(--accent-blue)';
+
+                document.getElementById('sys_vram').innerText = stats.gpu.memUsed;
+                document.getElementById('sys_vram_total').innerText = stats.gpu.memTotal;
+                const vramBar = document.getElementById('sys_vram_bar');
+                vramBar.style.width = stats.gpu.memPercent + '%';
+                vramBar.style.background = stats.gpu.memPercent > 85 ? 'var(--color-red)' : 'var(--color-green)';
+            } else {
+                gpuCard.style.display = 'none';
+                vramCard.style.display = 'none';
+            }
+        }
+
         // Logical Streams overview
         const tTotal = document.getElementById('sys_routes_total');
         const tOk = document.getElementById('sys_routes_ok');
