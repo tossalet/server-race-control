@@ -588,19 +588,17 @@ app.post('/api/monitor/open', (req, res) => {
                 });
                 child.unref();
 
-                // Para Epiphany: mover la ventana al display secundario y poner fullscreen con xdotool/wmctrl
-                if (isEpiphany(bin)) {
-                    setTimeout(() => {
-                        // Buscar la ventana de Epiphany recién abierta y moverla al segundo display
-                        const moveCmd = `xdotool search --name "RACE CONTROL" | tail -1 | xargs -I{} sh -c "xdotool windowmove {} ${secondaryDisplay.x} ${secondaryDisplay.y} && xdotool windowsize {} ${secondaryDisplay.width} ${secondaryDisplay.height} && xdotool windowactivate {} && xdotool key F11"`;
-                        exec(moveCmd, (err) => {
-                            if (err) {
-                                // Fallback con wmctrl
-                                exec(`wmctrl -r :ACTIVE: -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r :ACTIVE: -b add,fullscreen`, () => {});
-                            }
-                        });
-                    }, 2500);
-                }
+                // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
+                setTimeout(() => {
+                    // Buscar la ventana por su título de la app "RACE CONTROL" o "Mozilla Firefox" y moverla al display secundario
+                    const moveCmd = `xdotool search --name "RACE CONTROL" | tail -1 | xargs -I{} sh -c "xdotool windowmove {} ${secondaryDisplay.x} ${secondaryDisplay.y} && xdotool windowsize {} ${secondaryDisplay.width} ${secondaryDisplay.height} && xdotool windowactivate {} && xdotool key F11"`;
+                    exec(moveCmd, (err) => {
+                        if (err) {
+                            // Fallback secundario genérico con wmctrl
+                            exec(`wmctrl -r :ACTIVE: -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r :ACTIVE: -b add,fullscreen`, () => {});
+                        }
+                    });
+                }, 2000);
 
                 res.json({ ok: true, browser: bin, display: secondaryDisplay });
             });
