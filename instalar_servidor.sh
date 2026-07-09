@@ -591,22 +591,29 @@ if [ -z "$WID" ]; then
 fi
 
 if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID. Configurando pantalla completa..."
+    echo "Ventana encontrada: $WID (oculta en +9999+9999). Configurando..."
 
-    # Al ser la pantalla de carga (splash.html), la colocamos a 0,0 directamente.
-    # El usuario verá la animación de carga (los cuadraditos) en pantalla completa.
-    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
-        xdotool windowmove "$WID" 0 0 2>/dev/null
-        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
-        wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
-    fi
-
-    # Poner en pantalla completa
+    # Poner a pantalla completa de forma invisible
     xdotool windowactivate --sync "$WID" 2>/dev/null
     xdotool windowfocus --sync "$WID" 2>/dev/null
     xdotool key --window "$WID" F11 2>/dev/null
-    sleep 0.3
+    sleep 0.5
     wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
+
+    # Forzar dimensiones finales
+    if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
+        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
+        wmctrl -i -r "$WID" -e "0,9999,9999,$SCREEN_W,$SCREEN_H" 2>/dev/null
+    fi
+
+    # Pequeña espera para que se dibuje el HTML de carga
+    sleep 0.5
+
+    # ── DESVELAR VENTANA: Mover de golpe a la pantalla principal ──
+    echo "Desvelando ventana a pantalla principal (0,0)..."
+    xdotool windowmove "$WID" 0 0 2>/dev/null
+    wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
+    xdotool windowactivate "$WID" 2>/dev/null
 else
     echo "ERROR: No se encontró la ventana del navegador."
 fi
@@ -626,9 +633,9 @@ if [ -f /etc/xdg/openbox/rc.xml ]; then
     cp /etc/xdg/openbox/rc.xml "$REAL_HOME/.config/openbox/rc.xml"
     # Insertar reglas específicas de Epiphany en la sección <applications>
     if grep -q "</applications>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        sed -i '/<\/applications>/i \    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
+        sed -i '/<\/applications>/i \    <application class="epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
     elif grep -q "</openbox_config>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
+        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <position force="yes"><x>9999</x><y>9999</y></position>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
     fi
 else
     # Crear rc.xml mínimo con la regla nativa de fullscreen para Epiphany
@@ -641,21 +648,22 @@ else
   <desktops><number>1</number></desktops>
   <keyboard/>
   <mouse/>
-  <applications>
     <application class="epiphany">
       <decor>no</decor>
-      <fullscreen>yes</fullscreen>
-      <maximized>true</maximized>
+      <position force="yes">
+        <x>9999</x>
+        <y>9999</y>
+      </position>
     </application>
     <application class="Epiphany">
       <decor>no</decor>
-      <fullscreen>yes</fullscreen>
-      <maximized>true</maximized>
+      <position force="yes">
+        <x>9999</x>
+        <y>9999</y>
+      </position>
     </application>
     <application class="*">
       <decor>no</decor>
-      <fullscreen>yes</fullscreen>
-      <maximized>true</maximized>
     </application>
   </applications>
 </openbox_config>
