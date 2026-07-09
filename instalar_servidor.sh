@@ -553,7 +553,13 @@ if command -v plymouth &>/dev/null; then
     sudo plymouth quit 2>/dev/null || true
 fi
 
-# Desactivar barras de navegación y pestañas de Epiphany de forma forzada (gsettings)
+# Asegurar que el directorio temporal de perfil de Epiphany existe y está limpio
+# Esto nos permite aislar la configuración de gsettings para esta sesión de kiosko
+mkdir -p /tmp/epiphany-kiosk
+rm -rf /tmp/epiphany-kiosk/*
+
+# Desactivar barras de navegación y pestañas de Epiphany de forma forzada para el perfil del kiosko
+export GSETTINGS_SCHEMA_DIR=/usr/share/glib-2.0/schemas
 gsettings set org.gnome.Epiphany.ui expand-tabs-bar false 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/null || true
 gsettings set org.gnome.Epiphany.ui keep-present-bars false 2>/dev/null || true
@@ -564,23 +570,15 @@ SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
 SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 
-# Abrir Epiphany apuntando al Splash local de inmediato (cero esperas)
-epiphany --private-instance "file:///opt/race-control/public/splash.html" &
+# Abrir Epiphany apuntando al Splash local usando el perfil temporal aislado
+epiphany --private-instance --profile="/tmp/epiphany-kiosk" "file:///opt/race-control/public/splash.html" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
 echo "Esperando a que la ventana de Epiphany aparezca (xdotool --sync)..."
-WID=$(xdotool search --sync --onlyvisible --pid "$EPIPHANY_PID" 2>/dev/null | head -n 1)
+WID=$(xdotool search --sync --onlyvisible --class "epiphany" 2>/dev/null | head -n 1)
 
-# Si no lo encontró por PID, intentar por clase
 if [ -z "$WID" ]; then
-    echo "Buscando por clase..."
-    WID=$(xdotool search --sync --onlyvisible --class "epiphany" 2>/dev/null | head -n 1)
-fi
-
-# Si tampoco, último intento con bucle corto por nombre
-if [ -z "$WID" ]; then
-    echo "Buscando por nombre..."
     for i in $(seq 1 30); do
         WID=$(xdotool search --name "localhost" 2>/dev/null | head -n 1 \
            || xdotool search --name "Race" 2>/dev/null | head -n 1 \
@@ -596,9 +594,13 @@ if [ -n "$WID" ]; then
     # Poner a pantalla completa de forma invisible
     xdotool windowactivate --sync "$WID" 2>/dev/null
     xdotool windowfocus --sync "$WID" 2>/dev/null
-    xdotool key --window "$WID" F11 2>/dev/null
-    sleep 0.5
+    
+    # Enviar F11 de forma repetida y activar pantalla completa con wmctrl
+    xdotool key F11 2>/dev/null
+    sleep 0.2
     wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
+    xdotool key F11 2>/dev/null
+    sleep 0.3
 
     # Forzar dimensiones finales
     if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
@@ -606,14 +608,17 @@ if [ -n "$WID" ]; then
         wmctrl -i -r "$WID" -e "0,9999,9999,$SCREEN_W,$SCREEN_H" 2>/dev/null
     fi
 
-    # Pequeña espera para que se dibuje el HTML de carga
+    # Espera para renderizado
     sleep 0.5
 
-    # ── DESVELAR VENTANA: Mover de golpe a la pantalla principal ──
+    # ── DESVELAR VENTANA ──
     echo "Desvelando ventana a pantalla principal (0,0)..."
     xdotool windowmove "$WID" 0 0 2>/dev/null
     wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
+    
+    # Forzar foco y un último envío de F11 si hiciera falta
     xdotool windowactivate "$WID" 2>/dev/null
+    xdotool windowfocus "$WID" 2>/dev/null
 else
     echo "ERROR: No se encontró la ventana del navegador."
 fi
