@@ -495,6 +495,12 @@ echo "🖥️  11/11 — Configurando modo Kiosko (multi-monitor)..."
 if [ -f "/etc/lightdm/lightdm.conf" ]; then
     sed -i "s/^#\?autologin-user=.*/autologin-user=$REAL_USER/"         /etc/lightdm/lightdm.conf
     sed -i "s/^#\?autologin-user-timeout=.*/autologin-user-timeout=0/" /etc/lightdm/lightdm.conf
+    # Evitar que LightDM mate a Plymouth de forma anticipada
+    if ! grep -q "plymouth-left-active" /etc/lightdm/lightdm.conf; then
+        sed -i 's/\[LightDM\]/\[LightDM\]\nplymouth-left-active=true/' /etc/lightdm/lightdm.conf
+    else
+        sed -i 's/^#\?plymouth-left-active=.*/plymouth-left-active=true/' /etc/lightdm/lightdm.conf
+    fi
 fi
 mkdir -p /var/lib/AccountsService/users
 echo -e "[Desktop]\nSession=openbox" > "/var/lib/AccountsService/users/$REAL_USER" 2>/dev/null || true
