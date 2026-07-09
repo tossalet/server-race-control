@@ -585,7 +585,8 @@ if [ -z "$WID" ]; then
 fi
 
 if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID. Forzando foco y fullscreen..."
+    echo "Ventana encontrada: $WID. Esperando estabilización para fullscreen..."
+    sleep 1.5
     
     # Openbox rc.xml ya aplica el fullscreen en su nacimiento,
     # pero forzamos por si acaso para asegurar que no se dibuje el marco
@@ -677,7 +678,8 @@ fi
 chown -R "$REAL_USER:$REAL_USER" \
     "$REAL_HOME/.config/race-control" \
     "$REAL_HOME/.config/openbox" \
-    "$REAL_HOME/.config/autostart" 2>/dev/null || true
+    "$REAL_HOME/.config/autostart" \
+    "$APP_DIR" 2>/dev/null || true
 
 # Asegurar permisos de lectura y ejecucion correctos para toda la aplicacion en /opt/race-control
 chmod -R 755 "$APP_DIR"
