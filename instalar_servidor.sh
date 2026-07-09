@@ -479,6 +479,13 @@ EOF
     echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/plymouth" > /etc/sudoers.d/racecontrol-plymouth
     chmod 440 /etc/sudoers.d/racecontrol-plymouth
 
+    # Copiar la imagen de fondo bg.png a la carpeta public de la app
+    # Esto asegura que el splash.html tenga acceso al fondo nativo de inmediato
+    if [ -f "$APP_DIR/boot-theme/bg.png" ]; then
+        cp "$APP_DIR/boot-theme/bg.png" "$APP_DIR/public/bg.png"
+        chmod 644 "$APP_DIR/public/bg.png"
+    fi
+
     update-initramfs -u 2>/dev/null || true
     echo "   ✔ Animación Plymouth configurada (Drivers KMS NVIDIA cargados en Initramfs)."
 else
