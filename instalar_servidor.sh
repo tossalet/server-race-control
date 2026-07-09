@@ -472,9 +472,24 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
         done
     fi
 
-    # Evitar que systemd cierre Plymouth demasiado rápido
+    # Evitar que systemd y los display managers detengan Plymouth de forma automática.
+    # Enmascaramos físicamente los servicios apuntándolos a /dev/null
+    systemctl stop plymouth-quit.service 2>/dev/null || true
+    systemctl disable plymouth-quit.service 2>/dev/null || true
     systemctl mask plymouth-quit.service 2>/dev/null || true
+    
+    systemctl stop plymouth-quit-active.service 2>/dev/null || true
+    systemctl disable plymouth-quit-active.service 2>/dev/null || true
     systemctl mask plymouth-quit-active.service 2>/dev/null || true
+    
+    # Sobreescribir las directivas de conflictos de systemd para que LightDM no dependa de quit-plymouth
+    mkdir -p /etc/systemd/system/lightdm.service.d
+    cat > /etc/systemd/system/lightdm.service.d/override.conf << EOF
+[Unit]
+Conflicts=
+Conflicts=shutdown.target
+EOF
+    systemctl daemon-reload 2>/dev/null || true
 
     # Permitir al usuario kiosk apagar Plymouth al abrir el navegador
     echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/plymouth" > /etc/sudoers.d/racecontrol-plymouth
