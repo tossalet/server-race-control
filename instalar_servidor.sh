@@ -549,8 +549,8 @@ gsettings set org.gnome.Epiphany.ui tabs-bar-visibility-policy 'never' 2>/dev/nu
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
 gsettings set org.gnome.shell enable-hot-corners false 2>/dev/null || true
 
-# Abrir la aplicación (--private-instance para modo limpio, sin historial previo)
-epiphany --private-instance "http://localhost:$PORT/grabador?force_transcode=0" &
+# Abrir la aplicación en modo App real (elimina barras de navegación de raíz por diseño)
+epiphany --app="http://localhost:$PORT/grabador?force_transcode=0" --profile="$REAL_HOME/.config/race-control/epiphany-profile" &
 EPIPHANY_PID=$!
 
 # ── MÉTODO 1: xdotool --sync (espera bloqueante hasta que la ventana exista) ──
