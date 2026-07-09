@@ -70,7 +70,7 @@ clear
 # =============================================================================
 #  PASO 1 — Limpiar instalaciones anteriores
 # =============================================================================
-echo "🧹 1/11 — Limpiando instalaciones antiguas..."
+echo "🧹 1/11 — Limpiando servicios antiguos..."
 for svc in tsst-srt race-control race-control-kiosk; do
     systemctl stop    "$svc.service" 2>/dev/null || true
     systemctl disable "$svc.service" 2>/dev/null || true
@@ -80,7 +80,12 @@ done
 [ -f "$APP_DIR/.env"                 ] && cp "$APP_DIR/.env"                 /tmp/rc_env_backup
 [ -f "$APP_DIR/data/race-control.db" ] && cp "$APP_DIR/data/race-control.db" /tmp/rc_db_backup
 
-rm -rf "$APP_DIR"
+# Evitar borrar el directorio completo si ya contiene el código actual (ej: clonado por Git previamente)
+if [ -f "$APP_DIR/server.js" ] || [ -f "$APP_DIR/package.json" ]; then
+    echo "   Directorio existente detectado. Conservando el código para evitar pérdidas..."
+else
+    rm -rf "$APP_DIR"
+fi
 
 # =============================================================================
 #  PASO 2 — Dependencias del sistema
@@ -232,7 +237,10 @@ mkdir -p "$APP_DIR"
 # Si hay package.json local, ofrecer usarlo
 USE_LOCAL=false
 if [ -f "$SCRIPT_DIR/package.json" ]; then
-    if whiptail --title "Código local detectado" --yesno \
+    # Si ya se está ejecutando desde el directorio de destino final, forzar local de forma no-interactiva
+    if [ "$SCRIPT_DIR" = "$APP_DIR" ]; then
+        USE_LOCAL=true
+    elif whiptail --title "Código local detectado" --yesno \
         "Se ha detectado el código del servidor en esta carpeta local ($SCRIPT_DIR).\n\n¿Quieres usar estos archivos locales en lugar de descargar de GitHub?" 10 65; then
         USE_LOCAL=true
     fi
@@ -240,11 +248,14 @@ fi
 
 if [ "$USE_LOCAL" = true ]; then
     echo "   Usando archivos locales..."
-    if command -v rsync &>/dev/null; then
-        rsync -a --exclude='node_modules' --exclude='logs' --exclude='media' --exclude='.git' "$SCRIPT_DIR/" "$APP_DIR/" 2>/dev/null
-    else
-        cp -r "$SCRIPT_DIR/"* "$APP_DIR/" 2>/dev/null || true
-        rm -rf "$APP_DIR/node_modules" "$APP_DIR/logs" "$APP_DIR/media" "$APP_DIR/.git"
+    # Si ya estamos en la carpeta destino, solo aseguramos directorios y no copiamos sobre nosotros mismos
+    if [ "$SCRIPT_DIR" != "$APP_DIR" ]; then
+        if command -v rsync &>/dev/null; then
+            rsync -a --exclude='node_modules' --exclude='logs' --exclude='media' --exclude='.git' "$SCRIPT_DIR/" "$APP_DIR/" 2>/dev/null
+        else
+            cp -r "$SCRIPT_DIR/"* "$APP_DIR/" 2>/dev/null || true
+            rm -rf "$APP_DIR/node_modules" "$APP_DIR/logs" "$APP_DIR/media" "$APP_DIR/.git"
+        fi
     fi
 else
     # Ofrecer opciones de descarga desde GitHub
@@ -425,57 +436,51 @@ systemctl enable race-control.service
 systemctl start race-control.service
 
 # =============================================================================
-#  PASO 10 — Plymouth (animación de arranque) [DESHABILITADO]
+#  PASO 10 — Plymouth (animación de arranque)
 # =============================================================================
-echo "🎬 10/11 — Saltando instalación de animación de arranque (Plymouth)..."
-# THEME_DIR="/usr/share/plymouth/themes/racecontrol"
-# mkdir -p "$THEME_DIR"
-# 
-# # Intentar copiar desde varias rutas posibles
-# cp -r "$APP_DIR/boot-theme/"* "$THEME_DIR/" 2>/dev/null || \
-# cp -r /opt/srt-server/boot-theme/*    "$THEME_DIR/" 2>/dev/null || \
-# cp -r ./boot-theme/*                  "$THEME_DIR/" 2>/dev/null || true
-# chmod -R 755 "$THEME_DIR"
-# 
-# if [ -f "$THEME_DIR/racecontrol.script" ]; then
-#     plymouth-set-default-theme -R racecontrol
-# 
-#     # Raspberry Pi — backup + modificar cmdline.txt
-#     for CMDLINE in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
-#         [ -f "$CMDLINE" ] || continue
-#         cp "$CMDLINE" "${CMDLINE}.bak" 2>/dev/null || true
-#         command -v raspi-config >/dev/null 2>&1 && raspi-config nonint do_boot_splash 0 2>/dev/null || true
-#         for WORD in "quiet" "splash" "plymouth.ignore-serial-consoles" "vt.global_cursor_default=0"; do
-#             grep -q "$WORD" "$CMDLINE" || sed -i "s/$/ $WORD/" "$CMDLINE"
-#         done
-#     done
-# 
-#     # Ubuntu / i7 con GRUB
-#     if [ -f "/etc/default/grub" ]; then
-#         sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
-#         update-grub 2>/dev/null || true
-#     fi
-# 
-#     # Cargar el driver gráfico i915 al principio del arranque para evitar parpadeos y letras tipo matriz
-#     if [ -f "/etc/initramfs-tools/modules" ]; then
-#         if ! grep -q "i915" /etc/initramfs-tools/modules; then
-#             echo -e "\n# Forzar carga temprana de graficos Intel para Plymouth\ni915" >> /etc/initramfs-tools/modules
-#         fi
-#     fi
-# 
-#     # Evitar que systemd detenga Plymouth automáticamente (lo detendrá nuestro launch_kiosk.sh)
-#     systemctl mask plymouth-quit.service 2>/dev/null || true
-#     systemctl mask plymouth-quit-active.service 2>/dev/null || true
-# 
-#     # Crear regla de sudo sin contraseña para que racecontrol pueda llamar a plymouth quit
-#     echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/plymouth" > /etc/sudoers.d/racecontrol-plymouth
-#     chmod 440 /etc/sudoers.d/racecontrol-plymouth
-# 
-#     update-initramfs -u 2>/dev/null || true
-#     echo "   Tema Plymouth instalado y initramfs configurado."
-# else
-#     echo "   Sin tema Plymouth (carpeta boot-theme no encontrada)."
-# fi
+echo "🎬 10/11 — Configurando animación de arranque (Plymouth)..."
+THEME_DIR="/usr/share/plymouth/themes/racecontrol"
+mkdir -p "$THEME_DIR"
+
+# Copiar archivos del tema
+cp -r "$APP_DIR/boot-theme/"* "$THEME_DIR/" 2>/dev/null || true
+chmod -R 755 "$THEME_DIR"
+
+if [ -f "$THEME_DIR/racecontrol.script" ]; then
+    plymouth-set-default-theme -R racecontrol 2>/dev/null || true
+
+    # Configuración de GRUB para PC UEFI/BIOS
+    if [ -f "/etc/default/grub" ]; then
+        # Asegurar quiet splash y parámetros de NVIDIA
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nvidia-drm.modeset=1 plymouth.ignore-serial-consoles vt.global_cursor_default=0"/' /etc/default/grub
+        update-grub 2>/dev/null || true
+    fi
+
+    # Cargar los drivers gráficos de NVIDIA tempranamente para Plymouth en initramfs
+    if [ -f "/etc/initramfs-tools/modules" ]; then
+        # Eliminar posibles drivers antiguos que entren en conflicto
+        sed -i '/i915/d' /etc/initramfs-tools/modules
+        sed -i '/nouveau/d' /etc/initramfs-tools/modules
+        
+        # Añadir drivers propietarios de NVIDIA para KMS temprano
+        for mod in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
+            grep -q "$mod" /etc/initramfs-tools/modules || echo "$mod" >> /etc/initramfs-tools/modules
+        done
+    fi
+
+    # Evitar que systemd cierre Plymouth demasiado rápido
+    systemctl mask plymouth-quit.service 2>/dev/null || true
+    systemctl mask plymouth-quit-active.service 2>/dev/null || true
+
+    # Permitir al usuario kiosk apagar Plymouth al abrir el navegador
+    echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/plymouth" > /etc/sudoers.d/racecontrol-plymouth
+    chmod 440 /etc/sudoers.d/racecontrol-plymouth
+
+    update-initramfs -u 2>/dev/null || true
+    echo "   ✔ Animación Plymouth configurada (Drivers KMS NVIDIA cargados en Initramfs)."
+else
+    echo "   ⚠️  Sin tema Plymouth (directorio boot-theme no encontrado o vacío)."
+fi
 
 # =============================================================================
 #  PASO 11 — Modo Kiosko (LightDM + Openbox + Chromium)
