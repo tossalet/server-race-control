@@ -586,51 +586,35 @@ fi
 if [ -n "$WID" ]; then
     echo "Ventana encontrada: $WID"
 
-    # Esperar a que la ventana se estabilice
-    sleep 3
-
-    # ── MÉTODO 2: Activar ventana y enviar F11 ──
-    echo "Activando ventana y enviando F11..."
-    xdotool windowactivate --sync "$WID" 2>/dev/null
-    sleep 0.3
-    xdotool windowfocus --sync "$WID" 2>/dev/null
-    sleep 0.3
-    xdotool key --window "$WID" F11 2>/dev/null
-    sleep 1
-
-    # ── MÉTODO 3: wmctrl para forzar fullscreen a nivel del WM ──
-    echo "Forzando fullscreen con wmctrl..."
-    wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
-
-    # ── MÉTODO 4: Mover y redimensionar la ventana a pantalla completa manualmente ──
+    # ── Redimensionado instantáneo ──
+    # Forzar posición inmediata en el Xorg antes de forzar F11
     if [ -n "$SCREEN_W" ] && [ -n "$SCREEN_H" ]; then
-        echo "Redimensionando ventana a ${SCREEN_W}x${SCREEN_H}..."
-        xdotool windowmove --sync "$WID" 0 0 2>/dev/null
-        xdotool windowsize --sync "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
+        echo "Forzando geometría inicial ${SCREEN_W}x${SCREEN_H}..."
+        xdotool windowmove "$WID" 0 0 2>/dev/null
+        xdotool windowsize "$WID" "$SCREEN_W" "$SCREEN_H" 2>/dev/null
         wmctrl -i -r "$WID" -e "0,0,0,$SCREEN_W,$SCREEN_H" 2>/dev/null
     fi
 
-    # ── MÉTODO 5: Segundo intento de F11 por si el primero no cuajó ──
-    sleep 2
+    # Activar ventana y enviar F11
     xdotool windowactivate --sync "$WID" 2>/dev/null
+    xdotool windowfocus --sync "$WID" 2>/dev/null
     xdotool key --window "$WID" F11 2>/dev/null
     sleep 0.5
+    wmctrl -i -r "$WID" -b add,fullscreen 2>/dev/null
 
     # Comprobar si está fullscreen
     GEOM=$(xdotool getwindowgeometry "$WID" 2>/dev/null)
     echo "Geometría final de la ventana: $GEOM"
     
-    # ── CERRAR PLYMOUTH AL FINAL ──
-    # Una vez la ventana de la aplicación ya está perfectamente posicionada,
-    # maximizada y en pantalla completa, apagamos los cuadraditos de carga.
-    # Esto elimina visualmente el parpadeo de carga.
+    # ── APAGAR CARGA PLYMOUTH AL FINAL ──
+    # Solo cuando el Xorg ha dibujado todo y la ventana está posicionada,
+    # matamos Plymouth para desvelar el panel web al instante.
     if command -v plymouth &>/dev/null; then
-        echo "Cerrando Plymouth (Carga finalizada)..."
+        echo "Apagando pantalla de carga (Plymouth)..."
         sudo plymouth quit 2>/dev/null || true
     fi
 else
-    echo "ERROR: No se encontró ninguna ventana de Epiphany."
-    # Asegurar que Plymouth se cierra de todas formas si hay fallo
+    echo "ERROR: No se encontró la ventana del navegador."
     sudo plymouth quit 2>/dev/null || true
 fi
 
