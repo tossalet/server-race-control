@@ -1119,7 +1119,7 @@ app.post('/api/recordings/start', (req, res) => {
 
                 // Si es H.265 y la GPU NVIDIA está disponible, activar decodificación acelerada por hardware (NVIDIA CUDA)
                 if (isH265 && streamManager.nvencAvailable) {
-                    args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
+                    args.push('-hwaccel', 'cuda', '-c:v', 'hevc_cuvid');
                 }
 
                 args.push('-i', `tcp://127.0.0.1:${recPort}?listen`);
@@ -1779,7 +1779,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
 
         // Decodificación acelerada por GPU si está disponible
         if (streamManager.nvencAvailable) {
-            args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
+            args.push('-hwaccel', 'cuda', '-c:v', 'hevc_cuvid');
         }
 
         args.push(
@@ -2359,7 +2359,13 @@ app.post('/api/network', (req, res) => {
     
     let cmd = '';
     if (mode === 'auto') {
-        cmd = `nmcli con mod "${connectionName}" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" && nmcli con up "${connectionName}"`;
+        // En NetworkManager, limpiar de forma segura la IP, Gateway y DNS fijos previas y forzar renovación completa
+        cmd = `nmcli con mod "${connectionName}" ipv4.method auto && ` +
+              `nmcli con mod "${connectionName}" remove ipv4.addresses 2>/dev/null || true && ` +
+              `nmcli con mod "${connectionName}" remove ipv4.dns 2>/dev/null || true && ` +
+              `nmcli con mod "${connectionName}" remove ipv4.gateway 2>/dev/null || true && ` +
+              `nmcli con down "${connectionName}" 2>/dev/null || true && ` +
+              `nmcli con up "${connectionName}"`;
     } else {
         const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
         cmd = `nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && nmcli con up "${connectionName}"`;
