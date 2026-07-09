@@ -615,6 +615,16 @@ app.post('/api/monitor/open', (req, res) => {
     });
 });
 
+app.get('/api/monitor/debug', (req, res) => {
+    const { exec } = require('child_process');
+    exec('xrandr --query && echo "--- DISPLAY env: $DISPLAY ---"', (err, stdout) => {
+        if (err) {
+            return res.json({ ok: false, error: err.message });
+        }
+        res.json({ ok: true, output: stdout });
+    });
+});
+
 const os = require('os');
 app.get('/api/server-ip', (req, res) => {
     const interfaces = os.networkInterfaces();
