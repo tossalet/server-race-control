@@ -573,7 +573,8 @@ app.post('/api/monitor/open', (req, res) => {
 
                 let args;
                 if (isFirefox(bin)) {
-                    args = [`--new-window`, monitorUrl, `--kiosk`];
+                    // Creamos una clase de ventana única "racecontrolmonitor" y evitamos compartir instancia
+                    args = [`--class`, `racecontrolmonitor`, `--new-window`, monitorUrl, `--kiosk`, `--no-remote`];
                 } else if (isEpiphany(bin)) {
                     args = [`--new-window`, monitorUrl];
                 } else {
@@ -590,9 +591,8 @@ app.post('/api/monitor/open', (req, res) => {
 
                 // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
                 setTimeout(() => {
-                    // 1. Intentar buscar por clase de ventana firefox/epiphany o por título parcial "RACE CONTROL"
-                    // Usamos un script robusto que busca IDs y mueve cada ventana coincidente al display secundario
-                    const moveCmd = `(xdotool search --class "firefox" || xdotool search --class "Epiphany" || xdotool search --name "RACE CONTROL") | while read id; do ` +
+                    // Buscamos específicamente por la clase de ventana única que hemos inyectado a Firefox o por título alternativo
+                    const moveCmd = `(xdotool search --class "racecontrolmonitor" || xdotool search --name "RACE CONTROL" || xdotool search --class "firefox" || xdotool search --class "Epiphany") | while read id; do ` +
                                     `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
                                     `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
                                     `  xdotool windowactivate "$id" 2>/dev/null && ` +
@@ -600,7 +600,7 @@ app.post('/api/monitor/open', (req, res) => {
                                     `done || ` +
                                     `(wmctrl -r "RACE CONTROL" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL" -b add,fullscreen)`;
                     
-                    console.log(`[MONITOR] Ejecutando comando de reposicionamiento: ${moveCmd}`);
+                    console.log(`[MONITOR] Ejecutando comando de reposicionamiento robusto: ${moveCmd}`);
                     exec(moveCmd, (err) => {
                         if (err) console.error('[MONITOR] Error reposicionando ventana:', err.message);
                         else console.log('[MONITOR] Ventana reposicionada con éxito.');
