@@ -1655,6 +1655,131 @@ app.get('/api/disks', (req, res) => {
     res.json(drives);
 });
 
+// Explorador de archivos dinámico y seguro (0% de cuelgues, lee de mediaRoot únicamente)
+app.get('/api/files', (req, res) => {
+    if (!mediaRoot) {
+        return res.json({ currentPath: '', parentPath: null, items: [] });
+    }
+
+    const reqPath = req.query.path || mediaRoot;
+    // Evitar Path Traversal: asegurar que no salimos de mediaRoot ni de rutas autorizadas
+    if (!reqPath.includes(mediaRoot) && !reqPath.includes('/media') && !reqPath.includes('/mnt')) {
+        return res.status(403).json({ error: 'Acceso denegado a esa ruta' });
+    }
+
+    try {
+        if (!fs.existsSync(reqPath)) {
+            return res.json({ currentPath: reqPath, parentPath: null, items: [] });
+        }
+
+        const items = fs.readdirSync(reqPath).map(file => {
+            const fp = path.join(reqPath, file);
+            let isDir = false;
+            let size = 0;
+            let mtime = new Date();
+            try {
+                const stat = fs.statSync(fp);
+                isDir = stat.isDirectory();
+                size = stat.size;
+                mtime = stat.mtime;
+            } catch (e) {}
+
+            return {
+                name: file,
+                path: fp,
+                isDir,
+                sizeBytes: size,
+                sizeMB: (size / 1e6).toFixed(1),
+                modified: mtime.toISOString()
+            };
+        }).sort((a, b) => b.isDir - a.isDir || new Date(b.modified) - new Date(a.modified));
+
+        const parentPath = reqPath === mediaRoot ? null : path.dirname(reqPath);
+        res.json({ currentPath: reqPath, parentPath, items });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Borrar archivo individual
+app.post('/api/files/delete', (req, res) => {
+    const { filepath } = req.body;
+    if (!filepath || !fs.existsSync(filepath)) {
+        return res.status(400).json({ error: 'Ruta no existe o es inválida' });
+    }
+    if (!filepath.includes(mediaRoot) && !filepath.includes('/media') && !filepath.includes('/mnt')) {
+        return res.status(403).json({ error: 'Acceso denegado' });
+    }
+
+    try {
+        const stat = fs.statSync(filepath);
+        if (stat.isDirectory()) {
+            fs.rmSync(filepath, { recursive: true, force: true });
+        } else {
+            fs.unlinkSync(filepath);
+        }
+        res.json({ success: true });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Borrado masivo (Seleccionados)
+app.post('/api/files/bulk-delete', (req, res) => {
+    const { filepaths } = req.body;
+    if (!Array.isArray(filepaths)) {
+        return res.status(400).json({ error: 'Formato incorrecto. Se requiere array filepaths.' });
+    }
+
+    let deletedCount = 0;
+    let errors = [];
+
+    filepaths.forEach(filepath => {
+        if (!filepath) return;
+        if (!filepath.includes(mediaRoot) && !filepath.includes('/media') && !filepath.includes('/mnt')) {
+            return errors.push(`Acceso denegado para: ${filepath}`);
+        }
+        try {
+            if (fs.existsSync(filepath)) {
+                const stat = fs.statSync(filepath);
+                if (stat.isDirectory()) {
+                    fs.rmSync(filepath, { recursive: true, force: true });
+                } else {
+                    fs.unlinkSync(filepath);
+                }
+                deletedCount++;
+            }
+        } catch(e) {
+            errors.push(`${filepath}: ${e.message}`);
+        }
+    });
+
+    res.json({ success: true, deleted: deletedCount, errors: errors.length > 0 ? errors : undefined });
+});
+
+// Vaciar disco de grabación (Borrar Todo)
+app.post('/api/files/clean', (req, res) => {
+    if (!mediaRoot || !fs.existsSync(mediaRoot)) {
+        return res.status(400).json({ error: 'No hay disco de grabación seleccionado o no está montado' });
+    }
+
+    try {
+        const files = fs.readdirSync(mediaRoot);
+        let deletedCount = 0;
+        files.forEach(file => {
+            const fp = path.join(mediaRoot, file);
+            // Evitar borrar el propio directorio recordings
+            if (fp !== mediaRoot) {
+                fs.rmSync(fp, { recursive: true, force: true });
+                deletedCount++;
+            }
+        });
+        res.json({ success: true, message: `Se han eliminado todos los archivos (${deletedCount} elementos).` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Seleccionar disco de grabacion en caliente
 app.post('/api/storage/select', (req, res) => {
     const { disk_path } = req.body;
