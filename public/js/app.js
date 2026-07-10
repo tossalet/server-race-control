@@ -12,6 +12,29 @@ const chartColors = ['#60A5FA', '#34d399', '#f87171', '#fbbf24', '#c084fc', '#f4
 // Boot configuration
 fetch('/api/ports').then(r=>r.json()).then(d=>{ window.currentRtmpPort = d.rtmpPort || 1935; }).catch(()=>{ window.currentRtmpPort = 1935; });
 
+// Refrescar la IP real en caliente leída del backend (cada 6 segundos)
+function refreshServerIp() {
+    fetch('/api/server-ip')
+        .then(r => r.json())
+        .then(data => {
+            if (data && data.ip && data.ip !== '127.0.0.1') {
+                if (serverIp !== data.ip) {
+                    serverIp = data.ip;
+                    // Redibujar las rutas en pantalla si la IP ha cambiado
+                    if (typeof renderDashboardStreams === 'function' && currentDashboardFilter !== null) {
+                        renderDashboardStreams();
+                    }
+                    if (typeof renderStreams === 'function') {
+                        renderStreams();
+                    }
+                }
+            }
+        })
+        .catch(() => {});
+}
+refreshServerIp();
+setInterval(refreshServerIp, 6000);
+
 // SPA Navigation
 let currentDashboardFilter = null;
 
