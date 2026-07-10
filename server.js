@@ -1612,25 +1612,36 @@ app.delete('/api/users/:username', (req, res) => {
 /* =======================================
  *  REST API: FILES / STORAGE
  * ======================================= */
-app.get('/api/disks', (req, res) => {
+app.get('/api/disks', async (req, res) => {
     const drives = [];
     if (!mediaRoot) {
         return res.json(drives);
     }
     
-    // Devolver únicamente la ruta activa de forma pasiva y segura
+    // Verificar accesibilidad del disco con timeout de 2 segundos (previene cuelgues en montajes lentos)
+    const checkAccess = (p) => new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 2000);
+        fs.access(p, fs.constants.F_OK, (err) => {
+            clearTimeout(timer);
+            resolve(!err);
+        });
+    });
+    
     try {
+        const accessible = await checkAccess(mediaRoot);
         let freeGB = null, totalGB = null, usedPct = null;
-        if (fs.existsSync(mediaRoot)) {
-            const stat = fs.statfsSync(mediaRoot);
-            totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
-            freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
-            usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+        if (accessible) {
+            try {
+                const stat = fs.statfsSync(mediaRoot);
+                totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+            } catch(e) {}
         }
         
         drives.push({
             id: mediaRoot.replace(/[:\\/]/g, '_'),
-            name: `💾 Disco de grabación activo`,
+            name: accessible ? `\uD83D\uDCBE Disco de grabaci\u00f3n activo` : `\uD83D\uDCBE Disco de grabaci\u00f3n (desconectado)`,
             path: mediaRoot,
             freeGB,
             totalGB,
@@ -1639,10 +1650,9 @@ app.get('/api/disks', (req, res) => {
             active: true
         });
     } catch (e) {
-        // En caso de que el disco esté desconectado temporalmente, devolvemos el registro de forma básica
         drives.push({
             id: mediaRoot.replace(/[:\\/]/g, '_'),
-            name: `💾 Disco de grabación activo (desconectado)`,
+            name: `\uD83D\uDCBE Disco de grabaci\u00f3n activo (error)`,
             path: mediaRoot,
             freeGB: null,
             totalGB: null,
@@ -1655,8 +1665,34 @@ app.get('/api/disks', (req, res) => {
     res.json(drives);
 });
 
-// Explorador de archivos dinámico y seguro (0% de cuelgues, lee de mediaRoot únicamente)
-app.get('/api/files', (req, res) => {
+// Estado del disco de grabación activo (usado como fallback por el explorador de archivos)
+app.get('/api/storage/status', async (req, res) => {
+    if (!mediaRoot) {
+        return res.json({ available: false, path: null, message: 'No hay disco configurado' });
+    }
+    const checkAccess = (p) => new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 2000);
+        fs.access(p, fs.constants.F_OK, (err) => {
+            clearTimeout(timer);
+            resolve(!err);
+        });
+    });
+    try {
+        const accessible = await checkAccess(mediaRoot);
+        if (accessible) {
+            const stat = fs.statfsSync(mediaRoot);
+            const freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+            res.json({ available: true, path: mediaRoot, freeGB });
+        } else {
+            res.json({ available: false, path: mediaRoot, message: 'Directorio no accesible' });
+        }
+    } catch (e) {
+        res.json({ available: true, path: mediaRoot, freeGB: null });
+    }
+});
+
+// Explorador de archivos din\u00e1mico y seguro (0% de cuelgues, lee de mediaRoot \u00fanicamente)
+app.get('/api/files', async (req, res) => {
     if (!mediaRoot) {
         return res.json({ currentPath: '', parentPath: null, items: [] });
     }
@@ -1667,8 +1703,18 @@ app.get('/api/files', (req, res) => {
         return res.status(403).json({ error: 'Acceso denegado a esa ruta' });
     }
 
+    // Verificar accesibilidad del directorio con timeout de 2 segundos
+    const checkAccess = (p) => new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 2000);
+        fs.access(p, fs.constants.F_OK, (err) => {
+            clearTimeout(timer);
+            resolve(!err);
+        });
+    });
+
     try {
-        if (!fs.existsSync(reqPath)) {
+        const accessible = await checkAccess(reqPath);
+        if (!accessible) {
             return res.json({ currentPath: reqPath, parentPath: null, items: [] });
         }
 
@@ -1861,19 +1907,26 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     const ffmpegCmd = streamManager.getFFmpegPath();
     
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
-    // Transcodificar H.265 -> H.264 de forma implícita y automática para evitar la incompatibilidad nativa de Firefox con H.265
-    const mustTranscode = codec === 'H.265' || codec === 'HEVC' || codec.includes('265') || req.query.transcode === '1' || req.query.transcode === 'true';
+    const isHevc = codec === 'H.265' || codec === 'HEVC' || codec.includes('265');
+    // Solo transcodificar si es H.265, o si se solicita explícitamente con ?transcode=true
+    const mustTranscode = isHevc || req.query.transcode === '1' || req.query.transcode === 'true';
+    
+    // Si el códec ya es H.264 y no es H.265, no necesitamos transcodificar: passthrough directo
+    const isH264Native = !isHevc && (codec === 'H.264' || codec.includes('264') || codec === '');
+    const canPassthrough = mustTranscode && isH264Native && !isHevc;
     
     let args;
-    if (mustTranscode) {
-        const encoderType = streamManager.nvencAvailable ? 'GPU NVENC' : 'CPU libx264';
+    if (mustTranscode && !canPassthrough) {
+        // Necesitamos transcodificar H.265 -> H.264
+        const useGpu = streamManager.nvencAvailable && isHevc;
+        const encoderType = useGpu ? 'GPU NVENC' : 'CPU libx264';
         originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (${encoderType})`);
         
-        // Obtenemos los argumentos de codificación H.264. Forzamos GOP de 15 para inyectar Keyframes rápidos y evitar el frame verde inicial.
+        // Obtenemos los argumentos de codificación H.264
         const encoderArgs = streamManager.getH264EncoderArgs({ 
             scale: '-2:720', 
             cq: 28, 
-            hwaccel: streamManager.nvencAvailable ? 'cuda' : undefined 
+            hwaccel: useGpu ? 'cuda' : undefined 
         });
         
         args = [
@@ -1885,14 +1938,10 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-analyzeduration', '100000'
         ];
 
-        // Decodificación acelerada por GPU dinámica según el códec detectado de la cámara
-        if (streamManager.nvencAvailable) {
+        // Decodificación acelerada por GPU solo si es H.265 y hay NVENC
+        if (useGpu) {
             args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
-            if (codec.includes('265') || codec.includes('H.265') || codec.includes('HEVC')) {
-                args.push('-c:v', 'hevc_cuvid');
-            } else {
-                args.push('-c:v', 'h264_cuvid');
-            }
+            args.push('-c:v', 'hevc_cuvid');
         }
 
         args.push(
