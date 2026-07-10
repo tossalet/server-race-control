@@ -368,8 +368,6 @@ app.get('/api/storage/list', (req, res) => {
         return res.json([{ device: 'local', mountPoint: path.join(__dirname, 'media'), fsType: 'local', sizeGB: null, freeGB: null, label: 'Carpeta local (Windows dev)' }]);
     }
 
-    const { exec } = require('child_process');
-    const DATA_FS = new Set(['ext4','ext3','ext2','vfat','exfat','ntfs','xfs','btrfs','f2fs']);
     const SKIP_FS = new Set(['tmpfs','devtmpfs','sysfs','proc','devpts','cgroup','cgroup2',
                              'overlay','squashfs','udev','securityfs','fusectl','pstore',
                              'efivarfs','debugfs','tracefs','hugetlbfs','mqueue','ramfs','bpf','configfs']);
@@ -378,65 +376,43 @@ app.get('/api/storage/list', (req, res) => {
 
     const partitions = [];
 
-    // 1. Leer montajes activos rápidos desde /proc/mounts (muy seguro y nunca se cuelga)
     try {
-        const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
-        for (const line of mounts) {
-            const [device, mountPoint, fsType] = line.split(' ');
-            if (!device || !mountPoint || !fsType) continue;
-            if (SKIP_FS.has(fsType)) continue;
-            if (!device.startsWith('/dev/')) continue;
-            if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
-            
-            let sizeGB = null, freeGB = null;
-            try {
-                if (fs.existsSync(mountPoint)) {
+        if (fs.existsSync('/proc/mounts')) {
+            const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
+            for (const line of mounts) {
+                const parts = line.split(' ');
+                if (parts.length < 3) continue;
+                const device = parts[0];
+                const mountPoint = parts[1];
+                const fsType = parts[2];
+                
+                if (!device || !mountPoint || !fsType) continue;
+                if (SKIP_FS.has(fsType)) continue;
+                if (!device.startsWith('/dev/sd') && !device.startsWith('/dev/nvme')) continue; // Solo discos físicos y USB reales
+                if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
+
+                let sizeGB = null, freeGB = null;
+                try {
                     const stat = fs.statfsSync(mountPoint);
                     sizeGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
                     freeGB = ((stat.bfree  * stat.bsize) / 1e9).toFixed(1);
-                }
-            } catch(e) {}
+                } catch(e) {}
 
-            partitions.push({ device, mountPoint, fsType, sizeGB, freeGB, label: 'Disco Montado' });
+                partitions.push({
+                    device,
+                    mountPoint,
+                    fsType,
+                    sizeGB,
+                    freeGB,
+                    label: device.includes('sd') ? `Puerto USB (${device.replace('/dev/', '')})` : `Disco NVMe (${device.replace('/dev/', '')})`
+                });
+            }
         }
     } catch(e) {
         console.error('[STORAGE] Error leyendo /proc/mounts:', e.message);
     }
 
-    // 2. Ejecutar lsblk de forma estrictamente asíncrona con un timeout corto de 1500ms
-    exec('lsblk -J -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,TYPE 2>/dev/null', { timeout: 1500 }, (lsblkErr, stdout) => {
-        if (lsblkErr || !stdout) {
-            // Si lsblk se cuelga o da error, devolvemos lo que tengamos en proc/mounts de inmediato sin bloquear
-            return res.json(partitions);
-        }
-        
-        try {
-            const data = JSON.parse(stdout);
-            const walkBlk = (items) => {
-                for (const item of (items || [])) {
-                    if (item.type === 'part' && item.fstype && DATA_FS.has(item.fstype)) {
-                        const alreadyListed = partitions.some(p => p.device === `/dev/${item.name}`);
-                        const isMounted = item.mountpoint && SKIP_PFX.some(p => item.mountpoint === p || item.mountpoint.startsWith(p + '/'));
-                        if (!alreadyListed && !isMounted) {
-                            partitions.push({
-                                device: `/dev/${item.name}`,
-                                mountPoint: item.mountpoint || null,
-                                fsType: item.fstype,
-                                sizeGB: item.size ? parseFloat(item.size).toFixed(0) : null,
-                                freeGB: null,
-                                label: item.label || '',
-                                unmounted: !item.mountpoint
-                            });
-                        }
-                    }
-                    if (item.children) walkBlk(item.children);
-                }
-            };
-            walkBlk(data.blockdevices);
-        } catch(parseErr) {}
-
-        res.json(partitions);
-    });
+    res.json(partitions);
 });
 
 // Seleccionar partición de grabaciones y guardarla en DB
@@ -1801,8 +1777,8 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     const ffmpegCmd = streamManager.getFFmpegPath();
     
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
-    // Transcodificar H.265 -> H.264 bajo demanda (solo si el cliente lo solicita explícitamente por limitaciones de compatibilidad)
-    const mustTranscode = codec === 'H.265' && (req.query.transcode === '1' || req.query.transcode === 'true');
+    // Transcodificar H.265 -> H.264 de forma implícita y automática para evitar la incompatibilidad nativa de Firefox con H.265
+    const mustTranscode = codec === 'H.265' || codec === 'HEVC' || codec.includes('265') || req.query.transcode === '1' || req.query.transcode === 'true';
     
     let args;
     if (mustTranscode) {
