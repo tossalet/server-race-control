@@ -1139,10 +1139,11 @@ app.post('/api/recordings/start', (req, res) => {
                     '-thread_queue_size', '4096'
                 ];
 
-                // Si es H.265 y la GPU NVIDIA está disponible, activar decodificación acelerada por hardware (NVIDIA CUDA)
-                if (isH265 && streamManager.nvencAvailable) {
-                    args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
-                }
+                // IMPORTANTE: Decodificamos en CPU porque los streams TCP crudos (sin cabeceras) cuelgan la decodificación por hardware (hevc_cuvid).
+                // La codificación seguirá usando la GPU (NVENC) a través de getH264EncoderArgs.
+                // if (isH265 && streamManager.nvencAvailable) {
+                //     args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
+                // }
 
                 args.push('-i', `tcp://127.0.0.1:${recPort}?listen`);
 

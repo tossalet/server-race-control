@@ -390,6 +390,8 @@ function startPreview(channel, singleFrame = false) {
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt',
         '-err_detect', 'ignore_err',
+        '-probesize', '500000',
+        '-analyzeduration', '500000',
         '-f', 'mpegts', '-i', '-',
         '-map', '0:v?',
         '-vf', 'scale=320:-1',
