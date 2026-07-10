@@ -23,15 +23,10 @@ RC_USER="racecontrol"
 RC_HOME="/home/$RC_USER"
 XML_FILE="$RC_HOME/.config/openbox/rc.xml"
 
-# Si el XML no existe o está corrupto, lo restauramos de la plantilla limpia de fábrica de Debian
-if [ ! -f "$XML_FILE" ] || ! xmlpathtest=$(xmlstarlet val "$XML_FILE" 2>/dev/null) && ! grep -q "</openbox_config>" "$XML_FILE"; then
-    echo "⚠️  XML corrupto o no válido detectado. Restaurando plantilla limpia /etc/xdg/openbox/rc.xml..."
-    mkdir -p "$RC_HOME/.config/openbox"
-    cp /etc/xdg/openbox/rc.xml "$XML_FILE"
-fi
-
-# Hacer limpieza inicial de inyecciones previas que puedan duplicarse
-sed -i '/racecontrolgrabador/d; /racecontrolmonitor/d; /class="racecontrolgrabador"/,/<\/application>/d; /class="racecontrolmonitor"/,/<\/application>/d' "$XML_FILE"
+# Forzamos la restauración de la plantilla limpia de fábrica de Debian para curar cualquier corrupción XML previa
+echo "🧹 Limpiando y restaurando rc.xml desde la plantilla del sistema /etc/xdg/openbox/rc.xml..."
+mkdir -p "$RC_HOME/.config/openbox"
+cp /etc/xdg/openbox/rc.xml "$XML_FILE"
 
 # Inyección segura en el rc.xml usando awk para situarlo exactamente antes de la etiqueta </applications>
 tmpfile=$(mktemp)
