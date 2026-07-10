@@ -41,11 +41,11 @@ let nvencAvailable = false;
  */
 function getH264EncoderArgs(opts = {}) {
     const scale = opts.scale || '-2:720';
-    if (nvencAvailable) {
-        // Si usamos hwaccel cuda completo, usamos scale_cuda en la GPU
-        const scaleFilter = opts.hwaccel === 'cuda' 
-            ? `scale_cuda=${scale.replace('-2', '1280')}:format=yuv420p` // scale_cuda requiere dimensiones explícitas (por ejemplo 1280:720)
-            : `scale=${scale}`;
+    // Solo usar NVENC si se pidió explícitamente hwaccel='cuda' Y NVENC está disponible.
+    // Cuando el codec es desconocido o no se usa CUDA, siempre CPU (libx264) — seguro y fiable.
+    if (nvencAvailable && opts.hwaccel === 'cuda') {
+        // Pipeline completo CUDA: decodificación + escalado + codificación en GPU
+        const scaleFilter = `scale_cuda=${scale.replace('-2', '1280')}:format=yuv420p`;
 
         return [
             '-c:v', 'h264_nvenc',
@@ -55,7 +55,7 @@ function getH264EncoderArgs(opts = {}) {
             '-vf', scaleFilter,
         ];
     } else {
-        // CPU fallback: libx264 ultrafast
+        // CPU fallback: libx264 ultrafast — funciona siempre
         return [
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
@@ -63,6 +63,7 @@ function getH264EncoderArgs(opts = {}) {
             '-crf', String(opts.cq || 28),
             '-threads', '2',
             '-vf', `scale=${scale}`,
+            '-pix_fmt', 'yuv420p',
         ];
     }
 }

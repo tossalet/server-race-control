@@ -672,7 +672,9 @@ app.get('/api/inputs', (req, res) => {
             return {
                 ...row,
                 online: !!isRunning,
-                codec: isRunning ? (state.codec || '') : ''
+                codec: isRunning 
+                    ? (state.codec || streamManager.persistentCodecs[row.channel] || row.codec || '') 
+                    : (row.codec || streamManager.persistentCodecs[row.channel] || '')
             };
         });
         res.json(decorated);
@@ -1726,7 +1728,7 @@ app.get('/api/disks', async (req, res) => {
 });
 
 
-// Explorador de archivos din\u00e1mico y seguro (0% de cuelgues, lee de mediaRoot \u00fanicamente)
+// Explorador de archivos dinámico y seguro (100% async, sin cuelgues)
 app.get('/api/files', async (req, res) => {
     if (!mediaRoot) {
         return res.json({ currentPath: '', parentPath: null, items: [] });
@@ -1753,30 +1755,42 @@ app.get('/api/files', async (req, res) => {
             return res.json({ currentPath: reqPath, parentPath: null, items: [] });
         }
 
-        const items = fs.readdirSync(reqPath).map(file => {
+        // Leer directorio de forma ASYNC (no bloquea el event loop)
+        const files = await fs.promises.readdir(reqPath);
+        
+        // Procesar cada archivo de forma async (con límite para evitar respuestas enormes)
+        const maxFiles = 500;
+        const filesToProcess = files.slice(0, maxFiles);
+        const items = [];
+        
+        for (const file of filesToProcess) {
             const fp = path.join(reqPath, file);
             let isDir = false;
             let size = 0;
             let mtime = new Date();
             try {
-                const stat = fs.statSync(fp);
+                const stat = await fs.promises.stat(fp);
                 isDir = stat.isDirectory();
                 size = stat.size;
                 mtime = stat.mtime;
-            } catch (e) {}
+            } catch (e) { continue; } // Saltar archivos inaccesibles
 
-            return {
+            items.push({
                 name: file,
                 path: fp,
                 isDir,
                 sizeBytes: size,
                 sizeMB: (size / 1e6).toFixed(1),
                 modified: mtime.toISOString()
-            };
-        }).sort((a, b) => b.isDir - a.isDir || new Date(b.modified) - new Date(a.modified));
-
+            });
+        }
+        
+        // Ordenar: carpetas primero, luego por fecha modificación descendente
+        items.sort((a, b) => b.isDir - a.isDir || new Date(b.modified) - new Date(a.modified));
+        
         const parentPath = reqPath === mediaRoot ? null : path.dirname(reqPath);
-        res.json({ currentPath: reqPath, parentPath, items });
+        const truncated = files.length > maxFiles;
+        res.json({ currentPath: reqPath, parentPath, items, totalFiles: files.length, truncated });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
