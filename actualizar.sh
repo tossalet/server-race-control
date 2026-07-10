@@ -67,9 +67,12 @@ fi
 sudo -u $RC_USER DISPLAY=:0 openbox --reconfigure 2>/dev/null || true
 
 echo "🚀 Reiniciando servicio de Race Control..."
+systemctl stop race-control 2>/dev/null || true
+killall -9 node 2>/dev/null || true
+sleep 1
 systemctl daemon-reload
 systemctl reset-failed race-control
-systemctl restart race-control
+systemctl start race-control
 
 echo "✅ Servidor actualizado y corriendo correctamente."
 systemctl status race-control --no-pager -n 5
