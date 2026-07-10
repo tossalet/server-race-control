@@ -2429,39 +2429,57 @@ app.post('/api/network', (req, res) => {
     
     if (!connectionName) return res.status(400).json({ ok: false, error: 'Falta connectionName' });
     
-    // Si nmcli falla, el comando ejecutará un fallback nativo con dhclient (para DHCP) o ip addr (para estática)
-    if (mode === 'auto') {
-        cmd = `(nmcli con mod "${connectionName}" ipv4.method auto && ` +
-              `nmcli con mod "${connectionName}" remove ipv4.addresses 2>/dev/null || true && ` +
-              `nmcli con mod "${connectionName}" remove ipv4.dns 2>/dev/null || true && ` +
-              `nmcli con mod "${connectionName}" remove ipv4.gateway 2>/dev/null || true && ` +
-              `nmcli con down "${connectionName}" 2>/dev/null || true && ` +
-              `nmcli con up "${connectionName}") 2>/dev/null || ` +
-              ` (dhclient -r ${connectionName} 2>/dev/null || true && dhclient -v ${connectionName})`;
-    } else {
-        const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
-        cmd = `(nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && nmcli con up "${connectionName}") 2>/dev/null || ` +
-              ` (ip addr flush dev ${connectionName} && ip addr add ${ip}/${cidr} dev ${connectionName} && ip link set ${connectionName} up && ip route add default via ${gateway} dev ${connectionName})`;
-    }
-    
-    res.json({ ok: true, message: 'Aplicando configuración...' });
-    
-    setTimeout(() => {
-        exec(cmd, (err) => {
-            if (err) {
-                console.error('[NETWORK] Error applying config via nmcli/native:', err.message);
-                // Si ambos fallaron, intentar forzar dhclient genérico como último recurso
-                if (mode === 'auto') {
-                    exec(`dhclient -v`, (dhcpErr) => {
-                        if (dhcpErr) console.error('[NETWORK] Fallback dhclient general error:', dhcpErr.message);
-                        else console.log('[NETWORK] DHCP general renovado.');
-                    });
-                }
-            } else {
-                console.log(`[NETWORK] Aplicado con éxito en ${connectionName}.`);
+    // 1. Detectar dispositivo físico activo con salida a internet usando la tabla de rutas del Kernel
+    const getActiveDevice = () => new Promise((resolve) => {
+        exec("ip route show | grep default | awk '{print $5}'", (errRoute, stdoutRoute) => {
+            let dev = stdoutRoute ? stdoutRoute.trim().split('\n')[0] : null;
+            if (dev && dev !== 'lo') {
+                return resolve(dev);
             }
+            // Fallback: listar interfaces ethernet físicas activas en nmcli
+            exec("nmcli -t -f DEVICE,TYPE,STATE dev | grep -E ':ethernet|:wifi' | grep ':connected' | cut -d: -f1", (errDev, stdoutDev) => {
+                dev = stdoutDev ? stdoutDev.trim().split('\n')[0] : null;
+                resolve(dev || 'eth0'); // eth0 como último recurso
+            });
         });
-    }, 1000);
+    });
+
+    getActiveDevice().then((physicalDev) => {
+        let cmd = '';
+        if (mode === 'auto') {
+            cmd = `(nmcli con mod "${connectionName}" ipv4.method auto && ` +
+                  `nmcli con mod "${connectionName}" remove ipv4.addresses 2>/dev/null || true && ` +
+                  `nmcli con mod "${connectionName}" remove ipv4.dns 2>/dev/null || true && ` +
+                  `nmcli con mod "${connectionName}" remove ipv4.gateway 2>/dev/null || true && ` +
+                  `nmcli con down "${connectionName}" 2>/dev/null || true && ` +
+                  `nmcli con up "${connectionName}") 2>/dev/null || ` +
+                  ` (dhclient -r ${physicalDev} 2>/dev/null || true && dhclient -v ${physicalDev})`;
+        } else {
+            const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
+            cmd = `(nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && nmcli con up "${connectionName}") 2>/dev/null || ` +
+                  ` (ip addr flush dev ${physicalDev} 2>/dev/null || true && ip addr add ${ip}/${cidr} dev ${physicalDev} && ip link set ${physicalDev} up && ip route add default via ${gateway} dev ${physicalDev})`;
+        }
+        
+        console.log(`[NETWORK] Aplicando red sobre conexión="${connectionName}" e interfaz físico="${physicalDev}"...`);
+        res.json({ ok: true, message: 'Aplicando configuración...' });
+        
+        setTimeout(() => {
+            exec(cmd, (err) => {
+                if (err) {
+                    console.error('[NETWORK] Error applying config via nmcli/native:', err.message);
+                    // Si ambos fallaron, intentar forzar dhclient genérico como último recurso
+                    if (mode === 'auto') {
+                        exec(`dhclient -v`, (dhcpErr) => {
+                            if (dhcpErr) console.error('[NETWORK] Fallback dhclient general error:', dhcpErr.message);
+                            else console.log('[NETWORK] DHCP general renovado.');
+                        });
+                    }
+                } else {
+                    console.log(`[NETWORK] Aplicado con éxito en ${connectionName} (${physicalDev}).`);
+                }
+            });
+        }, 1000);
+    });
 });
 
 app.post('/api/terminal/run', (req, res) => {
