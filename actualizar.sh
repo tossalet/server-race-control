@@ -46,7 +46,7 @@ awk '
     print "      <fullscreen>yes</fullscreen>"
     print "      <maximized>true</maximized>"
     print "      <position force=\"yes\">"
-    print "        <x>-1920</x>"
+    print "        <x>1920</x>"
     print "        <y>0</y>"
     print "      </position>"
     print "    </application>"

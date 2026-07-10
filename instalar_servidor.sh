@@ -656,7 +656,7 @@ if [ -f /etc/xdg/openbox/rc.xml ]; then
         print "      <fullscreen>yes</fullscreen>"
         print "      <maximized>true</maximized>"
         print "      <position force=\"yes\">"
-        print "        <x>-1920</x>"
+        print "        <x>1920</x>"
         print "        <y>0</y>"
         print "      </position>"
         print "    </application>"
@@ -690,7 +690,7 @@ else
       <fullscreen>yes</fullscreen>
       <maximized>true</maximized>
       <position force="yes">
-        <x>-1920</x>
+        <x>1920</x>
         <y>0</y>
       </position>
     </application>
