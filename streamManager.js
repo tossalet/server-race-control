@@ -428,29 +428,26 @@ function startPreview(channel, singleFrame = false) {
             console.log(`[PREV-STDERR CH-${channel}] ${line}`);
         }
     });
-
-    if (!useSubstream) {
-        if (child.stdin) {
-            child.stdin.on('error', (err) => {
-                // Silenciar errores de tubería rota
-            });
-        }
-        const subObj = {
-            writableLength: 0,
-            write(chunk) {
-                if (child.killed || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
-                this.writableLength = child.stdin.writableLength;
-                try {
-                    child.stdin.write(chunk);
-                } catch (e) {}
-            },
-            destroy() {
-                try { child.kill('SIGKILL'); } catch(e) {}
-            }
-        };
-        activeInputs[channel].router.subscribers.add(subObj);
-        activeInputs[channel].prevSubscriber = subObj;
+    if (child.stdin) {
+        child.stdin.on('error', (err) => {
+            // Silenciar errores de tubería rota
+        });
     }
+    const subObj = {
+        writableLength: 0,
+        write(chunk) {
+            if (child.killed || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
+            this.writableLength = child.stdin.writableLength;
+            try {
+                child.stdin.write(chunk);
+            } catch (e) {}
+        },
+        destroy() {
+            try { child.kill('SIGKILL'); } catch(e) {}
+        }
+    };
+    activeInputs[channel].router.subscribers.add(subObj);
+    activeInputs[channel].prevSubscriber = subObj;
 
     if (singleFrame) {
         setTimeout(() => stopPreview(channel), 15000);
