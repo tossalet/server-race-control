@@ -342,7 +342,13 @@ app.get('/api/status', (req, res) => {
 });
 
 // Storage status — informa al frontend si hay disco de grabacion disponible
-app.get('/api/storage/status', (req, res) => {
+app.get('/api/storage/status', async (req, res) => {
+    // Helper: verificar accesibilidad con timeout de 2s (previene cuelgues en montajes lentos/muertos)
+    const checkAccess = (p) => new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 2000);
+        fs.access(p, fs.constants.F_OK, (err) => { clearTimeout(timer); resolve(!err); });
+    });
+
     // Re-detectar por si el disco se conectó después de arrancar (solo si no está deshabilitado)
     if (!mediaRoot && !recordingDisabled) {
         const detected = detectExternalDisk();
@@ -357,9 +363,14 @@ app.get('/api/storage/status', (req, res) => {
         return res.json({ available: false, path: null, message: recordingDisabled ? 'Grabación en disco desactivada por el usuario.' : 'No hay disco externo conectado. Conecta un USB o configura MEDIA_ROOT en .env' });
     }
     try {
-        const stat = fs.statfsSync ? fs.statfsSync(mediaRoot) : null;
-        const freeGB = stat ? ((stat.bfree * stat.bsize) / 1e9).toFixed(1) : null;
-        res.json({ available: true, path: mediaRoot, freeGB });
+        const accessible = await checkAccess(mediaRoot);
+        if (accessible && fs.statfsSync) {
+            const stat = fs.statfsSync(mediaRoot);
+            const freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+            res.json({ available: true, path: mediaRoot, freeGB });
+        } else {
+            res.json({ available: !accessible ? false : true, path: mediaRoot, freeGB: null, message: !accessible ? 'Disco no accesible' : null });
+        }
     } catch(e) {
         res.json({ available: true, path: mediaRoot, freeGB: null });
     }
@@ -380,36 +391,43 @@ app.get('/api/storage/list', (req, res) => {
     const partitions = [];
 
     try {
-        if (fs.existsSync('/proc/mounts')) {
-            const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
-            for (const line of mounts) {
-                const parts = line.split(' ');
-                if (parts.length < 3) continue;
-                const device = parts[0];
-                const mountPoint = parts[1];
-                const fsType = parts[2];
-                
-                if (!device || !mountPoint || !fsType) continue;
-                if (SKIP_FS.has(fsType)) continue;
-                if (!device.startsWith('/dev/sd') && !device.startsWith('/dev/nvme')) continue; // Solo discos físicos y USB reales
-                if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
+        const mountsPath = '/proc/mounts';
+        // /proc/mounts es un pseudofichero del kernel, nunca bloquea
+        let mountsContent = '';
+        try { mountsContent = fs.readFileSync(mountsPath, 'utf8'); } catch(e) { return res.json(partitions); }
+        
+        const mounts = mountsContent.split('\n');
+        for (const line of mounts) {
+            const parts = line.split(' ');
+            if (parts.length < 3) continue;
+            const device = parts[0];
+            const mountPoint = parts[1];
+            const fsType = parts[2];
+            
+            if (!device || !mountPoint || !fsType) continue;
+            if (SKIP_FS.has(fsType)) continue;
+            if (!device.startsWith('/dev/sd') && !device.startsWith('/dev/nvme')) continue;
+            if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
 
-                let sizeGB = null, freeGB = null;
+            // NO llamar a statfsSync sobre particiones externas — puede colgar en NTFS/NFS muertos.
+            // Solo obtener info de tamaño para el disco activo (mediaRoot) que ya sabemos que funciona.
+            let sizeGB = null, freeGB = null;
+            if (mediaRoot && mountPoint && mediaRoot.startsWith(mountPoint)) {
                 try {
                     const stat = fs.statfsSync(mountPoint);
                     sizeGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
                     freeGB = ((stat.bfree  * stat.bsize) / 1e9).toFixed(1);
                 } catch(e) {}
-
-                partitions.push({
-                    device,
-                    mountPoint,
-                    fsType,
-                    sizeGB,
-                    freeGB,
-                    label: device.includes('sd') ? `Puerto USB (${device.replace('/dev/', '')})` : `Disco NVMe (${device.replace('/dev/', '')})`
-                });
             }
+
+            partitions.push({
+                device,
+                mountPoint,
+                fsType,
+                sizeGB,
+                freeGB,
+                label: device.includes('sd') ? `Puerto USB (${device.replace('/dev/', '')})` : `Disco NVMe (${device.replace('/dev/', '')})`
+            });
         }
     } catch(e) {
         console.error('[STORAGE] Error leyendo /proc/mounts:', e.message);
@@ -420,7 +438,45 @@ app.get('/api/storage/list', (req, res) => {
 
 // Seleccionar partición de grabaciones y guardarla en DB
 app.post('/api/storage/select', (req, res) => {
-    const { mountPoint, device } = req.body;
+    // Soportar ambos formatos: {mountPoint, device} (frontend React) y {disk_path} (backend legacy)
+    const { mountPoint, device, disk_path } = req.body;
+    
+    // Manejo de desactivación de grabación (desde backend legacy)
+    if (disk_path === 'disabled' || disk_path === 'none') {
+        mediaRoot = null;
+        recordingDisabled = true;
+        db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', 'disabled')", (err) => {
+            if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
+        });
+        console.log(`[STORAGE] Disco de grabación desactivado por el usuario.`);
+        return res.json({ ok: true, success: true, path: null });
+    }
+
+    // Si viene disk_path del backend legacy, usarlo directamente
+    if (disk_path) {
+        const forbidden = ['/', '/boot', '/usr', '/etc', '/home', '/var', '/sys', '/proc'];
+        if (forbidden.some(f => disk_path === f || disk_path.startsWith(f + '/'))) {
+            return res.status(403).json({ error: 'Disco del sistema — no permitido' });
+        }
+        
+        const recDir = path.join(disk_path, 'recordings');
+        try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {
+            return res.status(500).json({ error: 'No se puede escribir en el disco: ' + e.message });
+        }
+        
+        mediaRoot = recDir;
+        recordingDisabled = false;
+        registerMediaStatic(mediaRoot);
+        
+        db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', ?)", [recDir], (err) => {
+            if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
+        });
+        
+        console.log(`[STORAGE] Disco de grabación cambiado a: ${mediaRoot}`);
+        return res.json({ ok: true, success: true, path: mediaRoot });
+    }
+
+    // Formato React frontend: {mountPoint, device}
     if (!mountPoint && !device) return res.status(400).json({ error: 'Falta mountPoint o device' });
 
     let targetMount = mountPoint;
@@ -448,8 +504,8 @@ app.post('/api/storage/select', (req, res) => {
         }
     }
 
-    if (!targetMount || !fs.existsSync(targetMount)) {
-        return res.status(400).json({ error: `Ruta no existe: ${targetMount}` });
+    if (!targetMount) {
+        return res.status(400).json({ error: `Ruta no proporcionada` });
     }
 
     // Crear subdirectorio recordings dentro del punto de montaje si no existe
@@ -464,16 +520,20 @@ app.post('/api/storage/select', (req, res) => {
 
         // Actualizar en caliente
         mediaRoot = finalPath;
+        recordingDisabled = false;
         registerMediaStatic(mediaRoot);
         console.log(`[STORAGE] Disco de grabación seleccionado: ${mediaRoot}`);
 
         let freeGB = null;
         try {
-            const stat = fs.statfsSync(targetMount);
-            freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+            if (fs.statfsSync) {
+                const stat = fs.statfsSync(targetMount);
+                freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+            }
         } catch(e) {}
 
-        res.json({ ok: true, path: mediaRoot, freeGB });
+        // Devolver AMBOS 'ok' y 'success' para compatibilidad con frontend React y backend legacy
+        res.json({ ok: true, success: true, path: mediaRoot, freeGB });
     });
 });
 
@@ -1665,31 +1725,6 @@ app.get('/api/disks', async (req, res) => {
     res.json(drives);
 });
 
-// Estado del disco de grabación activo (usado como fallback por el explorador de archivos)
-app.get('/api/storage/status', async (req, res) => {
-    if (!mediaRoot) {
-        return res.json({ available: false, path: null, message: 'No hay disco configurado' });
-    }
-    const checkAccess = (p) => new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(false), 2000);
-        fs.access(p, fs.constants.F_OK, (err) => {
-            clearTimeout(timer);
-            resolve(!err);
-        });
-    });
-    try {
-        const accessible = await checkAccess(mediaRoot);
-        if (accessible) {
-            const stat = fs.statfsSync(mediaRoot);
-            const freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
-            res.json({ available: true, path: mediaRoot, freeGB });
-        } else {
-            res.json({ available: false, path: mediaRoot, message: 'Directorio no accesible' });
-        }
-    } catch (e) {
-        res.json({ available: true, path: mediaRoot, freeGB: null });
-    }
-});
 
 // Explorador de archivos din\u00e1mico y seguro (0% de cuelgues, lee de mediaRoot \u00fanicamente)
 app.get('/api/files', async (req, res) => {
@@ -1826,50 +1861,6 @@ app.post('/api/files/clean', (req, res) => {
     }
 });
 
-// Seleccionar disco de grabacion en caliente
-app.post('/api/storage/select', (req, res) => {
-    const { disk_path } = req.body;
-    if (!disk_path) return res.status(400).json({ error: 'Missing disk_path' });
-
-    if (disk_path === 'disabled' || disk_path === 'none') {
-        mediaRoot = null;
-        recordingDisabled = true;
-        db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', 'disabled')", (err) => {
-            if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
-        });
-        console.log(`[STORAGE] Disco de grabación desactivado por el usuario.`);
-        return res.json({ ok: true, path: null });
-    }
-
-    // Seguridad: no permitir disco del sistema
-    const forbidden = ['/', '/boot', '/usr', '/etc', '/home', '/var', '/sys', '/proc', 'C:\\', 'C:'];
-    if (forbidden.some(f => disk_path === f || disk_path.startsWith(f + '/'))) {
-        return res.status(403).json({ error: 'Disco del sistema — no permitido' });
-    }
-    if (!fs.existsSync(disk_path)) {
-        return res.status(404).json({ error: 'Ruta no encontrada: ' + disk_path });
-    }
-
-    // Crear carpeta recordings dentro del disco
-    const recDir = path.join(disk_path, 'recordings');
-    try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {
-        return res.status(500).json({ error: 'No se puede escribir en el disco: ' + e.message });
-    }
-
-    // Actualizar mediaRoot en caliente
-    mediaRoot = recDir;
-    recordingDisabled = false;
-    registerMediaStatic(mediaRoot);
-
-    // Persistir en DB
-    db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', ?)", [recDir], (err) => {
-        if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
-    });
-
-    console.log(`[STORAGE] Disco de grabacion cambiado a: ${mediaRoot}`);
-    res.json({ ok: true, path: mediaRoot });
-});
-
 
 
 /* =======================================
@@ -1908,19 +1899,22 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
     const isHevc = codec === 'H.265' || codec === 'HEVC' || codec.includes('265');
-    // Solo transcodificar si es H.265, o si se solicita explícitamente con ?transcode=true
-    const mustTranscode = isHevc || req.query.transcode === '1' || req.query.transcode === 'true';
+    const isH264Confirmed = codec === 'H.264' || codec.includes('264');
+    const codecUnknown = !codec || codec === '';
+    const transcodeRequested = req.query.transcode === '1' || req.query.transcode === 'true';
     
-    // Si el códec ya es H.264 y no es H.265, no necesitamos transcodificar: passthrough directo
-    const isH264Native = !isHevc && (codec === 'H.264' || codec.includes('264') || codec === '');
-    const canPassthrough = mustTranscode && isH264Native && !isHevc;
+    // Decisión de transcodificación:
+    // - H.265 detectado → siempre transcodificar (navegador no soporta H.265)
+    // - H.264 confirmado + ?transcode=true → passthrough directo (copy)
+    // - Codec desconocido + ?transcode=true → transcodificar por CPU (seguro, funciona con H.264 y H.265)
+    const mustTranscode = isHevc || (transcodeRequested && !isH264Confirmed);
     
     let args;
-    if (mustTranscode && !canPassthrough) {
-        // Necesitamos transcodificar H.265 -> H.264
+    if (mustTranscode) {
+        // Transcodificar a H.264 para garantizar compatibilidad con el navegador
         const useGpu = streamManager.nvencAvailable && isHevc;
         const encoderType = useGpu ? 'GPU NVENC' : 'CPU libx264';
-        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (${encoderType})`);
+        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando -> H.264 (${encoderType}, codec fuente: ${codec || 'desconocido'})`);
         
         // Obtenemos los argumentos de codificación H.264
         const encoderArgs = streamManager.getH264EncoderArgs({ 
@@ -1938,7 +1932,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-analyzeduration', '100000'
         ];
 
-        // Decodificación acelerada por GPU solo si es H.265 y hay NVENC
+        // Decodificación acelerada por GPU solo si es H.265 confirmado y hay NVENC
         if (useGpu) {
             args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
             args.push('-c:v', 'hevc_cuvid');
@@ -1949,10 +1943,10 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-i', '-',
             '-map', '0:v?', '-map', '0:a?',
             ...encoderArgs,
-            '-g', '15',          // Forzar Keyframe cada 15 frames (0.5 segundos) para respuesta inmediata sin pantalla verde
+            '-g', '15',
             '-keyint_min', '15',
             '-sc_threshold', '0',
-            '-r', '30', // Limitar a 30fps para ahorrar recursos
+            '-r', '30',
             '-c:a', 'aac',
             '-b:a', '128k',
             '-f', 'mpegts',
