@@ -419,13 +419,15 @@ function startPreview(channel, singleFrame = false) {
         
         args.push('-rtsp_transport', 'tcp', '-i', rtspUrl);
     } else {
-        // Flags de tolerancia para evitar pixelados morados/grises al cambiar o procesar paquetes UDP
+        const localPort = activeInputs[channel].inputObj.udpsrv;
+        // Leer directamente del multiplexor TCP local que emite la señal de la cámara de forma segura
         args.push(
             '-fflags', '+genpts+discardcorrupt',
             '-err_detect', 'ignore_err',
             '-probesize', '500000',
             '-analyzeduration', '500000',
-            '-f', 'mpegts', '-i', '-'
+            '-f', 'mpegts',
+            '-i', `tcp://127.0.0.1:${localPort}?timeout=2000000`
         );
     }
 
