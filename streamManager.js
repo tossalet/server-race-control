@@ -105,43 +105,59 @@ function startInput(inputObj) {
     const ffmpegCmd = getFFmpegPath();
     const localTcpOut = `tcp://127.0.0.1:${udpsrv}`;
 
-    // Base args: Read from URL
-    const args = [
+    const isTestSource = url.toLowerCase() === 'test';
+
+    // Base args: Read from URL or generate test pattern
+    let args = [
         '-hide_banner',
         '-y',
         '-fflags', '+genpts'
     ];
 
-    // Editable Buffer para entrada
-    if (inputObj.buffer && inputObj.buffer > 0) {
-        // En UDP/RTSP previene smearing/artifacts ajustando la recolección
-        args.push('-buffer_size', `${inputObj.buffer}M`);
+    if (isTestSource) {
+        // Generar barras de colores y tono de audio interno (sin red)
+        args.push(
+            '-f', 'lavfi', '-i', 'smptebars=size=1280x720:rate=25',
+            '-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000'
+        );
+    } else {
+        // Editable Buffer para entrada
+        if (inputObj.buffer && inputObj.buffer > 0) {
+            // En UDP/RTSP previene smearing/artifacts ajustando la recolección
+            args.push('-buffer_size', `${inputObj.buffer}M`);
+        }
+
+        // Forzar modo TCP para cámaras de vigilancia RTSP (evita artefactos y cortes rápidos)
+        if (url.startsWith('rtsp://')) {
+            args.push('-rtsp_transport', 'tcp');
+        }
+
+        // Flags específicos para entradas SRT (mejorar estabilidad y reconexión)
+        if (url.startsWith('srt://')) {
+            // Timeout de conexión: 5 segundos (en microsegundos)
+            // Si la fuente SRT no responde, FFmpeg intenta reconectar en lugar de colgar
+            args.push('-timeout', '5000000');
+            // Forzar detección de stream más rápida para fuentes SRT (evita esperas largas)
+            args.push('-probesize', '1048576');   // 1 MB
+            args.push('-analyzeduration', '1000000'); // 1 segundo
+        }
+
+        args.push('-i', url);
     }
 
-    // Forzar modo TCP para cámaras de vigilancia RTSP (evita artefactos y cortes rápidos)
-    if (url.startsWith('rtsp://')) {
-        args.push('-rtsp_transport', 'tcp');
-    }
-
-    // Flags específicos para entradas SRT (mejorar estabilidad y reconexión)
-    if (url.startsWith('srt://')) {
-        // Timeout de conexión: 5 segundos (en microsegundos)
-        // Si la fuente SRT no responde, FFmpeg intenta reconectar en lugar de colgar
-        args.push('-timeout', '5000000');
-        // Forzar detección de stream más rápida para fuentes SRT (evita esperas largas)
-        args.push('-probesize', '1048576');   // 1 MB
-        args.push('-analyzeduration', '1000000'); // 1 segundo
-    }
-
-    args.push('-i', url);
-
-    // Main Output: copy codec, output to local MPEG-TS TCP
+    // Main Output: copy codec or encode if test pattern, output to local MPEG-TS TCP
     args.push('-map', '0:v?');
     args.push('-map', '0:a?');
-    args.push('-c:v', 'copy');
+    
+    if (isTestSource) {
+        args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p');
+    } else {
+        args.push('-c:v', 'copy');
+    }
+    
     args.push('-c:a', 'aac');
     args.push('-b:a', '128k');
-    if (url.startsWith('rtmp')) {
+    if (!isTestSource && url.startsWith('rtmp')) {
         args.push('-bsf:v', 'h264_mp4toannexb'); // Force bitstream conversion only for RTMP to avoid corrupting native SRT
     }
     args.push('-f', 'mpegts');
