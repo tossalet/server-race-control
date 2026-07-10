@@ -369,7 +369,20 @@ function startPreview(channel, singleFrame = false) {
     const ffmpegCmd = getFFmpegPath();
     const args = [ '-hide_banner', '-y' ];
     const inputObj = activeInputs[channel].inputObj || {};
+    const inputCodec = activeInputs[channel].codec || '';
     
+    // Si la GPU NVIDIA está disponible, la usamos para decodificar y reescalar las miniaturas
+    if (nvencAvailable) {
+        args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
+        
+        // Seleccionar decodificador por hardware adecuado según el códec detectado en la base de datos
+        if (inputCodec.includes('265') || inputCodec.includes('HEVC')) {
+            args.push('-c:v', 'hevc_cuvid');
+        } else if (inputCodec.includes('264')) {
+            args.push('-c:v', 'h264_cuvid');
+        }
+    }
+
     let useSubstream = false;
     if (inputObj.ptz_enabled && inputObj.ptz_ip) {
         useSubstream = true;
@@ -389,7 +402,7 @@ function startPreview(channel, singleFrame = false) {
         
         args.push('-rtsp_transport', 'tcp', '-i', rtspUrl);
     } else {
-        // ── Flags de tolerancia (idénticas a los transcoders que SÍ funcionan) ──
+        // Flags de tolerancia para evitar pixelados morados/grises al cambiar o procesar paquetes UDP
         args.push(
             '-fflags', '+genpts+discardcorrupt',
             '-err_detect', 'ignore_err',
@@ -404,13 +417,24 @@ function startPreview(channel, singleFrame = false) {
     }
 
     const outPath = extPath + '.jpg';
-    if (singleFrame) {
-        args.push('-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', outPath);
+    
+    // Si usamos aceleración de hardware por GPU, debemos reescalar en la GPU con scale_cuda y descargar de memoria antes de escribir la imagen
+    if (nvencAvailable) {
+        // Reescalar a 320x180 nativo en GPU para las tarjetas del panel izquierdo
+        if (singleFrame) {
+            args.push('-vf', 'scale_cuda=320:180,hwdownload,format=nv12', '-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', outPath);
+        } else {
+            args.push('-vf', 'scale_cuda=320:180,hwdownload,format=nv12', '-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', outPath);
+        }
     } else {
-        args.push('-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', outPath);
+        if (singleFrame) {
+            args.push('-vf', 'scale=320:-1', '-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', outPath);
+        } else {
+            args.push('-vf', 'scale=320:-1', '-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', outPath);
+        }
     }
 
-    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'}`);
+    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'} with GPU=${nvencAvailable}`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
     

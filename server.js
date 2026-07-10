@@ -591,14 +591,14 @@ app.post('/api/monitor/open', (req, res) => {
 
                 // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
                 setTimeout(() => {
-                    // Buscamos específicamente por la clase de ventana única que hemos inyectado a Firefox o por título alternativo
-                    const moveCmd = `(xdotool search --class "racecontrolmonitor" || xdotool search --name "RACE CONTROL" || xdotool search --class "firefox" || xdotool search --class "Epiphany") | while read id; do ` +
+                    // Buscamos prioritariamente el título exclusivo que hemos definido para el monitor de multiview
+                    const moveCmd = `(xdotool search --name "RACE CONTROL MONITOR PANTALLA SECUNDARIA" || xdotool search --class "racecontrolmonitor" || xdotool search --name "RACE CONTROL" || xdotool search --class "firefox") | while read id; do ` +
                                     `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
                                     `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
                                     `  xdotool windowactivate "$id" 2>/dev/null && ` +
                                     `  xdotool key --window "$id" F11 2>/dev/null; ` +
                                     `done || ` +
-                                    `(wmctrl -r "RACE CONTROL" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL" -b add,fullscreen)`;
+                                    `(wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -b add,fullscreen)`;
                     
                     console.log(`[MONITOR] Ejecutando comando de reposicionamiento robusto: ${moveCmd}`);
                     exec(moveCmd, (err) => {
@@ -1781,7 +1781,13 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     if (mustTranscode) {
         const encoderType = streamManager.nvencAvailable ? 'GPU NVENC' : 'CPU libx264';
         originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando H.265 -> H.264 (${encoderType})`);
-        const encoderArgs = streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28, hwaccel: streamManager.nvencAvailable ? 'cuda' : undefined });
+        
+        // Obtenemos los argumentos de codificación H.264. Forzamos GOP de 15 para inyectar Keyframes rápidos y evitar el frame verde inicial.
+        const encoderArgs = streamManager.getH264EncoderArgs({ 
+            scale: '-2:720', 
+            cq: 28, 
+            hwaccel: streamManager.nvencAvailable ? 'cuda' : undefined 
+        });
         
         args = [
             '-hide_banner',
@@ -1792,9 +1798,14 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-analyzeduration', '100000'
         ];
 
-        // Decodificación acelerada por GPU si está disponible
+        // Decodificación acelerada por GPU dinámica según el códec detectado de la cámara
         if (streamManager.nvencAvailable) {
-            args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
+            args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
+            if (codec.includes('265') || codec.includes('H.265') || codec.includes('HEVC')) {
+                args.push('-c:v', 'hevc_cuvid');
+            } else {
+                args.push('-c:v', 'h264_cuvid');
+            }
         }
 
         args.push(
@@ -1802,6 +1813,9 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-i', '-',
             '-map', '0:v?', '-map', '0:a?',
             ...encoderArgs,
+            '-g', '15',          // Forzar Keyframe cada 15 frames (0.5 segundos) para respuesta inmediata sin pantalla verde
+            '-keyint_min', '15',
+            '-sc_threshold', '0',
             '-r', '30', // Limitar a 30fps para ahorrar recursos
             '-c:a', 'aac',
             '-b:a', '128k',
