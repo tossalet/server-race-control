@@ -942,7 +942,17 @@ async function fetchStorage() {
 }
 
 async function fetchFiles() {
-    const parentDisk = document.getElementById('storageDiskSelect').value;
+    let parentDisk = document.getElementById('storageDiskSelect').value;
+    if (!parentDisk) {
+        // Fallback: consultar el disco de grabacion activo al servidor
+        try {
+            const statusRes = await fetch('/api/storage/status');
+            const statusData = await statusRes.json();
+            if (statusData.available && statusData.path) {
+                parentDisk = statusData.path;
+            }
+        } catch(e) {}
+    }
     if (!parentDisk) return;
     
     if (!currentBrowserPath || !currentBrowserPath.startsWith(parentDisk)) {
@@ -955,6 +965,9 @@ async function fetchFiles() {
         
         const { currentPath, parentPath, items } = data;
         currentBrowserPath = currentPath;
+        
+        // Reset check all
+        document.getElementById('selectAllFilesCheckbox').checked = false;
         
         // Actualizar Breadcrumbs
         const breadcrumbs = document.getElementById('fileManagerBreadcrumbs');
@@ -974,41 +987,44 @@ async function fetchFiles() {
         tbody.innerHTML = '';
         
         if (!items || items.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding: 20px; color:var(--text-muted);">Esta carpeta está vacía.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 20px; color:var(--text-muted);">Esta carpeta está vacía.</td></tr>';
             return;
         }
 
         items.forEach(item => {
+            const checkboxCol = `<td style="padding: 12px 10px; text-align:center;"><input type="checkbox" class="file-row-checkbox" data-path="${item.path.replace(/"/g, '&quot;')}" style="cursor:pointer;" onclick="event.stopPropagation();" /></td>`;
             if (item.isDir) {
                 tbody.innerHTML += `
                     <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s; cursor:pointer;" 
                         onclick="navigateToFolder('${item.path.replace(/\\/g, '\\\\')}')"
                         onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
+                        ${checkboxCol}
                         <td style="padding: 12px 10px; color: #fff; font-weight: 600;">
                             <i class="fa-solid fa-folder" style="color:var(--accent-amber); margin-right:8px;"></i>${item.name}
                         </td>
                         <td style="padding: 12px 10px; color: var(--text-muted); font-size:0.8rem;">Carpeta</td>
                         <td style="padding: 12px 10px;">--</td>
                         <td style="padding: 12px 10px; text-align:right;">
-                            <span style="font-size:0.75rem; color:var(--text-muted); padding-right:8px;">Haga click para abrir</span>
+                            <span style="font-size:0.75rem; color:var(--text-muted); padding-right:8px;">Abrir</span>
                         </td>
                     </tr>
                 `;
             } else {
-                const sizeMB = (item.size / (1024*1024)).toFixed(1);
-                const dStr = new Date(item.date).toLocaleString('es-ES', { dateStyle:'short', timeStyle:'short' });
-                const copyBtn = `<button onclick="startFileCopy('${item.absolutePath.replace(/\\/g, '\\\\')}', '${item.name.replace(/'/g, "\\'")}')" class="action-btn toggle-enabled" title="Copiar a otro USB" style="background:var(--accent-green); color:#000; margin-left: 5px;"><i class="fa-solid fa-copy"></i></button>`;
+                const copyBtn = `<button onclick="startFileCopy('${item.path.replace(/\\/g, '\\\\')}', '${item.name.replace(/'/g, "\\'")}')" class="action-btn toggle-enabled" title="Copiar a otro USB" style="background:var(--accent-green); color:#000; margin-left: 5px;"><i class="fa-solid fa-copy"></i></button>`;
+                const playUrl = `/api/media/play?path=${encodeURIComponent(item.path)}`;
+                const dStr = new Date(item.modified).toLocaleString('es-ES', { dateStyle:'short', timeStyle:'short' });
                 
                 tbody.innerHTML += `
                     <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
+                        ${checkboxCol}
                         <td style="padding: 12px 10px; color: var(--text-main); font-weight: 500;"><i class="fa-regular fa-file-video" style="color:var(--accent-blue); margin-right:8px;"></i>${item.name}</td>
-                        <td style="padding: 12px 10px;">${sizeMB} MB</td>
+                        <td style="padding: 12px 10px;">${item.sizeMB} MB</td>
                         <td style="padding: 12px 10px;">${dStr}</td>
                         <td style="padding: 12px 10px; text-align:right;">
-                            <button onclick="previewFile('${item.url}', '${item.name}')" class="action-btn toggle-enabled" title="Previsualizar" style="background:var(--accent-blue);"><i class="fa-solid fa-play"></i></button>
-                            <a href="${item.url}" download="${item.name}" class="action-btn toggle-enabled" title="Descargar" style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center; margin-left: 5px;"><i class="fa-solid fa-download"></i></a>
+                            <button onclick="previewFile('${playUrl}', '${item.name}')" class="action-btn toggle-enabled" title="Previsualizar" style="background:var(--accent-blue);"><i class="fa-solid fa-play"></i></button>
+                            <a href="${playUrl}" download="${item.name}" class="action-btn toggle-enabled" title="Descargar" style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center; margin-left: 5px;"><i class="fa-solid fa-download"></i></a>
                             ${copyBtn}
-                            <button onclick="deleteFile('${item.url}')" class="action-btn terminate" title="Eliminar" style="margin-left: 5px;"><i class="fa-solid fa-trash"></i></button>
+                            <button onclick="deleteFile('${item.path.replace(/\\/g, '\\\\')}')" class="action-btn terminate" title="Eliminar" style="margin-left: 5px;"><i class="fa-solid fa-trash"></i></button>
                         </td>
                     </tr>
                 `;
@@ -1017,16 +1033,68 @@ async function fetchFiles() {
     } catch(e) { console.error('fetchFiles failed', e); }
 }
 
-async function deleteFile(urlPath) {
-    if (confirm("¿Estás seguro de eliminar esta grabación de forma permanente?")) {
+function toggleSelectAllFiles(master) {
+    const checkboxes = document.querySelectorAll('.file-row-checkbox');
+    checkboxes.forEach(cb => cb.checked = master.checked);
+}
+
+async function deleteSelectedFiles() {
+    const checkboxes = document.querySelectorAll('.file-row-checkbox:checked');
+    if (checkboxes.length === 0) {
+        alert("Selecciona al menos un archivo para borrar.");
+        return;
+    }
+
+    if (confirm(`¿Estás seguro de eliminar los ${checkboxes.length} archivos seleccionados físicamente del disco?`)) {
+        const filepaths = Array.from(checkboxes).map(cb => cb.dataset.path);
         try {
-            await fetch('/api/files/delete', {
+            const res = await fetch('/api/files/bulk-delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filepath: urlPath })
+                body: JSON.stringify({ filepaths })
             });
-            fetchFiles();
-        } catch(e) { alert("Error deleting."); }
+            const data = await res.json();
+            if (data.success) {
+                fetchFiles();
+            }
+        } catch(e) {
+            alert("Error al eliminar los archivos seleccionados.");
+        }
+    }
+}
+
+async function cleanStorageDirectory() {
+    if (confirm("🚨 ¡ADVERTENCIA CRÍTICA! ¿Estás seguro de que deseas VACIAR por completo el directorio de grabaciones? Esta acción eliminará permanentemente todos los videos y archivos grabados del disco y no se puede deshacer.")) {
+        try {
+            const res = await fetch('/api/files/clean', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                fetchFiles();
+                alert(data.message || "Directorio vaciado correctamente.");
+            } else {
+                alert("Error al vaciar: " + data.error);
+            }
+        } catch(e) {
+            alert("Fallo de conexión al vaciar el almacenamiento.");
+        }
+    }
+}
+
+async function deleteFile(filePath) {
+    if (confirm("¿Estás seguro de eliminar este archivo permanentemente?")) {
+        try {
+            const res = await fetch('/api/files/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filepath: filePath })
+            });
+            const data = await res.json();
+            if (data.success) {
+                fetchFiles();
+            } else {
+                alert("Error: " + data.error);
+            }
+        } catch(e) { alert("Error de conexión al eliminar."); }
     }
 }
 

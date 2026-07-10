@@ -68,9 +68,14 @@
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 10px;">
                         <h3 style="font-size: 1.1rem; font-weight: 600; margin:0;"><i class="fa-regular fa-folder-open"></i> Explorador de Grabaciones</h3>
                         <div style="display: flex; gap: 10px; align-items: center;">
-                            <label style="font-size:0.8rem; color:var(--text-muted);">Unidad:</label>
-                            <select id="storageDiskSelect" onchange="onStorageDiskSelectChange()" class="form-control" style="width:200px; padding: 5px; height: 32px; font-size: 0.8rem;">
-                                <!-- Opciones -->
+                            <button onclick="deleteSelectedFiles()" class="btn-secondary" style="background:rgba(224,49,49,0.15); color:var(--color-red); border:1px solid rgba(224,49,49,0.3); padding: 5px 12px; border-radius: 5px; font-size: 0.72rem; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:4px;">
+                                <i class="fa-regular fa-trash-can"></i> Borrar Seleccionados
+                            </button>
+                            <button onclick="cleanStorageDirectory()" class="btn-secondary" style="background:rgba(224,49,49,0.25); color:#ff3344; border:1px solid rgba(224,49,49,0.4); padding: 5px 12px; border-radius: 5px; font-size: 0.72rem; cursor:pointer; font-weight:700; display:flex; align-items:center; gap:4px;">
+                                <i class="fa-solid fa-circle-minus"></i> BORRAR TODO
+                            </button>
+                            <select id="storageDiskSelect" onchange="onStorageDiskSelectChange()" class="form-control" style="display:none;">
+                                <!-- Oculto para evitar cuelgues -->
                             </select>
                         </div>
                     </div>
@@ -89,6 +94,9 @@
                         <table style="width: 100%; text-align: left; border-collapse: collapse; font-size: 0.9rem;">
                             <thead>
                                 <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-muted);">
+                                    <th style="padding: 10px; width: 40px; text-align:center;">
+                                        <input type="checkbox" id="selectAllFilesCheckbox" onchange="toggleSelectAllFiles(this)" style="cursor:pointer;" />
+                                    </th>
                                     <th style="padding: 10px;">Nombre</th>
                                     <th style="padding: 10px;">Tamaño</th>
                                     <th style="padding: 10px;">Fecha</th>
