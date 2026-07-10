@@ -1612,91 +1612,47 @@ app.delete('/api/users/:username', (req, res) => {
 /* =======================================
  *  REST API: FILES / STORAGE
  * ======================================= */
-app.get('/api/disks', async (req, res) => {
-    try {
-        const drives = [];
-        const seen   = new Set();
-
-        // Helper para obtener espacio libre via df (Linux)
-        const getDiskSpace = (mountPath) => {
-            try {
-                if (process.platform === 'win32') return { freeGB: null, totalGB: null, usedPct: null };
-                const { execSync } = require('child_process');
-                const dfOut = execSync(`df -B1 "${mountPath}" 2>/dev/null | tail -1`, { timeout: 3000 }).toString().trim();
-                const parts = dfOut.split(/\s+/);
-                return {
-                    freeGB:  parts[3] ? (parseInt(parts[3]) / 1e9).toFixed(1) : null,
-                    totalGB: parts[1] ? (parseInt(parts[1]) / 1e9).toFixed(1) : null,
-                    usedPct: parts[4] ? parseInt(parts[4]) : null
-                };
-            } catch (_) { return { freeGB: null, totalGB: null, usedPct: null }; }
-        };
-
-        const addDrive = (mountPath, label, freeGB, totalGB, usedPct, isInternal = false) => {
-            if (seen.has(mountPath)) return;
-            seen.add(mountPath);
-            drives.push({
-                id:       mountPath.replace(/[:\\/]/g, '_'),
-                name:     `[${label}] ${mountPath}`,
-                path:     mountPath,
-                freeGB:   freeGB  || null,
-                totalGB:  totalGB || null,
-                usedPct:  usedPct || null,
-                internal: isInternal,
-                active:   mediaRoot && (mediaRoot === mountPath || mediaRoot.startsWith(mountPath + '/') || mediaRoot.startsWith(mountPath + '\\'))
-            });
-        };
-
-        // ── Fuente 0: Disco interno (mediaRoot / grabaciones) — SIEMPRE visible ──
-        // El disco donde se graban las sesiones es el destino más natural para exportar clips.
-        if (mediaRoot && fs.existsSync(mediaRoot)) {
-            const space = getDiskSpace(mediaRoot);
-            addDrive(mediaRoot, '💾 Disco de grabación', space.freeGB, space.totalGB, space.usedPct, true);
-        }
-
-        // ── Fuente 1: systeminformation (discos externos) ──
-        try {
-            const fsSizes = await si.fsSize();
-            const EXT = ['/media', '/mnt', '/run/media'];
-            fsSizes.forEach(f => {
-                if (!f.mount) return;
-                const isExt = process.platform === 'win32'
-                    ? (f.mount !== 'C:\\' && f.mount !== 'C:' && /^[D-Z]/.test(f.mount))
-                    : EXT.some(p => f.mount.startsWith(p));
-                if (!isExt) return;
-                const freeGB  = f.available ? (f.available / 1e9).toFixed(1) : null;
-                const totalGB = f.size      ? (f.size      / 1e9).toFixed(1) : null;
-                const usedPct = f.size && f.use ? Math.round(f.use) : null;
-                addDrive(f.mount, f.fs || 'USB', freeGB, totalGB, usedPct, false);
-            });
-        } catch (_) {}
-
-        // ── Fuente 2: /proc/mounts (Linux, más fiable en ARM/Raspberry) ──
-        if (process.platform !== 'win32') {
-            try {
-                const DATA_FS = new Set(['ext4','ext3','ext2','vfat','exfat','ntfs','xfs','btrfs','f2fs','fuseblk']);
-                const SKIP = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user',
-                              '/snap', '/usr', '/var', '/opt', '/etc', '/home',
-                              '/run/lock', '/run/systemd', '/run/credentials'];
-                const lines = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
-                for (const line of lines) {
-                    const [device, mount, fsType] = line.split(' ');
-                    if (!device || !mount || !fsType) continue;
-                    if (!device.startsWith('/dev/')) continue;
-                    if (!DATA_FS.has(fsType)) continue;
-                    if (SKIP.some(p => mount === p || mount.startsWith(p + '/'))) continue;
-                    if (!/^\/(media|mnt|run\/media)/.test(mount)) continue;
-                    if (!fs.existsSync(mount)) continue;
-                    const space = getDiskSpace(mount);
-                    addDrive(mount, `🔌 ${fsType.toUpperCase()}`, space.freeGB, space.totalGB, space.usedPct, false);
-                }
-            } catch (_) {}
-        }
-
-        res.json(drives);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
+app.get('/api/disks', (req, res) => {
+    const drives = [];
+    if (!mediaRoot) {
+        return res.json(drives);
     }
+    
+    // Devolver únicamente la ruta activa de forma pasiva y segura
+    try {
+        let freeGB = null, totalGB = null, usedPct = null;
+        if (fs.existsSync(mediaRoot)) {
+            const stat = fs.statfsSync(mediaRoot);
+            totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+            freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+            usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+        }
+        
+        drives.push({
+            id: mediaRoot.replace(/[:\\/]/g, '_'),
+            name: `💾 Disco de grabación activo`,
+            path: mediaRoot,
+            freeGB,
+            totalGB,
+            usedPct,
+            internal: true,
+            active: true
+        });
+    } catch (e) {
+        // En caso de que el disco esté desconectado temporalmente, devolvemos el registro de forma básica
+        drives.push({
+            id: mediaRoot.replace(/[:\\/]/g, '_'),
+            name: `💾 Disco de grabación activo (desconectado)`,
+            path: mediaRoot,
+            freeGB: null,
+            totalGB: null,
+            usedPct: null,
+            internal: true,
+            active: true
+        });
+    }
+
+    res.json(drives);
 });
 
 // Seleccionar disco de grabacion en caliente
