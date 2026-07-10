@@ -566,7 +566,7 @@ app.post('/api/monitor/open', (req, res) => {
                 // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
                 setTimeout(() => {
                     // Buscamos prioritariamente el título exclusivo que hemos definido para el monitor de multiview
-                    const moveCmd = `(xdotool search --name "RACE CONTROL MONITOR PANTALLA SECUNDARIA" || xdotool search --class "racecontrolmonitor" || xdotool search --name "RACE CONTROL" || xdotool search --class "firefox") | while read id; do ` +
+                    const moveCmd = `(xdotool search --name "RACE CONTROL MONITOR PANTALLA SECUNDARIA" || xdotool search --class "racecontrolmonitor") | while read id; do ` +
                                     `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
                                     `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
                                     `  xdotool windowactivate "$id" 2>/dev/null && ` +
@@ -2447,17 +2447,17 @@ app.post('/api/network', (req, res) => {
     getActiveDevice().then((physicalDev) => {
         let cmd = '';
         if (mode === 'auto') {
-            cmd = `(nmcli con mod "${connectionName}" ipv4.method auto && ` +
-                  `nmcli con mod "${connectionName}" remove ipv4.addresses 2>/dev/null || true && ` +
-                  `nmcli con mod "${connectionName}" remove ipv4.dns 2>/dev/null || true && ` +
-                  `nmcli con mod "${connectionName}" remove ipv4.gateway 2>/dev/null || true && ` +
-                  `nmcli con down "${connectionName}" 2>/dev/null || true && ` +
-                  `nmcli con up "${connectionName}") 2>/dev/null || ` +
-                  ` (dhclient -r ${physicalDev} 2>/dev/null || true && dhclient -v ${physicalDev})`;
+            cmd = `(sudo nmcli con mod "${connectionName}" ipv4.method auto && ` +
+                  `sudo nmcli con mod "${connectionName}" remove ipv4.addresses 2>/dev/null || true && ` +
+                  `sudo nmcli con mod "${connectionName}" remove ipv4.dns 2>/dev/null || true && ` +
+                  `sudo nmcli con mod "${connectionName}" remove ipv4.gateway 2>/dev/null || true && ` +
+                  `sudo nmcli con down "${connectionName}" 2>/dev/null || true && ` +
+                  `sudo nmcli con up "${connectionName}") 2>/dev/null || ` +
+                  ` (sudo dhclient -r ${physicalDev} 2>/dev/null || true && sudo dhclient -v ${physicalDev})`;
         } else {
             const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
-            cmd = `(nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && nmcli con up "${connectionName}") 2>/dev/null || ` +
-                  ` (ip addr flush dev ${physicalDev} 2>/dev/null || true && ip addr add ${ip}/${cidr} dev ${physicalDev} && ip link set ${physicalDev} up && ip route add default via ${gateway} dev ${physicalDev})`;
+            cmd = `(sudo nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} && sudo nmcli con up "${connectionName}") 2>/dev/null || ` +
+                  ` (sudo ip addr flush dev ${physicalDev} 2>/dev/null || true && sudo ip addr add ${ip}/${cidr} dev ${physicalDev} && sudo ip link set ${physicalDev} up && sudo ip route add default via ${gateway} dev ${physicalDev})`;
         }
         
         console.log(`[NETWORK] Aplicando red sobre conexión="${connectionName}" e interfaz físico="${physicalDev}"...`);
@@ -2469,7 +2469,7 @@ app.post('/api/network', (req, res) => {
                     console.error('[NETWORK] Error applying config via nmcli/native:', err.message);
                     // Si ambos fallaron, intentar forzar dhclient genérico como último recurso
                     if (mode === 'auto') {
-                        exec(`dhclient -v`, (dhcpErr) => {
+                        exec(`sudo dhclient -v`, (dhcpErr) => {
                             if (dhcpErr) console.error('[NETWORK] Fallback dhclient general error:', dhcpErr.message);
                             else console.log('[NETWORK] DHCP general renovado.');
                         });
