@@ -12,11 +12,7 @@ fi
 APP_DIR="/opt/race-control"
 cd "$APP_DIR" || exit 1
 
-echo "🔄 Descargando la última versión desde GitHub..."
-git pull origin main
-
-echo "⚙️  Instalando dependencias de Node.js..."
-npm install --omit=dev
+# En este entorno copiamos directamente los archivos locales, omitimos git pull y npm install.
 
 echo "🚀 Aplicando reglas de posicionamiento nativas multi-pantalla en Openbox..."
 RC_USER="racecontrol"
@@ -67,13 +63,19 @@ fi
 mkdir -p "$RC_HOME/.config/firefox_monitor"
 chown -R $RC_USER:$RC_USER "$RC_HOME/.config/firefox_monitor"
 
+# Limpiar bloqueos parentlock de Firefox para evitar cuelgues al arrancar
+echo "🧹 Limpiando bloqueos zombis de Firefox..."
+killall -q -9 firefox firefox-esr 2>/dev/null || true
+find "$RC_HOME/.mozilla" -name ".parentlock" -delete 2>/dev/null || true
+find "$RC_HOME/.config/firefox_monitor" -name ".parentlock" -delete 2>/dev/null || true
+
 # Forzar recarga de Openbox para aplicar las nuevas reglas de ventanas en caliente
 sudo -u $RC_USER DISPLAY=:0 openbox --reconfigure 2>/dev/null || true
 
 echo "🚀 Reiniciando servicio de Race Control..."
 systemctl stop race-control 2>/dev/null || true
 killall -9 node 2>/dev/null || true
-sleep 1
+sleep 0.5
 systemctl daemon-reload
 systemctl reset-failed race-control
 systemctl start race-control

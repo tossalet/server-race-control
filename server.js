@@ -368,16 +368,17 @@ app.get('/api/storage/list', (req, res) => {
         return res.json([{ device: 'local', mountPoint: path.join(__dirname, 'media'), fsType: 'local', sizeGB: null, freeGB: null, label: 'Carpeta local (Windows dev)' }]);
     }
 
+    const { exec } = require('child_process');
     const DATA_FS = new Set(['ext4','ext3','ext2','vfat','exfat','ntfs','xfs','btrfs','f2fs']);
     const SKIP_FS = new Set(['tmpfs','devtmpfs','sysfs','proc','devpts','cgroup','cgroup2',
                              'overlay','squashfs','udev','securityfs','fusectl','pstore',
                              'efivarfs','debugfs','tracefs','hugetlbfs','mqueue','ramfs','bpf','configfs']);
-    // Puntos de montaje del sistema a ignorar
     const SKIP_PFX = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user', '/run/lock',
                       '/run/systemd', '/run/credentials', '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
 
     const partitions = [];
 
+    // 1. Leer montajes activos rápidos desde /proc/mounts (muy seguro y nunca se cuelga)
     try {
         const mounts = fs.readFileSync('/proc/mounts', 'utf8').split('\n');
         for (const line of mounts) {
@@ -385,65 +386,57 @@ app.get('/api/storage/list', (req, res) => {
             if (!device || !mountPoint || !fsType) continue;
             if (SKIP_FS.has(fsType)) continue;
             if (!device.startsWith('/dev/')) continue;
-            if (!DATA_FS.has(fsType)) continue;
-            // Ignorar rutas del sistema operativo
             if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
-            if (!fs.existsSync(mountPoint)) continue;
-
+            
             let sizeGB = null, freeGB = null;
             try {
-                const stat = fs.statfsSync(mountPoint);
-                sizeGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
-                freeGB = ((stat.bfree  * stat.bsize) / 1e9).toFixed(1);
+                if (fs.existsSync(mountPoint)) {
+                    const stat = fs.statfsSync(mountPoint);
+                    sizeGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
+                    freeGB = ((stat.bfree  * stat.bsize) / 1e9).toFixed(1);
+                }
             } catch(e) {}
 
-            // Intentar obtener label del dispositivo
-            let label = '';
-            try {
-                const { execSync } = require('child_process');
-                label = execSync(`blkid -s LABEL -o value ${device} 2>/dev/null`, { timeout: 2000 }).toString().trim();
-            } catch(e) {}
-
-            partitions.push({ device, mountPoint, fsType, sizeGB, freeGB, label });
+            partitions.push({ device, mountPoint, fsType, sizeGB, freeGB, label: 'Disco Montado' });
         }
     } catch(e) {
         console.error('[STORAGE] Error leyendo /proc/mounts:', e.message);
     }
 
-    // También incluir particiones no montadas del NVMe/USB (lsblk)
-    try {
-        const { execSync } = require('child_process');
-        const lsblk = execSync('lsblk -J -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,TYPE 2>/dev/null', { timeout: 3000 }).toString();
-        const data = JSON.parse(lsblk);
-        const systemDev = execSync('lsblk -no PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -1', { timeout: 2000 }).toString().trim();
-
-        function walkBlk(items, parentDisk) {
-            for (const item of (items || [])) {
-                const disk = item.type === 'disk' ? item.name : parentDisk;
-                if (item.type === 'part' && item.fstype && DATA_FS.has(item.fstype)) {
-                    const alreadyListed = partitions.some(p => p.device === `/dev/${item.name}`);
-                    const isMounted = item.mountpoint && SKIP_PFX.some(p => item.mountpoint === p || item.mountpoint.startsWith(p + '/'));
-                    if (!alreadyListed && !isMounted) {
-                        partitions.push({
-                            device: `/dev/${item.name}`,
-                            mountPoint: item.mountpoint || null,
-                            fsType: item.fstype,
-                            sizeGB: item.size ? parseFloat(item.size).toFixed(0) : null,
-                            freeGB: null,
-                            label: item.label || '',
-                            unmounted: !item.mountpoint
-                        });
-                    }
-                }
-                if (item.children) walkBlk(item.children, disk);
-            }
+    // 2. Ejecutar lsblk de forma estrictamente asíncrona con un timeout corto de 1500ms
+    exec('lsblk -J -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,TYPE 2>/dev/null', { timeout: 1500 }, (lsblkErr, stdout) => {
+        if (lsblkErr || !stdout) {
+            // Si lsblk se cuelga o da error, devolvemos lo que tengamos en proc/mounts de inmediato sin bloquear
+            return res.json(partitions);
         }
-        walkBlk(data.blockdevices, '');
-    } catch(e) {
-        // lsblk JSON puede no estar disponible en todos los sistemas — silencioso
-    }
+        
+        try {
+            const data = JSON.parse(stdout);
+            const walkBlk = (items) => {
+                for (const item of (items || [])) {
+                    if (item.type === 'part' && item.fstype && DATA_FS.has(item.fstype)) {
+                        const alreadyListed = partitions.some(p => p.device === `/dev/${item.name}`);
+                        const isMounted = item.mountpoint && SKIP_PFX.some(p => item.mountpoint === p || item.mountpoint.startsWith(p + '/'));
+                        if (!alreadyListed && !isMounted) {
+                            partitions.push({
+                                device: `/dev/${item.name}`,
+                                mountPoint: item.mountpoint || null,
+                                fsType: item.fstype,
+                                sizeGB: item.size ? parseFloat(item.size).toFixed(0) : null,
+                                freeGB: null,
+                                label: item.label || '',
+                                unmounted: !item.mountpoint
+                            });
+                        }
+                    }
+                    if (item.children) walkBlk(item.children);
+                }
+            };
+            walkBlk(data.blockdevices);
+        } catch(parseErr) {}
 
-    res.json(partitions);
+        res.json(partitions);
+    });
 });
 
 // Seleccionar partición de grabaciones y guardarla en DB
@@ -1567,6 +1560,25 @@ app.get('/api/recordings', (req, res) => {
     db.all('SELECT * FROM recording_sessions ORDER BY start_time DESC', [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
+    });
+});
+
+app.delete('/api/recordings/:id', (req, res) => {
+    const sessionId = req.params.id;
+    
+    // Borrado en cascada manual de las tablas asociadas para evitar conflictos de Foreign Key
+    db.serialize(() => {
+        db.run('DELETE FROM markers WHERE session_id = ?', [sessionId]);
+        db.run('DELETE FROM clips WHERE session_id = ?', [sessionId]);
+        db.run('DELETE FROM session_files WHERE session_id = ?', [sessionId]);
+        db.run('DELETE FROM recording_sessions WHERE id = ?', [sessionId], function(err) {
+            if (err) {
+                console.error(`[DB] Error al eliminar sesión ${sessionId}:`, err.message);
+                return res.status(500).json({ success: false, error: err.message });
+            }
+            console.log(`[DB] Sesión ${sessionId} eliminada con éxito en cascada.`);
+            res.json({ success: true, message: `Sesión ${sessionId} eliminada con éxito.` });
+        });
     });
 });
 
