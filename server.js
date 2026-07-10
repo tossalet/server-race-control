@@ -545,7 +545,7 @@ app.post('/api/monitor/open', (req, res) => {
                     args = [
                         `--class`, `racecontrolmonitor`, 
                         `--no-remote`, 
-                        `-profile`, `/tmp/firefox_monitor`, 
+                        `-profile`, `/home/racecontrol/.config/firefox_monitor`, 
                         `--new-window`, monitorUrl, 
                         `--kiosk`
                     ];

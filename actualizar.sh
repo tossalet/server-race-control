@@ -63,6 +63,10 @@ if [ -f "$KIOSK_SCRIPT" ]; then
     chown $RC_USER:$RC_USER "$KIOSK_SCRIPT"
 fi
 
+# Asegurar que el perfil temporal de Firefox para el monitor tiene los permisos correctos
+mkdir -p "$RC_HOME/.config/firefox_monitor"
+chown -R $RC_USER:$RC_USER "$RC_HOME/.config/firefox_monitor"
+
 # Forzar recarga de Openbox para aplicar las nuevas reglas de ventanas en caliente
 sudo -u $RC_USER DISPLAY=:0 openbox --reconfigure 2>/dev/null || true
 
