@@ -1902,11 +1902,27 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             originalLog(`⚠️ [HTTP-TS] Fallo de GPU en transcodificación en vivo para Ch${channel}. Relanzando usando CPU...`);
             didTsFallback = true;
             
-            // Remover argumentos de CUDA y decodificación por hardware de la GPU
-            const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid', '-c:v', 'h264_cuvid'].includes(arg));
-            
-            // Sustituir h264_nvenc por libx264 tradicional si estuviera presente
-            const finalArgs = cleanArgs.map(arg => arg === 'h264_nvenc' ? 'libx264' : arg);
+            // Generar argumentos H.264 limpios para CPU desde cero
+            const finalArgs = [
+                '-hide_banner',
+                '-y',
+                '-fflags', '+genpts+discardcorrupt',
+                '-err_detect', 'ignore_err',
+                '-probesize', '100000',
+                '-analyzeduration', '100000',
+                '-f', 'mpegts',
+                '-i', '-',
+                '-map', '0:v?', '-map', '0:a?',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p',
+                '-g', '15',
+                '-keyint_min', '15',
+                '-sc_threshold', '0',
+                '-r', '30',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-f', 'mpegts',
+                '-'
+            ];
             
             // Eliminar al suscriptor antiguo de la lista
             if (routerState && routerState.router) {
