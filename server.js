@@ -1951,11 +1951,9 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-analyzeduration', '100000'
         ];
 
-        // Decodificación acelerada por GPU solo si es H.265 confirmado y hay NVENC
-        if (useGpu) {
-            args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
-            args.push('-c:v', 'hevc_cuvid');
-        }
+        // IMPORTANTE: NO usamos -hwaccel cuda ni hevc_cuvid para DECODIFICAR desde stdin
+        // porque causa cuelgues (hangs) y fallos con streams inestables.
+        // La decodificación se hace en CPU, y getH264EncoderArgs usará h264_nvenc para CODIFICAR.
 
         args.push(
             '-f', 'mpegts',

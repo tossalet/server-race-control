@@ -43,16 +43,16 @@ function getH264EncoderArgs(opts = {}) {
     const scale = opts.scale || '-2:720';
     // Solo usar NVENC si se pidió explícitamente hwaccel='cuda' Y NVENC está disponible.
     // Cuando el codec es desconocido o no se usa CUDA, siempre CPU (libx264) — seguro y fiable.
-    if (nvencAvailable && opts.hwaccel === 'cuda') {
-        // Pipeline completo CUDA: decodificación + escalado + codificación en GPU
-        const scaleFilter = `scale_cuda=${scale.replace('-2', '1280')}:format=yuv420p`;
-
+    if (nvencAvailable && (opts.hwaccel === 'cuda' || opts.useNvenc)) {
+        // Encodificación en GPU (NVENC) pero manteniendo escalado y decodificación en CPU.
+        // Esto es mucho más estable para streams MPEG-TS inestables o provenientes de stdin.
         return [
             '-c:v', 'h264_nvenc',
             '-preset', 'p4',
             '-rc', 'vbr',
             '-cq', String(opts.cq || 28),
-            '-vf', scaleFilter,
+            '-vf', `scale=${scale}`,
+            '-pix_fmt', 'yuv420p',
         ];
     } else {
         // CPU fallback: libx264 ultrafast — funciona siempre
@@ -384,75 +384,30 @@ function startPreview(channel, singleFrame = false) {
 
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const ffmpegCmd = getFFmpegPath();
-    const args = [ '-hide_banner', '-y' ];
-    const inputObj = activeInputs[channel].inputObj || {};
-    const inputCodec = activeInputs[channel].codec || '';
     
-    // Si la GPU NVIDIA está disponible y no ha fallado previamente para esta cámara, la usamos
-    const useGPU = nvencAvailable && !activeInputs[channel].gpuFailed;
-    if (useGPU) {
-        args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
-        
-        // Seleccionar decodificador por hardware adecuado según el códec detectado en la base de datos
-        if (inputCodec.includes('265') || inputCodec.includes('HEVC')) {
-            args.push('-c:v', 'hevc_cuvid');
-        } else if (inputCodec.includes('264')) {
-            args.push('-c:v', 'h264_cuvid');
-        }
-    }
+    // Usamos CPU siempre para los thumbnails (es 1 fps y asegura máxima compatibilidad independientemente del códec)
+    const args = [ 
+        '-hide_banner', '-y',
+        '-fflags', '+genpts+discardcorrupt',
+        '-err_detect', 'ignore_err',
+        '-f', 'mpegts', '-i', '-',
+        '-map', '0:v?',
+        '-vf', 'scale=320:-1',
+        '-q:v', '5',
+        '-f', 'image2',
+        '-update', '1'
+    ];
 
-    let useSubstream = false;
-    if (inputObj.ptz_enabled && inputObj.ptz_ip) {
-        useSubstream = true;
-        let host = inputObj.ptz_ip.split(':')[0];
-        let port = '554';
-        try {
-            if (inputObj.url && inputObj.url.startsWith('rtsp://')) {
-                const urlObj = new URL(inputObj.url);
-                host = urlObj.hostname;
-                if (urlObj.port) port = urlObj.port;
-            }
-        } catch(e) {}
-        const user = inputObj.ptz_user ? encodeURIComponent(inputObj.ptz_user) : '';
-        const pass = inputObj.ptz_pass ? encodeURIComponent(inputObj.ptz_pass) : '';
-        const auth = (user && pass) ? `${user}:${pass}@` : '';
-        const rtspUrl = `rtsp://${auth}${host}:${port}/cam/realmonitor?channel=1&subtype=1&unicast=true`;
-        
-        args.push('-rtsp_transport', 'tcp', '-i', rtspUrl);
+    if (singleFrame) {
+        args.push('-frames:v', '1');
     } else {
-        // Flags de tolerancia para evitar pixelados morados/grises al cambiar o procesar paquetes UDP
-        args.push(
-            '-fflags', '+genpts+discardcorrupt',
-            '-err_detect', 'ignore_err',
-            '-probesize', '500000',
-            '-analyzeduration', '500000',
-            '-f', 'mpegts', '-i', '-'
-        );
+        args.push('-r', '1');
     }
-
-    if (!useSubstream) {
-        args.push('-map', '0:v?');
-    }
-
+    
     const outPath = extPath + '.jpg';
-    
-    // Si usamos aceleración de hardware por GPU, debemos reescalar en la GPU con scale_cuda y descargar de memoria antes de escribir la imagen
-    if (useGPU) {
-        // Reescalar a 320x180 nativo en GPU para las tarjetas del panel izquierdo
-        if (singleFrame) {
-            args.push('-vf', 'scale_cuda=320:180,hwdownload,format=nv12', '-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', outPath);
-        } else {
-            args.push('-vf', 'scale_cuda=320:180,hwdownload,format=nv12', '-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', outPath);
-        }
-    } else {
-        if (singleFrame) {
-            args.push('-vf', 'scale=320:-1', '-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', outPath);
-        } else {
-            args.push('-vf', 'scale=320:-1', '-r', '1', '-update', '1', '-q:v', '5', '-f', 'image2', outPath);
-        }
-    }
+    args.push(outPath);
 
-    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'} with GPU=${useGPU}`);
+    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'} with GPU=false (CPU Forced)`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
     
