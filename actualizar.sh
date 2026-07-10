@@ -23,16 +23,37 @@ RC_USER="racecontrol"
 RC_HOME="/home/$RC_USER"
 XML_FILE="$RC_HOME/.config/openbox/rc.xml"
 
-if [ -f "$XML_FILE" ]; then
-    # Limpiar reglas antiguas de racecontrol si las hubiera
-    sed -i '/racecontrolgrabador/d; /racecontrolmonitor/d; /class="epiphany"/d; /class="Epiphany"/d' "$XML_FILE"
-    
-    # Inyectar reglas en la sección <applications>
-    if grep -q "</applications>" "$XML_FILE"; then
-        sed -i '/<\/applications>/i \    <application class="racecontrolgrabador">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n      <head>1</head>\n    </application>\n    <application class="racecontrolmonitor">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n      <head>2</head>\n    </application>' "$XML_FILE"
-    fi
-    chown $RC_USER:$RC_USER "$XML_FILE"
+# Si el XML no existe o está corrupto, lo restauramos de la plantilla limpia de fábrica de Debian
+if [ ! -f "$XML_FILE" ] || ! xmlpathtest=$(xmlstarlet val "$XML_FILE" 2>/dev/null) && ! grep -q "</openbox_config>" "$XML_FILE"; then
+    echo "⚠️  XML corrupto o no válido detectado. Restaurando plantilla limpia /etc/xdg/openbox/rc.xml..."
+    mkdir -p "$RC_HOME/.config/openbox"
+    cp /etc/xdg/openbox/rc.xml "$XML_FILE"
 fi
+
+# Hacer limpieza inicial de inyecciones previas que puedan duplicarse
+sed -i '/racecontrolgrabador/d; /racecontrolmonitor/d; /class="racecontrolgrabador"/,/<\/application>/d; /class="racecontrolmonitor"/,/<\/application>/d' "$XML_FILE"
+
+# Inyección segura en el rc.xml usando awk para situarlo exactamente antes de la etiqueta </applications>
+tmpfile=$(mktemp)
+awk '
+/<\/applications>/ {
+    print "    <application class=\"racecontrolgrabador\">"
+    print "      <decor>no</decor>"
+    print "      <fullscreen>yes</fullscreen>"
+    print "      <maximized>true</maximized>"
+    print "      <head>1</head>"
+    print "    </application>"
+    print "    <application class=\"racecontrolmonitor\">"
+    print "      <decor>no</decor>"
+    print "      <fullscreen>yes</fullscreen>"
+    print "      <maximized>true</maximized>"
+    print "      <head>2</head>"
+    print "    </application>"
+}
+{ print }
+' "$XML_FILE" > "$tmpfile"
+mv "$tmpfile" "$XML_FILE"
+chown $RC_USER:$RC_USER "$XML_FILE"
 
 # Actualizar el script de autoarranque local para asociar la clase al grabador principal
 KIOSK_SCRIPT="$RC_HOME/.config/race-control/launch_kiosk.sh"
