@@ -542,14 +542,26 @@ app.post('/api/storage/select', (req, res) => {
  *  API: LANZAR MONITOR EN SEGUNDO DISPLAY (Linux)
  * ======================================= */
 app.post('/api/monitor/open', (req, res) => {
-    const { exec, spawn } = require('child_process');
+    const { exec } = require('child_process');
+    const os = require('os');
     const monitorUrl = `http://localhost:${process.env.PORT || 4000}/grabador/index.html?monitor=1#monitor`;
-
-    // Procedemos a abrir la ventana directamente sin realizar comprobaciones en el backend,
-    // ya que la comprobación de multipantalla se realiza de forma segura en el frontend de la sesión gráfica.
     const secondaryDisplay = { name: 'HDMI-Right', width: 1920, height: 1080, x: 1920, y: 0 };
-    console.log(`[MONITOR] Abriendo en display secundario: ${secondaryDisplay.name} (${secondaryDisplay.width}x${secondaryDisplay.height}+${secondaryDisplay.x}+${secondaryDisplay.y})`);
+    
+    console.log(`[MONITOR] Solicitud para abrir monitor secundario en OS: ${os.platform()}`);
 
+    if (os.platform() === 'win32') {
+        const chromeCmd = `start chrome --user-data-dir="%temp%\\monitor_profile" --window-position=${secondaryDisplay.x},${secondaryDisplay.y} --kiosk "${monitorUrl}"`;
+        const edgeCmd = `start msedge --user-data-dir="%temp%\\monitor_profile" --window-position=${secondaryDisplay.x},${secondaryDisplay.y} --kiosk "${monitorUrl}"`;
+        exec(chromeCmd, (err) => {
+            if (err) {
+                exec(edgeCmd, (err2) => {
+                    if (err2) return res.json({ ok: false, reason: 'no_browser_windows' });
+                    res.json({ ok: true, browser: 'edge' });
+                });
+            } else res.json({ ok: true, browser: 'chrome' });
+        });
+    } else {
+        // LINUX (Debian 13 u otros)
         // 2. Lanzar navegador en el display secundario (Firefox prioritario para modo kiosk real)
         const candidates = [
             'firefox',
@@ -618,6 +630,7 @@ app.post('/api/monitor/open', (req, res) => {
         }
 
         tryLaunch(0);
+    }
 });
 
 app.get('/api/monitor/debug', (req, res) => {
