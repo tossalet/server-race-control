@@ -355,8 +355,8 @@ function startInput(inputObj) {
         codec: inputObj.codec || persistentCodecs[channel] || ''
     };
     
-    // Siempre arrancar previsualización continua (generación de thumbnails en vivo y estables)
-    startPreview(channel, false);
+    // Solo extraer un frame inicial al conectar para no consumir recursos en segundo plano
+    startPreview(channel, true);
 
     return true;
 }
@@ -371,8 +371,9 @@ function startPreview(channel, singleFrame = false) {
     const inputObj = activeInputs[channel].inputObj || {};
     const inputCodec = activeInputs[channel].codec || '';
     
-    // Si la GPU NVIDIA está disponible, la usamos para decodificar y reescalar las miniaturas
-    if (nvencAvailable) {
+    // Si la GPU NVIDIA está disponible y no ha fallado previamente para esta cámara, la usamos
+    const useGPU = nvencAvailable && !activeInputs[channel].gpuFailed;
+    if (useGPU) {
         args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda');
         
         // Seleccionar decodificador por hardware adecuado según el códec detectado en la base de datos
@@ -419,7 +420,7 @@ function startPreview(channel, singleFrame = false) {
     const outPath = extPath + '.jpg';
     
     // Si usamos aceleración de hardware por GPU, debemos reescalar en la GPU con scale_cuda y descargar de memoria antes de escribir la imagen
-    if (nvencAvailable) {
+    if (useGPU) {
         // Reescalar a 320x180 nativo en GPU para las tarjetas del panel izquierdo
         if (singleFrame) {
             args.push('-vf', 'scale_cuda=320:180,hwdownload,format=nv12', '-frames:v', '1', '-q:v', '5', '-update', '1', '-f', 'image2', outPath);
@@ -434,7 +435,7 @@ function startPreview(channel, singleFrame = false) {
         }
     }
 
-    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'} with GPU=${nvencAvailable}`);
+    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'} with GPU=${useGPU}`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
     
@@ -483,7 +484,9 @@ function startPreview(channel, singleFrame = false) {
         setTimeout(() => stopPreview(channel), 15000);
     }
 
-    child.on('close', () => {
+    const startTime = Date.now();
+
+    child.on('close', (code) => {
         if (activeInputs[channel]) {
             if (activeInputs[channel].prevSubscriber) {
                 if (activeInputs[channel].router) {
@@ -491,10 +494,18 @@ function startPreview(channel, singleFrame = false) {
                 }
                 activeInputs[channel].prevSubscriber = null;
             }
-            // Limpiar referencia (sea child o null por stopPreview)
-            const wasOurProcess = activeInputs[channel].prevProcess === child || activeInputs[channel].prevProcess === null;
+            
+            const elapsed = Date.now() - startTime;
+            const wasOurProcess = activeInputs[channel].prevProcess === child;
             activeInputs[channel].prevProcess = null;
-            // Auto-restart: reiniciar SIEMPRE que el input siga activo (fix: antes fallaba si stopPreview ya puso null)
+
+            // Si el proceso de GPU duró menos de 2 segundos encendido y falló, marcamos para usar CPU
+            if (wasOurProcess && elapsed < 2000 && nvencAvailable && !activeInputs[channel].gpuFailed) {
+                console.log(`⚠️ [PREVIEW CH-${channel}] Fallo prematuro en GPU (duración: ${elapsed}ms). Activando fallback de CPU para asegurar miniaturas...`);
+                activeInputs[channel].gpuFailed = true;
+            }
+            
+            // Auto-restart: reiniciar SIEMPRE que el input siga activo
             if (!singleFrame && wasOurProcess && activeInputs[channel] && !activeInputs[channel].isStopping) {
                 console.log(`[PREVIEW CH-${channel}] Process exited. Auto-restarting preview in 3 seconds...`);
                 setTimeout(() => {

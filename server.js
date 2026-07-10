@@ -1156,15 +1156,57 @@ app.post('/api/recordings/start', (req, res) => {
                         // No loguear nada rutinario al servidor — reducir ruido
                     }
                 });
+                const recStartTime = Date.now();
+                let didFallback = false;
+
                 child.on('exit', code => {
                     broadCastLog('INFO', `[REC-${sessionId}] ch${input.channel} FFmpeg exited ${code}`);
+                    
+                    const elapsed = Date.now() - recStartTime;
+                    if (code !== 0 && code !== null && elapsed < 4000 && streamManager.nvencAvailable && !didFallback) {
+                        broadCastLog('WARN', `⚠️ [REC-${sessionId}] Fallo de decodificador GPU en grabación para canal ${input.channel}. Reintentando con CPU de forma segura...`);
+                        didFallback = true;
+                        
+                        // Volver a lanzar el proceso sin CUDA
+                        const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid'].includes(arg));
+                        // Reemplazar el HLS codec de CUDA por copia/libx264 tradicional si fuese necesario
+                        const fallbackChild = spawn(ffmpegCmd, cleanArgs);
+                        
+                        // Reemplazar la referencia en memoria
+                        const pIdx = activeRecordingProcs[sessionId].indexOf(child);
+                        if (pIdx !== -1) {
+                            activeRecordingProcs[sessionId][pIdx] = fallbackChild;
+                        } else {
+                            activeRecordingProcs[sessionId].push(fallbackChild);
+                        }
+                        
+                        fallbackChild.on('exit', fCode => {
+                            broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
+                        });
+                        
+                        // Reconectar socket al nuevo puerto tras 1.5s
+                        setTimeout(() => {
+                            if (fallbackChild.exitCode !== null) return;
+                            const sock = net.createConnection(recPort, '127.0.0.1', () => {
+                                routerState.router.subscribers.add(sock);
+                                console.log(`[REC-FALLBACK] Ch${input.channel} suscrito al router TCP :${recPort}`);
+                            });
+                            sock.on('error', err => originalLog(`[REC] fallback sock error ch${input.channel}: ${err.message}`));
+                            sock.on('close', () => {
+                                if (streamManager.activeInputs[input.channel] && streamManager.activeInputs[input.channel].router) {
+                                    streamManager.activeInputs[input.channel].router.subscribers.delete(sock);
+                                }
+                            });
+                            activeRecordingProcs[sessionId].sockets.push({ sock, channel: input.channel });
+                        }, 1500);
+                    }
                 });
 
                 activeRecordingProcs[sessionId].push(child);
 
                 // Conectar al router 1.5s después de que FFmpeg esté en escucha
                 setTimeout(() => {
-                    if (child.exitCode !== null) return; // ya terminó
+                    if (child.exitCode !== null || didFallback) return; // ya terminó o fallback activo
                     const routerState = streamManager.activeInputs[input.channel];
                     if (!routerState || !routerState.router) return;
 
@@ -1814,7 +1856,9 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         ];
     }
     
-    const child = spawn(ffmpegCmd, args);
+    const tsStartTime = Date.now();
+    let child = spawn(ffmpegCmd, args);
+    let didTsFallback = false;
     
     if (child.stdin) {
         child.stdin.on('error', (err) => {
@@ -1825,7 +1869,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         originalLog(`[HTTP-TS] Ch${channel} error de proceso FFmpeg: ${err.message}`);
     });
     
-    const subObj = {
+    let subObj = {
         writableLength: 0,
         write(chunk) {
             if (child.killed || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
@@ -1851,8 +1895,53 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     };
     
     req.on('close', cleanup);
-    child.on('close', () => {
-        if (!res.writableEnded) res.end();
+    
+    child.on('close', (code) => {
+        const elapsed = Date.now() - tsStartTime;
+        if (code !== 0 && code !== null && elapsed < 2000 && mustTranscode && streamManager.nvencAvailable && !didTsFallback) {
+            originalLog(`⚠️ [HTTP-TS] Fallo de GPU en transcodificación en vivo para Ch${channel}. Relanzando usando CPU...`);
+            didTsFallback = true;
+            
+            // Remover argumentos de CUDA y decodificación por hardware de la GPU
+            const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid', '-c:v', 'h264_cuvid'].includes(arg));
+            
+            // Sustituir h264_nvenc por libx264 tradicional si estuviera presente
+            const finalArgs = cleanArgs.map(arg => arg === 'h264_nvenc' ? 'libx264' : arg);
+            
+            // Eliminar al suscriptor antiguo de la lista
+            if (routerState && routerState.router) {
+                routerState.router.subscribers.delete(subObj);
+            }
+            
+            // Iniciar nuevo proceso transcodificador seguro en CPU
+            const fallbackChild = spawn(ffmpegCmd, finalArgs);
+            child = fallbackChild;
+            
+            subObj = {
+                writableLength: 0,
+                write(chunk) {
+                    if (fallbackChild.killed || !fallbackChild.stdin || fallbackChild.stdin.destroyed || !fallbackChild.stdin.writable) return;
+                    this.writableLength = fallbackChild.stdin.writableLength;
+                    try {
+                        fallbackChild.stdin.write(chunk);
+                    } catch (e) {}
+                },
+                destroy() {
+                    try { fallbackChild.kill('SIGKILL'); } catch(e) {}
+                }
+            };
+            
+            if (routerState && routerState.router) {
+                routerState.router.subscribers.add(subObj);
+            }
+            fallbackChild.stdout.pipe(res);
+            
+            fallbackChild.on('close', () => {
+                if (!res.writableEnded) res.end();
+            });
+        } else {
+            if (!res.writableEnded) res.end();
+        }
     });
 });
 
