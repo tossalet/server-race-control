@@ -1694,10 +1694,15 @@ app.get('/api/disks', async (req, res) => {
         let freeGB = null, totalGB = null, usedPct = null;
         if (accessible) {
             try {
-                const stat = fs.statfsSync(mediaRoot);
-                totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
-                freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
-                usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+                const { promisify } = require('util');
+                const statfsAsync = promisify(fs.statfs);
+                const statResult = await Promise.race([
+                    statfsAsync(mediaRoot),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('statfs timeout')), 2000))
+                ]);
+                totalGB = ((statResult.blocks * statResult.bsize) / 1e9).toFixed(1);
+                freeGB = ((statResult.bfree * statResult.bsize) / 1e9).toFixed(1);
+                usedPct = Math.round(((statResult.blocks - statResult.bfree) / statResult.blocks) * 100);
             } catch(e) {}
         }
         
