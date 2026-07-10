@@ -595,7 +595,8 @@ SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 
 # Abrir Firefox ESR en modo Kiosko nativo (oculta al 100% barras de direcciones y marcos por diseño)
-firefox-esr --kiosk "file:///opt/race-control/public/splash.html" &
+# Asignamos la clase "racecontrolgrabador" para que Openbox la posicione en el Monitor 1
+firefox-esr --class racecontrolgrabador --kiosk "file:///opt/race-control/public/splash.html" &
 FIREFOX_PID=$!
 
 # Esperar a que la ventana de Firefox aparezca (xdotool --sync)
@@ -629,19 +630,42 @@ mkdir -p "$REAL_HOME/.config/openbox"
 echo "bash $REAL_HOME/.config/race-control/launch_kiosk.sh &" > "$REAL_HOME/.config/openbox/autostart"
 
 # ── Openbox: rc.xml con regla de fullscreen ──
-# ── Openbox: rc.xml con regla de fullscreen ──
-# Forzar a nivel de Openbox que el navegador Epiphany se dibuje sin decoraciones (bordes) 
-# y en pantalla completa nativa desde el primer milisegundo de su creación.
+# Forzar a nivel de Openbox que el navegador Epiphany y Firefox se dibujen sin decoraciones (bordes) 
+# y se posicionen en sus respectivos monitores de forma nativa.
 if [ -f /etc/xdg/openbox/rc.xml ]; then
     cp /etc/xdg/openbox/rc.xml "$REAL_HOME/.config/openbox/rc.xml"
-    # Insertar reglas específicas de Epiphany en la sección <applications>
-    if grep -q "</applications>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        sed -i '/<\/applications>/i \    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>' "$REAL_HOME/.config/openbox/rc.xml"
-    elif grep -q "</openbox_config>" "$REAL_HOME/.config/openbox/rc.xml"; then
-        sed -i '/<\/openbox_config>/i \  <applications>\n    <application class="epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n    <application class="Epiphany">\n      <decor>no</decor>\n      <fullscreen>yes</fullscreen>\n      <maximized>true</maximized>\n    </application>\n  </applications>' "$REAL_HOME/.config/openbox/rc.xml"
-    fi
+    
+    # Limpiar reglas antiguas de racecontrol si las hubiera
+    sed -i '/racecontrolgrabador/d; /racecontrolmonitor/d; /class="racecontrolgrabador"/,/<\/application>/d; /class="racecontrolmonitor"/,/<\/application>/d' "$REAL_HOME/.config/openbox/rc.xml"
+    
+    # Inyección segura usando awk antes de </applications>
+    tmpfile=$(mktemp)
+    awk '
+    /<\/applications>/ {
+        print "    <application class=\"racecontrolgrabador\">"
+        print "      <decor>no</decor>"
+        print "      <fullscreen>yes</fullscreen>"
+        print "      <maximized>true</maximized>"
+        print "      <position force=\"yes\">"
+        print "        <x>0</x>"
+        print "        <y>0</y>"
+        print "      </position>"
+        print "    </application>"
+        print "    <application class=\"racecontrolmonitor\">"
+        print "      <decor>no</decor>"
+        print "      <fullscreen>yes</fullscreen>"
+        print "      <maximized>true</maximized>"
+        print "      <position force=\"yes\">"
+        print "        <x>-1920</x>"
+        print "        <y>0</y>"
+        print "      </position>"
+        print "    </application>"
+    }
+    { print }
+    ' "$REAL_HOME/.config/openbox/rc.xml" > "$tmpfile"
+    mv "$tmpfile" "$REAL_HOME/.config/openbox/rc.xml"
 else
-    # Crear rc.xml mínimo con la regla nativa de fullscreen para Epiphany
+    # Crear rc.xml mínimo con las reglas nativas multi-pantalla
     cat > "$REAL_HOME/.config/openbox/rc.xml" << 'XML_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -652,20 +676,23 @@ else
   <keyboard/>
   <mouse/>
   <applications>
-    <application class="epiphany">
+    <application class="racecontrolgrabador">
       <decor>no</decor>
       <fullscreen>yes</fullscreen>
       <maximized>true</maximized>
+      <position force="yes">
+        <x>0</x>
+        <y>0</y>
+      </position>
     </application>
-    <application class="Epiphany">
+    <application class="racecontrolmonitor">
       <decor>no</decor>
       <fullscreen>yes</fullscreen>
       <maximized>true</maximized>
-    </application>
-    <application class="*">
-      <decor>no</decor>
-      <fullscreen>yes</fullscreen>
-      <maximized>true</maximized>
+      <position force="yes">
+        <x>-1920</x>
+        <y>0</y>
+      </position>
     </application>
   </applications>
 </openbox_config>

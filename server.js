@@ -513,16 +513,17 @@ app.post('/api/monitor/open', (req, res) => {
     const { exec, spawn } = require('child_process');
     const monitorUrl = `http://localhost:${process.env.PORT || 4000}/monitor.html`;
 
-    // 1. Detectar displays conectados con xrandr
-    exec('xrandr --query', (err, stdout) => {
+    // 1. Detectar displays conectados con xrandr (forzando DISPLAY=:0 para permitir ejecutarlo bajo systemd)
+    exec('DISPLAY=:0 xrandr --query', (err, stdout) => {
         let secondaryDisplay = null;
+        let displaysCount = 0;
 
         if (!err && stdout) {
             // Parsear líneas del tipo: "HDMI-1 connected 1920x1080+1920+0 ..."
             const lines = stdout.split('\n');
             const displays = [];
             lines.forEach(line => {
-                const m = line.match(/^(\S+)\s+connected\s+(?:primary\s+)?(\d+)x(\d+)\+(\d+)\+(\d+)/);
+                const m = line.match(/^(\S+)\s+connected\s+(?:primary\s+)?(\d+)x(\d+)\+(\-?\d+)\+(\-?\d+)/);
                 if (m) {
                     displays.push({
                         name:   m[1],
@@ -536,16 +537,22 @@ app.post('/api/monitor/open', (req, res) => {
             });
 
             console.log(`[MONITOR] Displays detectados: ${displays.map(d => d.name + '@' + d.x + ',' + d.y).join(' | ')}`);
+            displaysCount = displays.length;
 
-            // Preferir el display con offset X o Y distinto de 0 (no-primario)
-            secondaryDisplay = displays.find(d => !d.primary && (d.x > 0 || d.y > 0))
-                            || displays.find(d => !d.primary)
+            // Preferir el display con offset X o Y (no-primario)
+            secondaryDisplay = displays.find(d => !d.primary)
                             || (displays.length > 1 ? displays[1] : null);
         }
 
-        if (!secondaryDisplay || displays.length < 2) {
-            console.log('[MONITOR] Solo hay un monitor conectado. Apertura denegada para no superponer la app.');
+        // Si no hay al menos 2 monitores físicos conectados, denegar la apertura
+        if (displaysCount < 2) {
+            console.log('[MONITOR] No hay un segundo monitor conectado físicamente. Apertura cancelada.');
             return res.json({ ok: false, reason: 'single_display_only' });
+        }
+
+        // Si por algún motivo secundario es null pero hay 2 monitores, asignamos el de la izquierda (x=-1920)
+        if (!secondaryDisplay) {
+            secondaryDisplay = { name: 'HDMI-Left', width: 1920, height: 1080, x: -1920, y: 0 };
         }
 
         console.log(`[MONITOR] Abriendo en display secundario: ${secondaryDisplay.name} (${secondaryDisplay.width}x${secondaryDisplay.height}+${secondaryDisplay.x}+${secondaryDisplay.y})`);
