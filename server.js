@@ -511,7 +511,7 @@ app.post('/api/storage/select', (req, res) => {
  * ======================================= */
 app.post('/api/monitor/open', (req, res) => {
     const { exec, spawn } = require('child_process');
-    const monitorUrl = `http://localhost:${process.env.PORT || 4000}/monitor.html`;
+    const monitorUrl = `http://localhost:${process.env.PORT || 4000}/grabador/index.html?monitor=1#monitor`;
 
     // Procedemos a abrir la ventana directamente sin realizar comprobaciones en el backend,
     // ya que la comprobación de multipantalla se realiza de forma segura en el frontend de la sesión gráfica.
