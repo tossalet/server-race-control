@@ -513,49 +513,10 @@ app.post('/api/monitor/open', (req, res) => {
     const { exec, spawn } = require('child_process');
     const monitorUrl = `http://localhost:${process.env.PORT || 4000}/monitor.html`;
 
-    // 1. Detectar displays conectados con xrandr (forzando DISPLAY=:0 para permitir ejecutarlo bajo systemd)
-    exec('DISPLAY=:0 xrandr --query', (err, stdout) => {
-        let secondaryDisplay = null;
-        let displaysCount = 0;
-
-        if (!err && stdout) {
-            // Parsear líneas del tipo: "HDMI-1 connected 1920x1080+1920+0 ..."
-            const lines = stdout.split('\n');
-            const displays = [];
-            lines.forEach(line => {
-                const m = line.match(/^(\S+)\s+connected\s+(?:primary\s+)?(\d+)x(\d+)\+(\-?\d+)\+(\-?\d+)/);
-                if (m) {
-                    displays.push({
-                        name:   m[1],
-                        width:  parseInt(m[2]),
-                        height: parseInt(m[3]),
-                        x:      parseInt(m[4]),
-                        y:      parseInt(m[5]),
-                        primary: line.includes(' primary ')
-                    });
-                }
-            });
-
-            console.log(`[MONITOR] Displays detectados: ${displays.map(d => d.name + '@' + d.x + ',' + d.y).join(' | ')}`);
-            displaysCount = displays.length;
-
-            // Preferir el display con offset X o Y (no-primario)
-            secondaryDisplay = displays.find(d => !d.primary)
-                            || (displays.length > 1 ? displays[1] : null);
-        }
-
-        // Si no hay al menos 2 monitores físicos conectados, denegar la apertura
-        if (displaysCount < 2) {
-            console.log('[MONITOR] No hay un segundo monitor conectado físicamente. Apertura cancelada.');
-            return res.json({ ok: false, reason: 'single_display_only' });
-        }
-
-        // Si por algún motivo secundario es null pero hay 2 monitores, asignamos el de la izquierda (x=-1920)
-        if (!secondaryDisplay) {
-            secondaryDisplay = { name: 'HDMI-Left', width: 1920, height: 1080, x: -1920, y: 0 };
-        }
-
-        console.log(`[MONITOR] Abriendo en display secundario: ${secondaryDisplay.name} (${secondaryDisplay.width}x${secondaryDisplay.height}+${secondaryDisplay.x}+${secondaryDisplay.y})`);
+    // Procedemos a abrir la ventana directamente sin realizar comprobaciones en el backend,
+    // ya que la comprobación de multipantalla se realiza de forma segura en el frontend de la sesión gráfica.
+    const secondaryDisplay = { name: 'HDMI-Right', width: 1920, height: 1080, x: 1920, y: 0 };
+    console.log(`[MONITOR] Abriendo en display secundario: ${secondaryDisplay.name} (${secondaryDisplay.width}x${secondaryDisplay.height}+${secondaryDisplay.x}+${secondaryDisplay.y})`);
 
         // 2. Lanzar navegador en el display secundario (Firefox prioritario para modo kiosk real)
         const candidates = [
@@ -619,7 +580,6 @@ app.post('/api/monitor/open', (req, res) => {
         }
 
         tryLaunch(0);
-    });
 });
 
 app.get('/api/monitor/debug', (req, res) => {
