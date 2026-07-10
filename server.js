@@ -549,13 +549,13 @@ app.post('/api/monitor/open', (req, res) => {
                     args = [monitorUrl];
                 }
 
-                console.log(`[MONITOR] Lanzando ${bin} ${args.join(' ')}`);
-                const child = spawn(bin, args, {
-                    detached: true,
-                    stdio: 'ignore',
-                    env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' }
+                const cmdArgs = args.map(arg => `"${arg}"`).join(' ');
+                const runCmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority ${bin} ${cmdArgs}`;
+                console.log(`[MONITOR] Ejecutando comando de lanzamiento nativo: ${runCmd}`);
+                
+                exec(`${runCmd} &`, (err) => {
+                    if (err) console.error('[MONITOR] Error en spawn nativo del navegador:', err.message);
                 });
-                child.unref();
 
                 // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
                 setTimeout(() => {
