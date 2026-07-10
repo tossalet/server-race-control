@@ -541,8 +541,14 @@ app.post('/api/monitor/open', (req, res) => {
 
                 let args;
                 if (isFirefox(bin)) {
-                    // Creamos una clase de ventana única "racecontrolmonitor" y evitamos compartir instancia
-                    args = [`--class`, `racecontrolmonitor`, `--new-window`, monitorUrl, `--kiosk`, `--no-remote`];
+                    // Creamos una clase única, forzamos proceso independiente (--no-remote) y usamos perfil aislado temporal
+                    args = [
+                        `--class`, `racecontrolmonitor`, 
+                        `--no-remote`, 
+                        `-profile`, `/tmp/firefox_monitor`, 
+                        `--new-window`, monitorUrl, 
+                        `--kiosk`
+                    ];
                 } else if (isEpiphany(bin)) {
                     args = [`--new-window`, monitorUrl];
                 } else {
