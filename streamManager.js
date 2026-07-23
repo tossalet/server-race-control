@@ -372,8 +372,18 @@ function startInput(inputObj) {
         codec: inputObj.codec || persistentCodecs[channel] || ''
     };
     
-    // Solo extraer un frame inicial al conectar para no consumir recursos en segundo plano
+    // Fase 1: Extraer un frame inicial inmediato para tener thumbnail visible cuanto antes
     startPreview(channel, true);
+
+    // Fase 2: Programar preview continuo (0.5fps) automáticamente tras 12s
+    // Esto permite que el stream se estabilice antes de activar el proceso continuo.
+    // El preview continuo garantiza thumbnails actualizados sin intervención del operador.
+    activeInputs[channel].autoPreviewTimer = setTimeout(() => {
+        if (activeInputs[channel] && !activeInputs[channel].isStopping && !activeInputs[channel].prevProcess) {
+            console.log(`[PREVIEW CH-${channel}] Activando preview continuo automático tras estabilización del stream`);
+            startPreview(channel, false);
+        }
+    }, 12000);
 
     return true;
 }
@@ -385,7 +395,7 @@ function startPreview(channel, singleFrame = false) {
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const ffmpegCmd = getFFmpegPath();
     
-    // Usamos CPU siempre para los thumbnails (es 1 fps y asegura máxima compatibilidad independientemente del códec)
+    // Usamos CPU siempre para los thumbnails (baja carga: 0.5fps, 240px — máxima compatibilidad independientemente del códec)
     const args = [ 
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt',
@@ -394,7 +404,7 @@ function startPreview(channel, singleFrame = false) {
         '-analyzeduration', '500000',
         '-f', 'mpegts', '-i', '-',
         '-map', '0:v?',
-        '-vf', 'scale=320:-1',
+        '-vf', singleFrame ? 'scale=240:-1' : 'fps=0.5,scale=240:-1',
         '-q:v', '5',
         '-f', 'image2',
         '-update', '1'
@@ -402,8 +412,6 @@ function startPreview(channel, singleFrame = false) {
 
     if (singleFrame) {
         args.push('-frames:v', '1');
-    } else {
-        args.push('-r', '1');
     }
     
     const outPath = extPath + '.jpg';
@@ -502,11 +510,8 @@ function stopPreview(channel) {
             inp.prevSubscriber = null;
         }
     }
-    // Borrar el archivo de imagen de previsualización para no servir capturas obsoletas
-    const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`);
-    if (fs.existsSync(extPath)) {
-        try { fs.unlinkSync(extPath); } catch(e){}
-    }
+    // NO borrar el archivo thumb_X.jpg aquí — permite que el último frame capturado
+    // siga visible en la UI. Solo se borra al hacer stopInput() (línea 314-316).
 }
 
 /**
@@ -516,6 +521,7 @@ function stopInput(channel) {
     if (activeInputs[channel]) {
         console.log(`[STOPPING INPUT ${channel}] Killing process and router...`);
         if (activeInputs[channel].autoRestart) clearTimeout(activeInputs[channel].autoRestart);
+        if (activeInputs[channel].autoPreviewTimer) clearTimeout(activeInputs[channel].autoPreviewTimer);
         
         if (activeInputs[channel].process) {
             if (typeof activeInputs[channel].process.markIntentionalStop === 'function') {

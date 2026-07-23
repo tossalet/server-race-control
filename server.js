@@ -562,74 +562,108 @@ app.post('/api/monitor/open', (req, res) => {
         });
     } else {
         // LINUX (Debian 13 u otros)
-        // 2. Lanzar navegador en el display secundario (Firefox prioritario para modo kiosk real)
-        const candidates = [
-            'firefox',
-            'firefox-esr',
-            'epiphany-browser',
-            'epiphany'
-        ];
-
-        const isFirefox = (bin) => bin.startsWith('firefox');
-        const isEpiphany = (bin) => bin.startsWith('epiphany');
-
-        function tryLaunch(index) {
-            if (index >= candidates.length) {
-                console.log('[MONITOR] No se encontró ningún navegador instalado.');
-                return res.json({ ok: false, reason: 'no_browser', fallback: true });
-            }
-            const bin = candidates[index];
-            // Verificar si existe antes de lanzar
-            exec(`which ${bin}`, (werr, wout) => {
-                if (werr || !wout.trim()) return tryLaunch(index + 1);
-
-                let args;
-                if (isFirefox(bin)) {
-                    // Creamos una clase única, forzamos proceso independiente (--no-remote) y usamos perfil aislado temporal
-                    args = [
-                        `--class`, `racecontrolmonitor`, 
-                        `--no-remote`, 
-                        `-profile`, `/home/racecontrol/.config/firefox_monitor`, 
-                        `--new-window`, monitorUrl, 
-                        `--kiosk`
-                    ];
-                } else if (isEpiphany(bin)) {
-                    args = [`--new-window`, monitorUrl];
-                } else {
-                    args = [monitorUrl];
-                }
-
-                const cmdArgs = args.map(arg => `"${arg}"`).join(' ');
-                const runCmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority ${bin} ${cmdArgs}`;
-                console.log(`[MONITOR] Ejecutando comando de lanzamiento nativo: ${runCmd}`);
+        // 1. Verificar pantallas conectadas via xrandr para no abrir si solo hay 1 monitor
+        const checkCmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority xrandr --query 2>/dev/null || DISPLAY=:0 xrandr --query 2>/dev/null`;
+        
+        exec(checkCmd, (xerr, xstdout) => {
+            let secondaryDisplay = null;
+            
+            if (!xerr && xstdout) {
+                const connectedLines = xstdout.split('\n').filter(line => /\bconnected\b/i.test(line));
+                console.log(`[MONITOR] Pantallas detectadas via xrandr: ${connectedLines.length}`);
                 
-                exec(`${runCmd} &`, (err) => {
-                    if (err) console.error('[MONITOR] Error en spawn nativo del navegador:', err.message);
-                });
+                if (connectedLines.length < 2) {
+                    console.log('[MONITOR] Cancelado: Solo se detecta 1 pantalla conectada.');
+                    return res.json({ ok: false, reason: 'no_secondary_display' });
+                }
+                
+                // Buscar la pantalla secundaria (la que no sea 'primary' o la segunda de la lista)
+                const secLine = connectedLines.find(line => !line.includes('primary')) || connectedLines[1];
+                if (secLine) {
+                    const match = secLine.match(/(\d+)x(\d+)\+(\d+)\+(\d+)/);
+                    if (match) {
+                        secondaryDisplay = {
+                            width: parseInt(match[1]),
+                            height: parseInt(match[2]),
+                            x: parseInt(match[3]),
+                            y: parseInt(match[4])
+                        };
+                    }
+                }
+            }
+            
+            if (!secondaryDisplay) {
+                secondaryDisplay = { name: 'HDMI-Right', width: 1920, height: 1080, x: 1920, y: 0 };
+            }
 
-                // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
-                setTimeout(() => {
-                    // Buscamos prioritariamente el título exclusivo que hemos definido para el monitor de multiview
-                    const moveCmd = `(xdotool search --name "RACE CONTROL MONITOR PANTALLA SECUNDARIA" || xdotool search --class "racecontrolmonitor") | while read id; do ` +
-                                    `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
-                                    `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
-                                    `  xdotool windowactivate "$id" 2>/dev/null && ` +
-                                    `  xdotool key --window "$id" F11 2>/dev/null; ` +
-                                    `done || ` +
-                                    `(wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -b add,fullscreen)`;
+            const candidates = [
+                'firefox',
+                'firefox-esr',
+                'epiphany-browser',
+                'epiphany'
+            ];
+
+            const isFirefox = (bin) => bin.startsWith('firefox');
+            const isEpiphany = (bin) => bin.startsWith('epiphany');
+
+            function tryLaunch(index) {
+                if (index >= candidates.length) {
+                    console.log('[MONITOR] No se encontró ningún navegador instalado.');
+                    return res.json({ ok: false, reason: 'no_browser', fallback: true });
+                }
+                const bin = candidates[index];
+                // Verificar si existe antes de lanzar
+                exec(`which ${bin}`, (werr, wout) => {
+                    if (werr || !wout.trim()) return tryLaunch(index + 1);
+
+                    let args;
+                    if (isFirefox(bin)) {
+                        // Creamos una clase única, forzamos proceso independiente (--no-remote) y usamos perfil aislado temporal
+                        args = [
+                            `--class`, `racecontrolmonitor`, 
+                            `--no-remote`, 
+                            `-profile`, `/home/racecontrol/.config/firefox_monitor`, 
+                            `--new-window`, monitorUrl, 
+                            `--kiosk`
+                        ];
+                    } else if (isEpiphany(bin)) {
+                        args = [`--new-window`, monitorUrl];
+                    } else {
+                        args = [monitorUrl];
+                    }
+
+                    const cmdArgs = args.map(arg => `"${arg}"`).join(' ');
+                    const runCmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority ${bin} ${cmdArgs}`;
+                    console.log(`[MONITOR] Ejecutando comando de lanzamiento nativo: ${runCmd}`);
                     
-                    console.log(`[MONITOR] Ejecutando comando de reposicionamiento robusto: ${moveCmd}`);
-                    exec(moveCmd, (err) => {
-                        if (err) console.error('[MONITOR] Error reposicionando ventana:', err.message);
-                        else console.log('[MONITOR] Ventana reposicionada con éxito.');
+                    exec(`${runCmd} &`, (err) => {
+                        if (err) console.error('[MONITOR] Error en spawn nativo del navegador:', err.message);
                     });
-                }, 3000); // Damos 3 segundos de margen para que el navegador cree e inicialice la ventana en X11
 
-                res.json({ ok: true, browser: bin, display: secondaryDisplay });
-            });
-        }
+                    // Forzar el posicionamiento en la pantalla secundaria para todos los navegadores
+                    setTimeout(() => {
+                        // Buscamos prioritariamente el título exclusivo que hemos definido para el monitor de multiview
+                        const moveCmd = `(xdotool search --name "RACE CONTROL MONITOR PANTALLA SECUNDARIA" || xdotool search --class "racecontrolmonitor") | while read id; do ` +
+                                        `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
+                                        `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
+                                        `  xdotool windowactivate "$id" 2>/dev/null && ` +
+                                        `  xdotool key --window "$id" F11 2>/dev/null; ` +
+                                        `done || ` +
+                                        `(wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -b add,fullscreen)`;
+                        
+                        console.log(`[MONITOR] Ejecutando comando de reposicionamiento robusto: ${moveCmd}`);
+                        exec(moveCmd, (err) => {
+                            if (err) console.error('[MONITOR] Error reposicionando ventana:', err.message);
+                            else console.log('[MONITOR] Ventana reposicionada con éxito.');
+                        });
+                    }, 3000); // Damos 3 segundos de margen para que el navegador cree e inicialice la ventana en X11
 
-        tryLaunch(0);
+                    res.json({ ok: true, browser: bin, display: secondaryDisplay });
+                });
+            }
+
+            tryLaunch(0);
+        });
     }
 });
 
