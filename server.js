@@ -618,11 +618,9 @@ app.post('/api/monitor/open', (req, res) => {
 
                     let args;
                     if (isFirefox(bin)) {
-                        // Creamos una clase única, forzamos proceso independiente (--no-remote) y usamos perfil aislado temporal
+                        // Usamos el MISMO perfil que el panel de control para que BroadcastChannel funcione.
                         args = [
                             `--class`, `racecontrolmonitor`, 
-                            `--no-remote`, 
-                            `-profile`, `/home/racecontrol/.config/firefox_monitor`, 
                             `--new-window`, monitorUrl, 
                             `--kiosk`
                         ];
