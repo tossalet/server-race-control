@@ -1202,7 +1202,8 @@ app.post('/api/recordings/start', (req, res) => {
                     '-err_detect', 'ignore_err',
                     '-probesize', '500000',
                     '-analyzeduration', '500000',
-                    '-thread_queue_size', '4096'
+                    '-thread_queue_size', '4096',
+                    '-f', 'mpegts'
                 ];
 
                 // IMPORTANTE: Decodificamos en CPU porque los streams TCP crudos (sin cabeceras) cuelgan la decodificación por hardware (hevc_cuvid).
