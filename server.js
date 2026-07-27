@@ -1230,8 +1230,8 @@ app.post('/api/recordings/start', (req, res) => {
                 // Para el output copia, necesitamos leer del stream mapeado (sin pasar por CUDA)
                 const mp4OutArgs = [
                     '-map', '0:v?', '-map', '0:a?',
-                    '-c', 'copy',
-                    '-bsf:a', 'aac_adtstoasc',
+                    '-c:v', 'copy',
+                    '-c:a', 'aac', '-b:a', '128k',
                     '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
                     '-f', 'mp4', mp4Path
                 ];
