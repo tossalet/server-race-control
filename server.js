@@ -1995,8 +1995,8 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-y',
             '-fflags', '+genpts+discardcorrupt',
             '-err_detect', 'ignore_err',
-            '-probesize', '100000',
-            '-analyzeduration', '100000'
+            '-probesize', '5000000',
+            '-analyzeduration', '5000000'
         ];
 
         // IMPORTANTE: NO usamos -hwaccel cuda ni hevc_cuvid para DECODIFICAR desde stdin
@@ -2024,8 +2024,8 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             '-y',
             '-fflags', '+genpts+discardcorrupt',
             '-err_detect', 'ignore_err',
-            '-probesize', '100000',
-            '-analyzeduration', '100000',
+            '-probesize', '5000000',
+            '-analyzeduration', '5000000',
             '-f', 'mpegts',
             '-i', '-',
             '-map', '0:v?', '-map', '0:a?',
@@ -2088,8 +2088,8 @@ app.get('/api/preview/ts/:channel', (req, res) => {
                 '-y',
                 '-fflags', '+genpts+discardcorrupt',
                 '-err_detect', 'ignore_err',
-                '-probesize', '100000',
-                '-analyzeduration', '100000',
+                '-probesize', '5000000',
+                '-analyzeduration', '5000000',
                 '-f', 'mpegts',
                 '-i', '-',
                 '-map', '0:v?', '-map', '0:a?',
