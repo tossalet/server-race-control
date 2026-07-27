@@ -541,6 +541,22 @@ app.post('/api/storage/select', (req, res) => {
 /* =======================================
  *  API: LANZAR MONITOR EN SEGUNDO DISPLAY (Linux)
  * ======================================= */
+    let monitorClients = [];
+
+    app.get('/api/monitor/events', (req, res) => {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        monitorClients.push(res);
+        req.on('close', () => { monitorClients = monitorClients.filter(c => c !== res); });
+    });
+
+    app.post('/api/monitor/command', (req, res) => {
+        const cmd = req.body;
+        monitorClients.forEach(c => c.write(`data: ${JSON.stringify(cmd)}\n\n`));
+        res.sendStatus(200);
+    });
+
 app.post('/api/monitor/open', (req, res) => {
     const { exec } = require('child_process');
     const os = require('os');
@@ -618,9 +634,11 @@ app.post('/api/monitor/open', (req, res) => {
 
                     let args;
                     if (isFirefox(bin)) {
-                        // Usamos el MISMO perfil que el panel de control para que BroadcastChannel funcione.
+                        // Usamos un perfil aislado para evitar bloqueos (SSE se encargará de la sincronización)
                         args = [
-                            `--class`, `racecontrolmonitor`, 
+                            `--class`, `racecontrolmonitor`,
+                            `--no-remote`,
+                            `-profile`, `/home/racecontrol/.config/firefox_monitor`,
                             `--new-window`, monitorUrl, 
                             `--kiosk`
                         ];
