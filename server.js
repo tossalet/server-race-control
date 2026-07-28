@@ -1117,6 +1117,17 @@ function stopAllRecordings() {
             try { child.stdin.write('q'); } catch (e) {}
             try { child.kill('SIGTERM'); } catch (e) {}
         });
+
+        if (activeRecordingProcs[sid].sockets) {
+            activeRecordingProcs[sid].sockets.forEach(({ sock, channel, isDirectObj }) => {
+                const routerState = streamManager.activeInputs[channel];
+                if (routerState && routerState.router) {
+                    routerState.router.subscribers.delete(sock);
+                }
+                if (!isDirectObj && sock.destroy) sock.destroy();
+            });
+        }
+        
         delete activeRecordingProcs[sid];
         console.log(`[REC] Stopped previous session ${sid} (${procs.length} processes)`);
     });
@@ -1253,6 +1264,7 @@ app.post('/api/recordings/start', (req, res) => {
                         });
                         
                         // Suscribir el fallback a stdin
+                        fallbackChild.stdin.on('error', () => {});
                         const fallbackSub = {
                             write(chunk) {
                                 try {
@@ -1273,6 +1285,7 @@ app.post('/api/recordings/start', (req, res) => {
                 activeRecordingProcs[sessionId].push(child);
 
                 // Suscribir el proceso principal a stdin
+                child.stdin.on('error', () => {});
                 const subObj = {
                     write(chunk) {
                         try {
