@@ -1203,49 +1203,19 @@ app.post('/api/recordings/start', (req, res) => {
                     '-probesize', '500000',
                     '-analyzeduration', '500000',
                     '-thread_queue_size', '4096',
-                    '-f', 'mpegts'
-                ];
-
-                // IMPORTANTE: Decodificamos en CPU porque los streams TCP crudos (sin cabeceras) cuelgan la decodificación por hardware (hevc_cuvid).
-                // La codificación seguirá usando la GPU (NVENC) a través de getH264EncoderArgs.
-                // if (isH265 && streamManager.nvencAvailable) {
-                //     args.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-c:v', 'hevc_cuvid');
-                // }
-
-                args.push('-i', `tcp://127.0.0.1:${recPort}?listen`);
-
-                // --- HLS output (transcodificado a H.264 si es H.265 para reproducción en navegador) ---
-                const hlsOutArgs = [
-                    '-map', '0:v?', '-map', '0:a?',
-                    ...hlsCodecArgs,
-                    '-c:a', 'aac', '-b:a', '128k',
-                    '-bsf:a', 'aac_adtstoasc',
-                    '-hls_time', '2',
-                    '-hls_list_size', '0',
-                    '-hls_segment_type', 'mpegts',
-                    '-f', 'hls', hlsPath
-                ];
-
-                // --- MP4 output (siempre copia de flujo original para rendimiento y exportación ultrarrápida) ---
-                // Para el output copia, necesitamos leer del stream mapeado (sin pasar por CUDA)
-                const mp4OutArgs = [
-                    '-map', '0:v?', '-map', '0:a?',
-                    '-c:v', 'copy',
-                    '-c:a', 'aac', '-b:a', '128k',
-                    '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-                    '-f', 'mp4', mp4Path
+                    '-f', 'mpegts',
+                    '-i', '-'
                 ];
 
                 args.push(...hlsOutArgs, ...mp4OutArgs);
 
-                console.log(`[REC-START] Session ${sessionId} ch${input.channel} via TCP router :${recPort}`);
+                console.log(`[REC-START] Session ${sessionId} ch${input.channel} via stdin`);
                 const child = spawn(ffmpegCmd, args);
 
                 // Throttle stderr — solo errores reales, silenciar warnings de HEVC/AAC ya corregidos
                 let lastRecLog = 0;
                 child.stderr.on('data', d => {
                     const text = d.toString();
-                    // Ignorar warnings conocidos y no críticos (PPS HEVC, NALU skip, AAC ya corregido, parsing NAL unit, hevc)
                     const isKnownNoise = /PPS id out of range|Skipping invalid undecodable NALU|aac_adtstoasc|Last message repeated|Malformed AAC|Error parsing NAL unit|hevc/i.test(text);
                     if (isKnownNoise) return;
                     const isImportant = /error|fail|unable|operation not permitted/i.test(text);
@@ -1255,7 +1225,6 @@ app.post('/api/recordings/start', (req, res) => {
                         if (line) broadCastLog('WARN', `[REC-${sessionId}|ch${input.channel}] ${line}`);
                     } else if (now - lastRecLog > 8000) {
                         lastRecLog = now;
-                        // No loguear nada rutinario al servidor — reducir ruido
                     }
                 });
                 const recStartTime = Date.now();
@@ -1269,12 +1238,9 @@ app.post('/api/recordings/start', (req, res) => {
                         broadCastLog('WARN', `⚠️ [REC-${sessionId}] Fallo de decodificador GPU en grabación para canal ${input.channel}. Reintentando con CPU de forma segura...`);
                         didFallback = true;
                         
-                        // Volver a lanzar el proceso sin CUDA
                         const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid'].includes(arg));
-                        // Reemplazar el HLS codec de CUDA por copia/libx264 tradicional si fuese necesario
                         const fallbackChild = spawn(ffmpegCmd, cleanArgs);
                         
-                        // Reemplazar la referencia en memoria
                         const pIdx = activeRecordingProcs[sessionId].indexOf(child);
                         if (pIdx !== -1) {
                             activeRecordingProcs[sessionId][pIdx] = fallbackChild;
@@ -1286,44 +1252,41 @@ app.post('/api/recordings/start', (req, res) => {
                             broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
                         });
                         
-                        // Reconectar socket al nuevo puerto tras 1.5s
-                        setTimeout(() => {
-                            if (fallbackChild.exitCode !== null) return;
-                            const sock = net.createConnection(recPort, '127.0.0.1', () => {
-                                routerState.router.subscribers.add(sock);
-                                console.log(`[REC-FALLBACK] Ch${input.channel} suscrito al router TCP :${recPort}`);
-                            });
-                            sock.on('error', err => originalLog(`[REC] fallback sock error ch${input.channel}: ${err.message}`));
-                            sock.on('close', () => {
-                                if (streamManager.activeInputs[input.channel] && streamManager.activeInputs[input.channel].router) {
-                                    streamManager.activeInputs[input.channel].router.subscribers.delete(sock);
-                                }
-                            });
-                            activeRecordingProcs[sessionId].sockets.push({ sock, channel: input.channel });
-                        }, 1500);
+                        // Suscribir el fallback a stdin
+                        const fallbackSub = {
+                            write(chunk) {
+                                try {
+                                    if (!fallbackChild.killed && fallbackChild.stdin && fallbackChild.stdin.writable) {
+                                        fallbackChild.stdin.write(chunk);
+                                    }
+                                } catch(e) {}
+                            }
+                        };
+                        const routerState = streamManager.activeInputs[input.channel];
+                        if (routerState && routerState.router) {
+                            routerState.router.subscribers.add(fallbackSub);
+                        }
+                        activeRecordingProcs[sessionId].sockets.push({ sock: fallbackSub, channel: input.channel, isDirectObj: true });
                     }
                 });
 
                 activeRecordingProcs[sessionId].push(child);
 
-                // Conectar al router 1.5s después de que FFmpeg esté en escucha
-                setTimeout(() => {
-                    if (child.exitCode !== null || didFallback) return; // ya terminó o fallback activo
-                    const routerState = streamManager.activeInputs[input.channel];
-                    if (!routerState || !routerState.router) return;
-
-                    const sock = net.createConnection(recPort, '127.0.0.1', () => {
-                        routerState.router.subscribers.add(sock);
-                        console.log(`[REC] Ch${input.channel} suscrito al router TCP :${recPort}`);
-                    });
-                    sock.on('error', err => originalLog(`[REC] sock error ch${input.channel}: ${err.message}`));
-                    sock.on('close', () => {
-                        if (streamManager.activeInputs[input.channel] && streamManager.activeInputs[input.channel].router) {
-                            streamManager.activeInputs[input.channel].router.subscribers.delete(sock);
-                        }
-                    });
-                    activeRecordingProcs[sessionId].sockets.push({ sock, channel: input.channel });
-                }, 1500);
+                // Suscribir el proceso principal a stdin
+                const subObj = {
+                    write(chunk) {
+                        try {
+                            if (!child.killed && child.stdin && child.stdin.writable) {
+                                child.stdin.write(chunk);
+                            }
+                        } catch(e) {}
+                    }
+                };
+                const routerState = streamManager.activeInputs[input.channel];
+                if (routerState && routerState.router) {
+                    routerState.router.subscribers.add(subObj);
+                }
+                activeRecordingProcs[sessionId].sockets.push({ sock: subObj, channel: input.channel, isDirectObj: true });
 
                 // Guardar rutas de fichero para exportación
                 db.run(`INSERT OR REPLACE INTO session_files
