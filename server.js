@@ -1218,6 +1218,24 @@ app.post('/api/recordings/start', (req, res) => {
                     '-i', '-'
                 ];
 
+                const hlsOutArgs = [
+                    '-map', '0:v?', '-map', '0:a?',
+                    ...hlsCodecArgs,
+                    '-c:a', 'aac', '-b:a', '128k',
+                    '-hls_time', '2',
+                    '-hls_list_size', '0',
+                    '-hls_segment_type', 'mpegts',
+                    '-f', 'hls', hlsPath
+                ];
+
+                const mp4OutArgs = [
+                    '-map', '0:v?', '-map', '0:a?',
+                    '-c:v', 'copy',
+                    '-c:a', 'aac', '-b:a', '128k',
+                    '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+                    '-f', 'mp4', mp4Path
+                ];
+
                 args.push(...hlsOutArgs, ...mp4OutArgs);
 
                 console.log(`[REC-START] Session ${sessionId} ch${input.channel} via stdin`);
