@@ -1118,6 +1118,10 @@ function stopAllRecordings() {
             try { child.kill('SIGTERM'); } catch (e) {}
         });
 
+        if (activeRecordingProcs[sid].lateJoinWatcher) {
+            clearInterval(activeRecordingProcs[sid].lateJoinWatcher);
+        }
+
         if (activeRecordingProcs[sid].sockets) {
             activeRecordingProcs[sid].sockets.forEach(({ sock, channel, isDirectObj }) => {
                 const routerState = streamManager.activeInputs[channel];
@@ -1177,35 +1181,25 @@ app.post('/api/recordings/start', (req, res) => {
             const { spawn } = require('child_process');
             const ffmpegCmd = streamManager.getFFmpegPath();
 
-            const net = require('net');
-
             activeRecordingProcs[sessionId] = [];
             activeRecordingProcs[sessionId].sockets = []; // cleanup sockets on stop
+            activeRecordingProcs[sessionId].recordingChannels = new Set(); // canales ya en grabación
 
-            inputs.forEach(input => {
-                // Verificar que el router del input está activo
+            // ── Función reutilizable: iniciar grabación de un canal individual ──
+            function startRecordingChannel(input) {
                 const inputState = streamManager.activeInputs[input.channel];
-                if (!inputState || !inputState.router) {
-                    console.log(`[REC] Ch${input.channel} router not active — skipping`);
-                    return;
-                }
+                if (!inputState || !inputState.router) return false;
+                if (!activeRecordingProcs[sessionId]) return false;
+                if (activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) return false;
 
-                // ← Nombre de archivo consistente con lo que el frontend busca: CAM_{channel}_{sessionId}
-                const hlsPath  = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.m3u8`);
-                const mp4Path  = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.mp4`);
+                const hlsPath = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.m3u8`);
+                const mp4Path = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.mp4`);
 
-                // Puerto TCP local donde el FFmpeg de grabación escucha
-                const recPort = 42000 + Math.floor(Math.random() * 15000);
-
-                // FFmpeg lee del router (TCP local) en lugar de RTSP directo
-                // Evita abrir una 2ª conexión RTSP a la cámara (que la rechazaría)
                 const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
                 const isH265 = codec.toLowerCase().includes('265') || codec.toLowerCase().includes('hevc');
                 const hlsCodecArgs = isH265
                     ? streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28, hwaccel: streamManager.nvencAvailable ? 'cuda' : undefined })
-                    : [
-                        '-c:v', 'copy',
-                      ];
+                    : ['-c:v', 'copy'];
 
                 const args = [
                     '-hide_banner', '-y',
@@ -1241,7 +1235,6 @@ app.post('/api/recordings/start', (req, res) => {
                 console.log(`[REC-START] Session ${sessionId} ch${input.channel} via stdin`);
                 const child = spawn(ffmpegCmd, args);
 
-                // Throttle stderr — solo errores reales, silenciar warnings de HEVC/AAC ya corregidos
                 let lastRecLog = 0;
                 child.stderr.on('data', d => {
                     const text = d.toString();
@@ -1270,39 +1263,39 @@ app.post('/api/recordings/start', (req, res) => {
                         const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid'].includes(arg));
                         const fallbackChild = spawn(ffmpegCmd, cleanArgs);
                         
-                        const pIdx = activeRecordingProcs[sessionId].indexOf(child);
-                        if (pIdx !== -1) {
-                            activeRecordingProcs[sessionId][pIdx] = fallbackChild;
-                        } else {
-                            activeRecordingProcs[sessionId].push(fallbackChild);
-                        }
-                        
-                        fallbackChild.on('exit', fCode => {
-                            broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
-                        });
-                        
-                        // Suscribir el fallback a stdin
-                        fallbackChild.stdin.on('error', () => {});
-                        const fallbackSub = {
-                            write(chunk) {
-                                try {
-                                    if (!fallbackChild.killed && fallbackChild.stdin && fallbackChild.stdin.writable) {
-                                        fallbackChild.stdin.write(chunk);
-                                    }
-                                } catch(e) {}
+                        if (activeRecordingProcs[sessionId]) {
+                            const pIdx = activeRecordingProcs[sessionId].indexOf(child);
+                            if (pIdx !== -1) {
+                                activeRecordingProcs[sessionId][pIdx] = fallbackChild;
+                            } else {
+                                activeRecordingProcs[sessionId].push(fallbackChild);
                             }
-                        };
-                        const routerState = streamManager.activeInputs[input.channel];
-                        if (routerState && routerState.router) {
-                            routerState.router.subscribers.add(fallbackSub);
+                            
+                            fallbackChild.on('exit', fCode => {
+                                broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
+                            });
+                            
+                            fallbackChild.stdin.on('error', () => {});
+                            const fallbackSub = {
+                                write(chunk) {
+                                    try {
+                                        if (!fallbackChild.killed && fallbackChild.stdin && fallbackChild.stdin.writable) {
+                                            fallbackChild.stdin.write(chunk);
+                                        }
+                                    } catch(e) {}
+                                }
+                            };
+                            const routerState2 = streamManager.activeInputs[input.channel];
+                            if (routerState2 && routerState2.router) {
+                                routerState2.router.subscribers.add(fallbackSub);
+                            }
+                            activeRecordingProcs[sessionId].sockets.push({ sock: fallbackSub, channel: input.channel, isDirectObj: true });
                         }
-                        activeRecordingProcs[sessionId].sockets.push({ sock: fallbackSub, channel: input.channel, isDirectObj: true });
                     }
                 });
 
                 activeRecordingProcs[sessionId].push(child);
 
-                // Suscribir el proceso principal a stdin
                 child.stdin.on('error', () => {});
                 const subObj = {
                     write(chunk) {
@@ -1319,15 +1312,44 @@ app.post('/api/recordings/start', (req, res) => {
                 }
                 activeRecordingProcs[sessionId].sockets.push({ sock: subObj, channel: input.channel, isDirectObj: true });
 
-                // Guardar rutas de fichero para exportación
                 db.run(`INSERT OR REPLACE INTO session_files
                     (session_id, channel, hls_path, mp4_path) VALUES (?,?,?,?)`,
                     [sessionId, input.channel, hlsPath, mp4Path]);
+
+                activeRecordingProcs[sessionId].recordingChannels.add(input.channel);
+                return true;
+            }
+
+            // ── Iniciar grabación de todos los canales disponibles ahora ──
+            let startedCount = 0;
+            inputs.forEach(input => {
+                const ok = startRecordingChannel(input);
+                if (ok) startedCount++;
+                else console.log(`[REC] Ch${input.channel} router not active — will retry later`);
             });
 
+            // ── Watcher: comprobar cada 10s si hay canales que se reconectaron y añadirlos ──
+            const lateJoinWatcher = setInterval(() => {
+                if (!activeRecordingProcs[sessionId]) {
+                    clearInterval(lateJoinWatcher);
+                    return;
+                }
+                inputs.forEach(input => {
+                    if (!activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) {
+                        const inputState = streamManager.activeInputs[input.channel];
+                        if (inputState && inputState.router) {
+                            console.log(`[REC-LATE-JOIN] Ch${input.channel} reconectada — iniciando grabación tardía`);
+                            broadCastLog('INFO', `📹 Canal ${input.channel} reconectado, grabación iniciada tardíamente`);
+                            startRecordingChannel(input);
+                        }
+                    }
+                });
+            }, 10000);
+            // Guardar referencia al watcher para limpiarlo al parar
+            activeRecordingProcs[sessionId].lateJoinWatcher = lateJoinWatcher;
 
             io.emit('db_update', { event: 'recordings_started', session_id: sessionId });
-            res.json({ session_id: sessionId, start_time: startTime, message: `Started ${inputs.length} recordings.` });
+            res.json({ session_id: sessionId, start_time: startTime, message: `Started ${startedCount}/${inputs.length} recordings.` });
         });
     });
 });
@@ -1337,6 +1359,11 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
     const session = activeRecordingProcs[sessionId] || [];
     const procs = Array.isArray(session) ? session : [];
     const sockets = session.sockets || [];
+
+    // Parar watcher de reconexión tardía
+    if (session.lateJoinWatcher) {
+        clearInterval(session.lateJoinWatcher);
+    }
 
     // Desconectar sockets del router
     sockets.forEach(({ sock, channel }) => {
