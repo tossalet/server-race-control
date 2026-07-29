@@ -1273,6 +1273,9 @@ app.post('/api/recordings/start', (req, res) => {
                             
                             fallbackChild.on('exit', fCode => {
                                 broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
+                                if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
+                                    activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
+                                }
                             });
                             
                             fallbackChild.stdin.on('error', () => {});
@@ -1290,6 +1293,11 @@ app.post('/api/recordings/start', (req, res) => {
                                 routerState2.router.subscribers.add(fallbackSub);
                             }
                             activeRecordingProcs[sessionId].sockets.push({ sock: fallbackSub, channel: input.channel, isDirectObj: true });
+                        }
+                    } else {
+                        // Limpiar el canal para que el watcher pueda intentar reiniciarlo si la cámara vuelve
+                        if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
+                            activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
                         }
                     }
                 });

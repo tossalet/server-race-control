@@ -375,27 +375,20 @@ function startInput(inputObj) {
     // Fase 1: Extraer un frame inicial inmediato para tener thumbnail visible cuanto antes
     startPreview(channel, true);
 
-    // Fase 2: Programar preview continuo (0.5fps) automáticamente tras 12s
-    // Esto permite que el stream se estabilice antes de activar el proceso continuo.
-    // El preview continuo garantiza thumbnails actualizados sin intervención del operador.
-    activeInputs[channel].autoPreviewTimer = setTimeout(() => {
-        if (activeInputs[channel] && !activeInputs[channel].isStopping && !activeInputs[channel].prevProcess) {
-            console.log(`[PREVIEW CH-${channel}] Activando preview continuo automático tras estabilización del stream`);
-            startPreview(channel, false);
-        }
-    }, 12000);
-
     return true;
 }
 
-function startPreview(channel, singleFrame = false) {
+// Retraso escalonado para evitar spawn UNKNOWN si entran muchas cámaras a la vez
+let previewQueueDelay = 0;
+
+function startPreview(channel, singleFrame = true) {
     if (!activeInputs[channel] || !activeInputs[channel].router) return;
     if (activeInputs[channel].prevProcess) stopPreview(channel);
 
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const ffmpegCmd = getFFmpegPath();
     
-    // Usamos CPU siempre para los thumbnails (baja carga: 0.5fps, 240px — máxima compatibilidad independientemente del códec)
+    // Generar un único frame al principio para usar de thumbnail estático
     const args = [ 
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt',
@@ -404,20 +397,17 @@ function startPreview(channel, singleFrame = false) {
         '-analyzeduration', '500000',
         '-f', 'mpegts', '-i', '-',
         '-map', '0:v?',
-        '-vf', singleFrame ? 'scale=240:-1' : 'fps=0.5,scale=240:-1',
+        '-vf', 'scale=240:-1',
         '-q:v', '5',
+        '-frames:v', '1',
         '-f', 'image2',
         '-update', '1'
     ];
-
-    if (singleFrame) {
-        args.push('-frames:v', '1');
-    }
     
     const outPath = extPath + '.jpg';
     args.push(outPath);
 
-    console.log(`[PREVIEW START CH-${channel}] ${singleFrame ? 'single' : 'continuous'} with GPU=false (CPU Forced)`);
+    console.log(`[PREVIEW START CH-${channel}] Generando thumbnail estático...`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
     
@@ -425,7 +415,6 @@ function startPreview(channel, singleFrame = false) {
         console.error(`[PREVIEW ERROR CH-${channel}] Failed to run ffmpeg:`, err.message);
     });
 
-    // ── Log stderr para diagnóstico ──
     let lastStderrLog = 0;
     child.stderr.on('data', (d) => {
         const text = d.toString().trim();
@@ -435,14 +424,14 @@ function startPreview(channel, singleFrame = false) {
         if (isError || now - lastStderrLog > 10000) {
             lastStderrLog = now;
             const line = text.split('\n')[0].substring(0, 200);
-            console.log(`[PREV-STDERR CH-${channel}] ${line}`);
+            // console.log(`[PREV-STDERR CH-${channel}] ${line}`);
         }
     });
+
     if (child.stdin) {
-        child.stdin.on('error', (err) => {
-            // Silenciar errores de tubería rota
-        });
+        child.stdin.on('error', (err) => {});
     }
+
     const subObj = {
         writableLength: 0,
         write(chunk) {
@@ -459,11 +448,8 @@ function startPreview(channel, singleFrame = false) {
     activeInputs[channel].router.subscribers.add(subObj);
     activeInputs[channel].prevSubscriber = subObj;
 
-    if (singleFrame) {
-        setTimeout(() => stopPreview(channel), 15000);
-    }
-
-    const startTime = Date.now();
+    // Timeout de seguridad: matar el proceso si se queda colgado extrayendo el frame
+    setTimeout(() => stopPreview(channel), 10000);
 
     child.on('close', (code) => {
         if (activeInputs[channel]) {
@@ -473,25 +459,11 @@ function startPreview(channel, singleFrame = false) {
                 }
                 activeInputs[channel].prevSubscriber = null;
             }
-            
-            const elapsed = Date.now() - startTime;
-            const wasOurProcess = activeInputs[channel].prevProcess === child;
             activeInputs[channel].prevProcess = null;
-
-            // Si el proceso de GPU duró menos de 2 segundos encendido y falló, marcamos para usar CPU
-            if (wasOurProcess && elapsed < 2000 && nvencAvailable && !activeInputs[channel].gpuFailed) {
-                console.log(`⚠️ [PREVIEW CH-${channel}] Fallo prematuro en GPU (duración: ${elapsed}ms). Activando fallback de CPU para asegurar miniaturas...`);
-                activeInputs[channel].gpuFailed = true;
-            }
             
-            // Auto-restart: reiniciar SIEMPRE que el input siga activo
-            if (!singleFrame && wasOurProcess && activeInputs[channel] && !activeInputs[channel].isStopping) {
-                console.log(`[PREVIEW CH-${channel}] Process exited. Auto-restarting preview in 3 seconds...`);
-                setTimeout(() => {
-                    if (activeInputs[channel] && !activeInputs[channel].isStopping && !activeInputs[channel].prevProcess) {
-                        startPreview(channel, false);
-                    }
-                }, 3000);
+            // Emitir evento para avisar al frontend que el thumbnail está listo
+            if (code === 0 && ioInstance) {
+                ioInstance.emit('thumbnail_ready', { channel: channel });
             }
         }
     });
