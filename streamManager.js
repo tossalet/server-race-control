@@ -400,7 +400,7 @@ function startPreview(channel, singleFrame = true) {
         '-fflags', '+genpts+discardcorrupt',
         '-err_detect', 'ignore_err',
         '-probesize', '10000000', // 10MB para asegurar que encuentra el keyframe en cámaras de alto bitrate
-        '-analyzeduration', '10000000',
+        '-analyzeduration', '5000000',
         '-f', 'mpegts', '-i', '-',
         '-map', '0:v:0?', // Forzar solo la primera pista de vídeo
         '-vf', 'scale=240:-1',
@@ -455,7 +455,7 @@ function startPreview(channel, singleFrame = true) {
     activeInputs[channel].prevSubscriber = subObj;
 
     // Timeout de seguridad: matar el proceso si se queda colgado extrayendo el frame
-    setTimeout(() => stopPreview(channel), 10000);
+    setTimeout(() => stopPreview(channel), 15000);
 
     child.on('close', (code) => {
         if (activeInputs[channel]) {
