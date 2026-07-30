@@ -399,10 +399,10 @@ function startPreview(channel, singleFrame = true) {
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt',
         '-err_detect', 'ignore_err',
-        '-probesize', '500000',
-        '-analyzeduration', '500000',
+        '-probesize', '10000000', // 10MB para asegurar que encuentra el keyframe en cámaras de alto bitrate
+        '-analyzeduration', '10000000',
         '-f', 'mpegts', '-i', '-',
-        '-map', '0:v?',
+        '-map', '0:v:0?', // Forzar solo la primera pista de vídeo
         '-vf', 'scale=240:-1',
         '-q:v', '5',
         '-frames:v', '1',
