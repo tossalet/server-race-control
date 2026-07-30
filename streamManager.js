@@ -430,7 +430,7 @@ function startPreview(channel, singleFrame = true) {
         if (isError || now - lastStderrLog > 10000) {
             lastStderrLog = now;
             const line = text.split('\n')[0].substring(0, 200);
-            // console.log(`[PREV-STDERR CH-${channel}] ${line}`);
+            console.log(`[PREV-STDERR CH-${channel}] ${line}`);
         }
     });
 
@@ -470,6 +470,20 @@ function startPreview(channel, singleFrame = true) {
             // Emitir evento para avisar al frontend que el thumbnail está listo
             if (code === 0 && ioInstance) {
                 ioInstance.emit('thumbnail_ready', { channel: channel });
+                activeInputs[channel].thumbRetries = 0; // Reset retries on success
+            } else if (code !== 0 && !activeInputs[channel].isStopping) {
+                // Si falló al extraer el primer frame (ej. no encontró keyframe a tiempo), reintentar
+                activeInputs[channel].thumbRetries = (activeInputs[channel].thumbRetries || 0) + 1;
+                if (activeInputs[channel].thumbRetries < 10) {
+                    console.log(`[PREVIEW CH-${channel}] Thumbnail falló (código ${code}). Reintentando en 5s (intento ${activeInputs[channel].thumbRetries}/10)...`);
+                    activeInputs[channel].autoPreviewTimer = setTimeout(() => {
+                        if (activeInputs[channel] && !activeInputs[channel].isStopping) {
+                            startPreview(channel, true);
+                        }
+                    }, 5000);
+                } else {
+                    console.error(`[PREVIEW CH-${channel}] Thumbnail cancelado tras 10 intentos fallidos.`);
+                }
             }
         }
     });
