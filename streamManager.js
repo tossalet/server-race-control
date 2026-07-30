@@ -128,19 +128,13 @@ function startInput(inputObj) {
             args.push('-buffer_size', `${inputObj.buffer}M`);
         }
 
-        // Forzar modo TCP para cámaras de vigilancia RTSP (evita artefactos y cortes rápidos)
-        if (url.startsWith('rtsp://')) {
-            args.push('-rtsp_transport', 'tcp');
-        }
+        // Se elimina -rtsp_transport tcp porque algunas cámaras baratas solo soportan UDP.
 
         // Flags específicos para entradas SRT (mejorar estabilidad y reconexión)
         if (url.startsWith('srt://')) {
             // Timeout de conexión: 5 segundos (en microsegundos)
             // Si la fuente SRT no responde, FFmpeg intenta reconectar en lugar de colgar
             args.push('-timeout', '5000000');
-            // Forzar detección de stream más rápida para fuentes SRT (evita esperas largas)
-            args.push('-probesize', '1048576');   // 1 MB
-            args.push('-analyzeduration', '1000000'); // 1 segundo
         }
 
         args.push('-i', url);
@@ -162,6 +156,8 @@ function startInput(inputObj) {
         args.push('-bsf:v', 'h264_mp4toannexb'); // Force bitstream conversion only for RTMP to avoid corrupting native SRT
     }
     args.push('-f', 'mpegts');
+    args.push('-sdt_period', '0.5'); // Inject PAT/PMT frequently so mid-stream connections (thumbnails) can sync instantly
+    args.push('-pat_period', '0.5');
     args.push('-muxdelay', '0.5'); // Dar margen de medio segundo para que FFmpeg ordene y pacifique los paquetes TS
     args.push('-muxpreload', '0.5');
     args.push(localTcpOut);
