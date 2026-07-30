@@ -372,8 +372,14 @@ function startInput(inputObj) {
         codec: inputObj.codec || persistentCodecs[channel] || ''
     };
     
-    // Fase 1: Extraer un frame inicial inmediato para tener thumbnail visible cuanto antes
-    startPreview(channel, true);
+    // Fase 1: Extraer un frame inicial de manera escalonada para no saturar la CPU
+    previewQueueDelay += 2500;
+    setTimeout(() => {
+        if (activeInputs[channel] && !activeInputs[channel].isStopping) {
+            startPreview(channel, true);
+        }
+        previewQueueDelay = Math.max(0, previewQueueDelay - 2500);
+    }, previewQueueDelay);
 
     return true;
 }
