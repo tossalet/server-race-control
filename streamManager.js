@@ -128,13 +128,19 @@ function startInput(inputObj) {
             args.push('-buffer_size', `${inputObj.buffer}M`);
         }
 
-        // Se elimina -rtsp_transport tcp porque algunas cámaras baratas solo soportan UDP.
+        // Forzar modo TCP para cámaras de vigilancia RTSP (evita artefactos y cortes rápidos)
+        if (url.startsWith('rtsp://')) {
+            args.push('-rtsp_transport', 'tcp');
+        }
 
         // Flags específicos para entradas SRT (mejorar estabilidad y reconexión)
         if (url.startsWith('srt://')) {
             // Timeout de conexión: 5 segundos (en microsegundos)
             // Si la fuente SRT no responde, FFmpeg intenta reconectar en lugar de colgar
             args.push('-timeout', '5000000');
+            // Forzar detección de stream más rápida para fuentes SRT (evita esperas largas)
+            args.push('-probesize', '1048576');   // 1 MB
+            args.push('-analyzeduration', '1000000'); // 1 segundo
         }
 
         args.push('-i', url);
@@ -384,22 +390,24 @@ function startInput(inputObj) {
 let previewQueueDelay = 0;
 
 function startPreview(channel, singleFrame = true) {
-    if (!activeInputs[channel] || !activeInputs[channel].localPort) return;
+    if (!activeInputs[channel] || !activeInputs[channel].router) return;
     if (activeInputs[channel].prevProcess) stopPreview(channel);
 
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const ffmpegCmd = getFFmpegPath();
-    const localUrl = `tcp://127.0.0.1:${activeInputs[channel].localPort}`;
     
-    // Generar un único frame al principio para usar de thumbnail estático conectándose al puerto TCP local
+    // Conectar a la API HTTP interna como si fuera un reproductor web más
+    // Esto asegura que recibe los datos TS perfectos y formateados
+    const internalUrl = `http://127.0.0.1:${process.env.PORT || 8000}/preview/ts/${channel}`;
+    
     const args = [ 
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt',
         '-err_detect', 'ignore_err',
         '-probesize', '10000000', // 10MB
         '-analyzeduration', '5000000', // 5s
-        '-f', 'mpegts', '-i', localUrl,
-        '-map', '0:v:0?', // Forzar solo la primera pista de vídeo
+        '-i', internalUrl,
+        '-map', '0:v:0?',
         '-vf', 'scale=240:-1',
         '-q:v', '5',
         '-frames:v', '1',
@@ -410,7 +418,7 @@ function startPreview(channel, singleFrame = true) {
     const outPath = extPath + '.jpg';
     args.push(outPath);
 
-    console.log(`[PREVIEW START CH-${channel}] Conectando a ${localUrl} para extraer frame estático...`);
+    console.log(`[PREVIEW START CH-${channel}] Conectando a ${internalUrl} para frame estático...`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
     
@@ -431,7 +439,7 @@ function startPreview(channel, singleFrame = true) {
         }
     });
 
-    // Timeout de seguridad de 15s para que no se quede colgado eternamente
+    // Timeout de seguridad de 15s
     const killTimer = setTimeout(() => stopPreview(channel), 15000);
 
     child.on('close', (code) => {
