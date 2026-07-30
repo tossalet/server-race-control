@@ -384,20 +384,21 @@ function startInput(inputObj) {
 let previewQueueDelay = 0;
 
 function startPreview(channel, singleFrame = true) {
-    if (!activeInputs[channel] || !activeInputs[channel].router) return;
+    if (!activeInputs[channel] || !activeInputs[channel].localPort) return;
     if (activeInputs[channel].prevProcess) stopPreview(channel);
 
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const ffmpegCmd = getFFmpegPath();
+    const localUrl = `tcp://127.0.0.1:${activeInputs[channel].localPort}`;
     
-    // Generar un único frame al principio para usar de thumbnail estático
+    // Generar un único frame al principio para usar de thumbnail estático conectándose al puerto TCP local
     const args = [ 
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt',
         '-err_detect', 'ignore_err',
-        '-probesize', '10000000', // 10MB para asegurar que encuentra el keyframe en cámaras de alto bitrate
-        '-analyzeduration', '5000000',
-        '-f', 'mpegts', '-i', '-',
+        '-probesize', '10000000', // 10MB
+        '-analyzeduration', '5000000', // 5s
+        '-f', 'mpegts', '-i', localUrl,
         '-map', '0:v:0?', // Forzar solo la primera pista de vídeo
         '-vf', 'scale=240:-1',
         '-q:v', '5',
@@ -409,7 +410,7 @@ function startPreview(channel, singleFrame = true) {
     const outPath = extPath + '.jpg';
     args.push(outPath);
 
-    console.log(`[PREVIEW START CH-${channel}] Generando thumbnail estático...`);
+    console.log(`[PREVIEW START CH-${channel}] Conectando a ${localUrl} para extraer frame estático...`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
     
@@ -430,61 +431,38 @@ function startPreview(channel, singleFrame = true) {
         }
     });
 
-    if (child.stdin) {
-        child.stdin.on('error', (err) => {});
-    }
-
-    const subObj = {
-        writableLength: 0,
-        write(chunk) {
-            if (child.killed || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
-            this.writableLength = child.stdin.writableLength;
-            try {
-                child.stdin.write(chunk);
-            } catch (e) {}
-        },
-        destroy() {
-            try { child.kill('SIGKILL'); } catch(e) {}
-        }
-    };
-    activeInputs[channel].router.subscribers.add(subObj);
-    activeInputs[channel].prevSubscriber = subObj;
-
-    // Timeout de seguridad: matar el proceso si se queda colgado extrayendo el frame
-    setTimeout(() => stopPreview(channel), 15000);
+    // Timeout de seguridad de 15s para que no se quede colgado eternamente
+    const killTimer = setTimeout(() => stopPreview(channel), 15000);
 
     child.on('close', (code) => {
+        clearTimeout(killTimer);
         if (activeInputs[channel]) {
-            if (activeInputs[channel].prevSubscriber) {
-                if (activeInputs[channel].router) {
-                    activeInputs[channel].router.subscribers.delete(activeInputs[channel].prevSubscriber);
-                }
-                activeInputs[channel].prevSubscriber = null;
-            }
             activeInputs[channel].prevProcess = null;
             
             // Emitir evento para avisar al frontend que el thumbnail está listo
             if (code === 0 && ioInstance) {
+                console.log(`[PREVIEW CH-${channel}] Thumbnail estático guardado con éxito.`);
                 ioInstance.emit('thumbnail_ready', { channel: channel });
-                activeInputs[channel].thumbRetries = 0; // Reset retries on success
+                activeInputs[channel].thumbRetries = 0; // Reset retries
             } else if (code !== 0 && !activeInputs[channel].isStopping) {
-                // Si falló al extraer el primer frame (ej. no encontró keyframe a tiempo), reintentar
+                // Reintentar si falló, hasta 10 veces
                 activeInputs[channel].thumbRetries = (activeInputs[channel].thumbRetries || 0) + 1;
                 if (activeInputs[channel].thumbRetries < 10) {
-                    console.log(`[PREVIEW CH-${channel}] Thumbnail falló (código ${code}). Reintentando en 5s (intento ${activeInputs[channel].thumbRetries}/10)...`);
+                    console.log(`[PREVIEW CH-${channel}] Falló (código ${code}). Reintento ${activeInputs[channel].thumbRetries}/10 en 5s...`);
                     activeInputs[channel].autoPreviewTimer = setTimeout(() => {
                         if (activeInputs[channel] && !activeInputs[channel].isStopping) {
                             startPreview(channel, true);
                         }
                     }, 5000);
                 } else {
-                    console.error(`[PREVIEW CH-${channel}] Thumbnail cancelado tras 10 intentos fallidos.`);
+                    console.log(`[PREVIEW CH-${channel}] Desistiendo tras 10 intentos fallidos.`);
                 }
             }
         }
     });
-}
 
+    return true;
+}
 
 function stopPreview(channel) {
     const inp = activeInputs[channel];
