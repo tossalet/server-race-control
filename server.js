@@ -2701,17 +2701,20 @@ app.post('/api/network', (req, res) => {
     getActiveDevice().then((physicalDev) => {
         let cmd = '';
         if (mode === 'auto') {
-            cmd = `sudo nmcli con mod "${connectionName}" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" 2>/dev/null ; ` +
-                  `sudo nmcli con down "${connectionName}" 2>/dev/null ; ` +
-                  `sudo nmcli con up "${connectionName}" 2>/dev/null ; ` +
-                  `sudo dhclient -r ${physicalDev} 2>/dev/null ; sudo dhclient -v ${physicalDev}`;
+            cmd = `nmcli con mod "${connectionName}" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ; ` +
+                  `nmcli con down "${connectionName}" ; ` +
+                  `nmcli con up "${connectionName}" ; ` +
+                  `sudo dhclient -r ${physicalDev} ; sudo dhclient -v ${physicalDev}`;
         } else {
             const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
-            cmd = `sudo nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} 2>/dev/null ; ` +
-                  `sudo nmcli con down "${connectionName}" 2>/dev/null ; ` +
-                  `sudo nmcli con up "${connectionName}" 2>/dev/null ; ` +
-                  `sudo ip addr flush dev ${physicalDev} 2>/dev/null ; sudo ip addr add ${ip}/${cidr} dev ${physicalDev} ; sudo ip link set ${physicalDev} up ; sudo ip route add default via ${gateway} dev ${physicalDev} 2>/dev/null`;
+            cmd = `nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} ; ` +
+                  `nmcli con down "${connectionName}" ; ` +
+                  `nmcli con up "${connectionName}" ; ` +
+                  `sudo ip addr flush dev ${physicalDev} ; sudo ip addr add ${ip}/${cidr} dev ${physicalDev} ; sudo ip link set ${physicalDev} up ; sudo ip route add default via ${gateway} dev ${physicalDev}`;
         }
+        
+        // Redirigir la salida a un archivo para poder debugear si falla en el sistema del usuario
+        cmd = `(${cmd}) > /tmp/net_debug.log 2>&1`;
         
         console.log(`[NETWORK] Aplicando red sobre conexión="${connectionName}" e interfaz físico="${physicalDev}"...`);
         res.json({ ok: true, message: 'Aplicando configuración...' });
@@ -2722,7 +2725,7 @@ app.post('/api/network', (req, res) => {
                     console.error('[NETWORK] Error applying config via nmcli/native:', err.message);
                     // Si ambos fallaron, intentar forzar dhclient genérico como último recurso
                     if (mode === 'auto') {
-                        exec(`sudo dhclient -v`, (dhcpErr) => {
+                        exec(`sudo dhclient -v >> /tmp/net_debug.log 2>&1`, (dhcpErr) => {
                             if (dhcpErr) console.error('[NETWORK] Fallback dhclient general error:', dhcpErr.message);
                             else console.log('[NETWORK] DHCP general renovado.');
                         });
