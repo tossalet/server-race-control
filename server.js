@@ -2041,76 +2041,72 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     const ffmpegCmd = streamManager.getFFmpegPath();
     
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
-    const isHevc = codec === 'H.265' || codec === 'HEVC' || codec.includes('265');
-    const isH264Confirmed = codec === 'H.264' || codec.includes('264');
-    const codecUnknown = !codec || codec === '';
     const transcodeRequested = req.query.transcode === '1' || req.query.transcode === 'true';
     
     // Decisión de transcodificación:
-    // - H.265 detectado → siempre transcodificar (navegador no soporta H.265)
-    // - H.264 confirmado + ?transcode=true → passthrough directo (copy)
-    // - Codec desconocido + ?transcode=true → transcodificar por CPU (seguro, funciona con H.264 y H.265)
-    const mustTranscode = isHevc || (transcodeRequested && !isH264Confirmed);
+    // SOLO transcodificar a H.264 si el cliente lo solicita explícitamente con ?transcode=true.
+    // Por defecto: Passthrough directo 100% puro en H.265/H.264 sin usar CPU ni lanzar procesos FFmpeg.
+    const mustTranscode = transcodeRequested;
     
-    let args;
-    if (mustTranscode) {
-        // Transcodificar a H.264 para garantizar compatibilidad con el navegador
-        const useGpu = streamManager.nvencAvailable && isHevc;
-        const encoderType = useGpu ? 'GPU NVENC' : 'CPU libx264';
-        originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando -> H.264 (${encoderType}, codec fuente: ${codec || 'desconocido'})`);
+    if (!mustTranscode) {
+        originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming passthrough directo 0% CPU (codec: ${codec || 'passthrough'})`);
+        const subObj = {
+            writableLength: 0,
+            write(chunk) {
+                try {
+                    res.write(chunk);
+                } catch (e) {}
+            },
+            destroy() {
+                try { res.end(); } catch(e) {}
+            }
+        };
         
-        // Obtenemos los argumentos de codificación H.264
-        const encoderArgs = streamManager.getH264EncoderArgs({ 
-            scale: '-2:720', 
-            cq: 28, 
-            hwaccel: useGpu ? 'cuda' : undefined 
-        });
+        routerState.router.subscribers.add(subObj);
         
-        args = [
-            '-hide_banner',
-            '-y',
-            '-fflags', '+genpts+discardcorrupt',
-            '-err_detect', 'ignore_err',
-            '-probesize', '500000',
-            '-analyzeduration', '500000'
-        ];
-
-        // IMPORTANTE: NO usamos -hwaccel cuda ni hevc_cuvid para DECODIFICAR desde stdin
-        // porque causa cuelgues (hangs) y fallos con streams inestables.
-        // La decodificación se hace en CPU, y getH264EncoderArgs usará h264_nvenc para CODIFICAR.
-
-        args.push(
-            '-f', 'mpegts',
-            '-i', '-',
-            '-map', '0:v?', '-map', '0:a?',
-            ...encoderArgs,
-            '-g', '15',
-            '-keyint_min', '15',
-            '-sc_threshold', '0',
-            '-r', '30',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-f', 'mpegts',
-            '-'
-        );
-    } else {
-        originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming directo (con alineamiento FFmpeg, codec: ${codec || 'no detectado aún'})`);
-        args = [
-            '-hide_banner',
-            '-y',
-            '-fflags', '+genpts+discardcorrupt',
-            '-err_detect', 'ignore_err',
-            '-probesize', '500000',
-            '-analyzeduration', '500000',
-            '-f', 'mpegts',
-            '-i', '-',
-            '-map', '0:v?', '-map', '0:a?',
-            '-c:v', 'copy',
-            '-c:a', 'copy',
-            '-f', 'mpegts',
-            '-'
-        ];
+        const cleanup = () => {
+            if (routerState && routerState.router) {
+                routerState.router.subscribers.delete(subObj);
+            }
+            try { res.end(); } catch(e) {}
+        };
+        
+        req.on('close', cleanup);
+        return;
     }
+
+    // Si se solicitó transcodificación explícita (?transcode=true)
+    const isHevc = codec === 'H.265' || codec === 'HEVC' || codec.includes('265');
+    const useGpu = streamManager.nvencAvailable && isHevc;
+    const encoderType = useGpu ? 'GPU NVENC' : 'CPU libx264';
+    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando -> H.264 (${encoderType}, codec fuente: ${codec || 'desconocido'})`);
+    
+    const encoderArgs = streamManager.getH264EncoderArgs({ 
+        scale: '-2:720', 
+        cq: 28, 
+        hwaccel: useGpu ? 'cuda' : undefined 
+    });
+    
+    const args = [
+        '-hide_banner',
+        '-y',
+        '-fflags', '+genpts+discardcorrupt',
+        '-err_detect', 'ignore_err',
+        '-probesize', '500000',
+        '-analyzeduration', '500000',
+        '-f', 'mpegts',
+        '-i', '-',
+        '-map', '0:v?', '-map', '0:a?',
+        ...encoderArgs,
+        '-g', '15',
+        '-keyint_min', '15',
+        '-sc_threshold', '0',
+        '-r', '30',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-f', 'mpegts',
+        '-'
+    ];
     
     const tsStartTime = Date.now();
     let child = spawn(ffmpegCmd, args);
