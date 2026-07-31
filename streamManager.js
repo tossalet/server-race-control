@@ -402,12 +402,12 @@ function startPreview(channel, singleFrame = true) {
     
     const args = [ 
         '-hide_banner', '-y',
-        '-fflags', '+genpts+discardcorrupt',
+        '-fflags', '+genpts+discardcorrupt+nobuffer',
         '-err_detect', 'ignore_err',
-        '-probesize', '10000000', // 10MB
-        '-analyzeduration', '5000000', // 5s
+        '-probesize', '500000', // 500KB (detección ultra rápida)
+        '-analyzeduration', '1000000', // 1s
         '-i', internalUrl,
-        '-map', '0:v:0?',
+        '-map', '0:v?',
         '-vf', 'scale=240:-1',
         '-q:v', '5',
         '-frames:v', '1',
