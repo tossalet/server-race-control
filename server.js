@@ -736,7 +736,7 @@ app.get('/api/logs/download', (req, res) => {
  *  REST API: INPUTS
  * ======================================= */
 app.get('/api/inputs', (req, res) => {
-    db.all('SELECT * FROM inputs ORDER BY channel ASC', [], (err, rows) => {
+    db.all('SELECT * FROM inputs ORDER BY sort_order ASC, channel ASC', [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         const decorated = rows.map(row => {
             const state = streamManager.activeInputs[row.channel];
@@ -889,6 +889,24 @@ app.delete('/api/inputs/:channel', (req, res) => {
                 res.json({ deleted: true });
                 io.emit('db_update', { event: 'inputs_changed' });
             });
+        });
+    });
+});
+
+// Reordenar cámaras en el sidebar — recibe array de { channel, sort_order }
+app.post('/api/inputs/reorder', (req, res) => {
+    const order = req.body; // [{ channel: 1, sort_order: 0 }, { channel: 5, sort_order: 1 }, ...]
+    if (!Array.isArray(order)) return res.status(400).json({ error: 'Se espera un array' });
+    
+    db.serialize(() => {
+        const stmt = db.prepare('UPDATE inputs SET sort_order = ? WHERE channel = ?');
+        for (const item of order) {
+            stmt.run(item.sort_order, item.channel);
+        }
+        stmt.finalize((err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ ok: true });
+            io.emit('db_update', { event: 'inputs_changed' });
         });
     });
 });

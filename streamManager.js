@@ -398,7 +398,7 @@ function startPreview(channel, singleFrame = true) {
     
     // Conectar a la API HTTP interna como si fuera un reproductor web más
     // Esto asegura que recibe los datos TS perfectos y formateados
-    const internalUrl = `http://127.0.0.1:${process.env.PORT || 8000}/preview/ts/${channel}`;
+    const internalUrl = `http://127.0.0.1:${process.env.PORT || 8000}/api/preview/ts/${channel}`;
     
     const args = [ 
         '-hide_banner', '-y',

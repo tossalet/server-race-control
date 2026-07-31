@@ -46,6 +46,7 @@ function initDB() {
         db.run("ALTER TABLE inputs ADD COLUMN ptz_ip TEXT NOT NULL DEFAULT ''", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN ptz_user TEXT NOT NULL DEFAULT ''", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN ptz_pass TEXT NOT NULL DEFAULT ''", () => {});
+        db.run("ALTER TABLE inputs ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0", () => {});
         db.run("ALTER TABLE outputs ADD COLUMN was_enabled INTEGER NOT NULL DEFAULT 0", () => {});
 
         // Table outputs
