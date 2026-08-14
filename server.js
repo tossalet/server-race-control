@@ -38,33 +38,38 @@ wss.on('connection', (ws, req) => {
     
     let attempts = 0;
     const checkInterval = setInterval(() => {
-        if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router && streamManager.activeInputs[channel].router.port) {
+        const inputState = streamManager.activeInputs[channel];
+        if (inputState && inputState.router && inputState.router.subscribers) {
             clearInterval(checkInterval);
-            const net = require('net');
-            const localPort = streamManager.activeInputs[channel].router.port;
             
-            const tcpSocket = net.createConnection(localPort, '127.0.0.1', () => {
-                console.log(`[WS] Client subscribed to LIVE channel ${channel} via TCP ${localPort}`);
-                streamManager.activeInputs[channel].router.subscribers.add(tcpSocket);
-            });
-
-            tcpSocket.on('data', (data) => {
-                if (ws.readyState === ws.OPEN) {
-                    ws.send(data);
+            // Subscriber directo — misma técnica que el HTTP passthrough,
+            // sin crear conexiones TCP intermedias innecesarias.
+            const subObj = {
+                writableLength: 0,
+                write(chunk) {
+                    if (ws.readyState === ws.OPEN) {
+                        try { ws.send(chunk); } catch(e) {}
+                    }
+                },
+                destroy() {
+                    try { ws.close(); } catch(e) {}
                 }
-            });
+            };
+            
+            inputState.router.subscribers.add(subObj);
+            console.log(`[WS] Client subscribed to LIVE channel ${channel} (direct subscriber)`);
 
-            tcpSocket.on('error', (err) => {
-                console.log(`[WS] TCP Socket error for live channel ${channel}: ${err.message}`);
-            });
-
-            tcpSocket.on('close', () => ws.close());
             ws.on('close', () => {
                 if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
-                    streamManager.activeInputs[channel].router.subscribers.delete(tcpSocket);
+                    streamManager.activeInputs[channel].router.subscribers.delete(subObj);
                 }
-                tcpSocket.destroy();
                 console.log(`[WS] Client unsubscribed from LIVE channel ${channel}`);
+            });
+            
+            ws.on('error', () => {
+                if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
+                    streamManager.activeInputs[channel].router.subscribers.delete(subObj);
+                }
             });
         } else {
             attempts++;

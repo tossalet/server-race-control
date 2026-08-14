@@ -398,14 +398,14 @@ function startPreview(channel, singleFrame = true) {
     
     // Conectar a la API HTTP interna como si fuera un reproductor web más
     // Esto asegura que recibe los datos TS perfectos y formateados
-    const internalUrl = `http://127.0.0.1:${process.env.PORT || 8000}/api/preview/ts/${channel}`;
+    const internalUrl = `http://127.0.0.1:${process.env.PORT || 4000}/api/preview/ts/${channel}`;
     
     const args = [ 
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt+nobuffer',
         '-err_detect', 'ignore_err',
-        '-probesize', '500000', // 500KB (detección ultra rápida)
-        '-analyzeduration', '1000000', // 1s
+        '-probesize', '5000000', // 5MB — necesario para H.265 donde los keyframes pueden estar separados por varios MB
+        '-analyzeduration', '5000000', // 5s
         '-i', internalUrl,
         '-map', '0:v?',
         '-vf', 'scale=240:-1',
@@ -439,8 +439,8 @@ function startPreview(channel, singleFrame = true) {
         }
     });
 
-    // Timeout de seguridad de 15s
-    const killTimer = setTimeout(() => stopPreview(channel), 15000);
+    // Timeout de seguridad de 30s (H.265 necesita más tiempo para encontrar un keyframe)
+    const killTimer = setTimeout(() => stopPreview(channel), 30000);
 
     child.on('close', (code) => {
         clearTimeout(killTimer);
@@ -452,19 +452,27 @@ function startPreview(channel, singleFrame = true) {
                 console.log(`[PREVIEW CH-${channel}] Thumbnail estático guardado con éxito.`);
                 ioInstance.emit('thumbnail_ready', { channel: channel });
                 activeInputs[channel].thumbRetries = 0; // Reset retries
+                
+                // Programar regeneración periódica cada 60 segundos para mantener thumbnail fresco
+                activeInputs[channel].autoPreviewTimer = setTimeout(() => {
+                    if (activeInputs[channel] && !activeInputs[channel].isStopping) {
+                        activeInputs[channel].thumbRetries = 0;
+                        startPreview(channel, true);
+                    }
+                }, 60000);
             } else if (code !== 0 && !activeInputs[channel].isStopping) {
-                // Reintentar si falló, hasta 10 veces
+                // Reintentar: rápido los primeros 10, luego cada 30s sin rendirse
                 activeInputs[channel].thumbRetries = (activeInputs[channel].thumbRetries || 0) + 1;
-                if (activeInputs[channel].thumbRetries < 10) {
-                    console.log(`[PREVIEW CH-${channel}] Falló (código ${code}). Reintento ${activeInputs[channel].thumbRetries}/10 en 5s...`);
-                    activeInputs[channel].autoPreviewTimer = setTimeout(() => {
-                        if (activeInputs[channel] && !activeInputs[channel].isStopping) {
-                            startPreview(channel, true);
-                        }
-                    }, 5000);
-                } else {
-                    console.log(`[PREVIEW CH-${channel}] Desistiendo tras 10 intentos fallidos.`);
-                }
+                const retryDelay = activeInputs[channel].thumbRetries <= 10 ? 5000 : 30000;
+                const retryLabel = activeInputs[channel].thumbRetries <= 10 
+                    ? `${activeInputs[channel].thumbRetries}/10` 
+                    : `#${activeInputs[channel].thumbRetries} (lento)`;
+                console.log(`[PREVIEW CH-${channel}] Falló (código ${code}). Reintento ${retryLabel} en ${retryDelay/1000}s...`);
+                activeInputs[channel].autoPreviewTimer = setTimeout(() => {
+                    if (activeInputs[channel] && !activeInputs[channel].isStopping) {
+                        startPreview(channel, true);
+                    }
+                }, retryDelay);
             }
         }
     });
@@ -475,6 +483,10 @@ function startPreview(channel, singleFrame = true) {
 function stopPreview(channel) {
     const inp = activeInputs[channel];
     if (inp) {
+        if (inp.autoPreviewTimer) {
+            clearTimeout(inp.autoPreviewTimer);
+            inp.autoPreviewTimer = null;
+        }
         if (inp.prevProcess) {
             try { inp.prevProcess.kill('SIGKILL'); } catch(e) {}
             inp.prevProcess = null;
