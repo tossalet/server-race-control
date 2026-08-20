@@ -33,29 +33,29 @@ const wss = new WebSocketServer({ noServer: true });
 wss.on('connection', (ws, req) => {
     const match = req.url.match(/\/live\/(\d+)/);
     if (!match) return ws.close();
-    
+
     const channel = match[1];
-    
+
     let attempts = 0;
     const checkInterval = setInterval(() => {
         const inputState = streamManager.activeInputs[channel];
         if (inputState && inputState.router && inputState.router.subscribers) {
             clearInterval(checkInterval);
-            
+
             // Subscriber directo — misma técnica que el HTTP passthrough,
             // sin crear conexiones TCP intermedias innecesarias.
             const subObj = {
                 writableLength: 0,
                 write(chunk) {
                     if (ws.readyState === ws.OPEN) {
-                        try { ws.send(chunk); } catch(e) {}
+                        try { ws.send(chunk); } catch (e) { }
                     }
                 },
                 destroy() {
-                    try { ws.close(); } catch(e) {}
+                    try { ws.close(); } catch (e) { }
                 }
             };
-            
+
             inputState.router.subscribers.add(subObj);
             console.log(`[WS] Client subscribed to LIVE channel ${channel} (direct subscriber)`);
 
@@ -65,7 +65,7 @@ wss.on('connection', (ws, req) => {
                 }
                 console.log(`[WS] Client unsubscribed from LIVE channel ${channel}`);
             });
-            
+
             ws.on('error', () => {
                 if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
                     streamManager.activeInputs[channel].router.subscribers.delete(subObj);
@@ -87,7 +87,7 @@ const util = require('util');
 // Custom System Logger
 const logsDir = path.join(__dirname, 'logs');
 if (!fs.existsSync(logsDir)) {
-    try { fs.mkdirSync(logsDir, { recursive: true }); } catch (e) {}
+    try { fs.mkdirSync(logsDir, { recursive: true }); } catch (e) { }
 }
 const logFile = path.join(logsDir, 'server.log');
 
@@ -101,19 +101,19 @@ function broadCastLog(level, message) {
     if (io) io.emit('server_log', logEntry);
     logHistory.push(logEntry);
     if (logHistory.length > 500) logHistory.shift(); // Keep last 500 lines in memory
-    fs.appendFile(logFile, `[${logEntry.timestamp}] [${level}] ${message}\n`, () => {});
+    fs.appendFile(logFile, `[${logEntry.timestamp}] [${level}] ${message}\n`, () => { });
 }
 
 // Intercept Console
 const originalLog = console.log;
-console.log = function(...args) {
+console.log = function (...args) {
     const msg = util.format(...args);
     originalLog.apply(console, args);
     broadCastLog('INFO', msg);
 };
 
 const originalError = console.error;
-console.error = function(...args) {
+console.error = function (...args) {
     const msg = util.format(...args);
     originalError.apply(console, args);
     broadCastLog('ERROR', msg);
@@ -124,7 +124,7 @@ const previewRoot = process.platform === 'win32'
     ? path.join(__dirname, 'public', 'preview')
     : '/tmp/race-control-preview';
 if (!fs.existsSync(previewRoot)) {
-    try { fs.mkdirSync(previewRoot, { recursive: true }); } catch (e) {}
+    try { fs.mkdirSync(previewRoot, { recursive: true }); } catch (e) { }
 }
 
 // ── Media Root: grabaciones en disco externo / NVMe ──────────────────────────
@@ -133,13 +133,13 @@ function detectExternalDisk() {
     if (process.env.MEDIA_ROOT) return process.env.MEDIA_ROOT;
     if (process.platform === 'win32') return path.join(__dirname, 'media');
 
-    const SKIP_FS   = new Set(['tmpfs','devtmpfs','sysfs','proc','devpts','cgroup',
-                                'cgroup2','overlay','squashfs','udev','securityfs',
-                                'fusectl','pstore','efivarfs','debugfs','tracefs',
-                                'hugetlbfs','mqueue','ramfs','bpf','configfs']);
-    const SKIP_PFX  = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user',
-                       '/run/lock', '/run/systemd', '/run/credentials',
-                       '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
+    const SKIP_FS = new Set(['tmpfs', 'devtmpfs', 'sysfs', 'proc', 'devpts', 'cgroup',
+        'cgroup2', 'overlay', 'squashfs', 'udev', 'securityfs',
+        'fusectl', 'pstore', 'efivarfs', 'debugfs', 'tracefs',
+        'hugetlbfs', 'mqueue', 'ramfs', 'bpf', 'configfs']);
+    const SKIP_PFX = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user',
+        '/run/lock', '/run/systemd', '/run/credentials',
+        '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
 
     try {
         if (fs.existsSync('/proc/mounts')) {
@@ -150,18 +150,18 @@ function detectExternalDisk() {
                 const device = parts[0];
                 const mountPoint = parts[1];
                 const fsType = parts[2];
-                
+
                 if (!device || !mountPoint || !fsType) continue;
-                if (SKIP_FS.has(fsType))  continue;
+                if (SKIP_FS.has(fsType)) continue;
                 if (!device.startsWith('/dev/sd') && !device.startsWith('/dev/nvme')) continue;
                 if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
-                
+
                 if (/^\/(media|mnt|run\/media)/.test(mountPoint)) {
                     return mountPoint;
                 }
             }
         }
-    } catch(e) { console.error('[STORAGE] /proc/mounts read error:', e.message); }
+    } catch (e) { console.error('[STORAGE] /proc/mounts read error:', e.message); }
 
     return null;
 }
@@ -200,7 +200,7 @@ function initMediaRoot() {
             const detected = detectExternalDisk();
             if (detected) {
                 const recDir = path.join(detected, 'recordings');
-                try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+                try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) { }
                 mediaRoot = recDir;
                 recordingDisabled = false;
                 registerMediaStatic(mediaRoot);
@@ -216,7 +216,7 @@ initMediaRoot();
 
 const thumbsDir = path.join(__dirname, 'public', 'thumbs');
 if (!fs.existsSync(thumbsDir)) {
-    try { fs.mkdirSync(thumbsDir, { recursive: true }); } catch(e){}
+    try { fs.mkdirSync(thumbsDir, { recursive: true }); } catch (e) { }
 }
 const thumbCache = {};      // channel -> Buffer (último JPEG válido)
 const thumbCacheTs = {};     // channel -> timestamp de cuándo se cacheó
@@ -259,10 +259,10 @@ app.get('/thumbs/:filename', (req, res, next) => {
             delete thumbCache[channel];
             delete thumbCacheTs[channel];
         }
-        fs.unlink(filePath, () => {});
+        fs.unlink(filePath, () => { });
         return serveFallback();
     }
-    
+
     fs.readFile(filePath, (err, data) => {
         if (err) {
             // Archivo no disponible — intentar servir desde caché si es reciente
@@ -280,7 +280,7 @@ app.get('/thumbs/:filename', (req, res, next) => {
             }
             return serveFallback();
         }
-        
+
         // Verificar si es un JPEG válido:
         // - Debe empezar con SOI (0xFFD8) y terminar con EOI (0xFFD9)
         // - Tamaño mínimo 1KB (frames de transición de señal son más pequeños)
@@ -291,14 +291,14 @@ app.get('/thumbs/:filename', (req, res, next) => {
             if (hasStart) {
                 const limit = Math.max(0, data.length - 512);
                 for (let i = data.length - 2; i >= limit; i--) {
-                    if (data[i] === 0xFF && data[i+1] === 0xD9) {
+                    if (data[i] === 0xFF && data[i + 1] === 0xD9) {
                         isValidJpeg = true;
                         break;
                     }
                 }
             }
         }
-        
+
         if (isValidJpeg) {
             thumbCache[channel] = data;
             thumbCacheTs[channel] = Date.now();
@@ -368,7 +368,7 @@ app.get('/api/storage/status', async (req, res) => {
         const detected = detectExternalDisk();
         if (detected) {
             const recDir = path.join(detected, 'recordings');
-            try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+            try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) { }
             mediaRoot = recDir;
             console.log(`[STORAGE] Disco detectado en caliente: ${mediaRoot}`);
         }
@@ -385,7 +385,7 @@ app.get('/api/storage/status', async (req, res) => {
         } else {
             res.json({ available: !accessible ? false : true, path: mediaRoot, freeGB: null, message: !accessible ? 'Disco no accesible' : null });
         }
-    } catch(e) {
+    } catch (e) {
         res.json({ available: true, path: mediaRoot, freeGB: null });
     }
 });
@@ -396,11 +396,11 @@ app.get('/api/storage/list', (req, res) => {
         return res.json([{ device: 'local', mountPoint: path.join(__dirname, 'media'), fsType: 'local', sizeGB: null, freeGB: null, label: 'Carpeta local (Windows dev)' }]);
     }
 
-    const SKIP_FS = new Set(['tmpfs','devtmpfs','sysfs','proc','devpts','cgroup','cgroup2',
-                             'overlay','squashfs','udev','securityfs','fusectl','pstore',
-                             'efivarfs','debugfs','tracefs','hugetlbfs','mqueue','ramfs','bpf','configfs']);
+    const SKIP_FS = new Set(['tmpfs', 'devtmpfs', 'sysfs', 'proc', 'devpts', 'cgroup', 'cgroup2',
+        'overlay', 'squashfs', 'udev', 'securityfs', 'fusectl', 'pstore',
+        'efivarfs', 'debugfs', 'tracefs', 'hugetlbfs', 'mqueue', 'ramfs', 'bpf', 'configfs']);
     const SKIP_PFX = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user', '/run/lock',
-                      '/run/systemd', '/run/credentials', '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
+        '/run/systemd', '/run/credentials', '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
 
     const partitions = [];
 
@@ -408,8 +408,8 @@ app.get('/api/storage/list', (req, res) => {
         const mountsPath = '/proc/mounts';
         // /proc/mounts es un pseudofichero del kernel, nunca bloquea
         let mountsContent = '';
-        try { mountsContent = fs.readFileSync(mountsPath, 'utf8'); } catch(e) { return res.json(partitions); }
-        
+        try { mountsContent = fs.readFileSync(mountsPath, 'utf8'); } catch (e) { return res.json(partitions); }
+
         const mounts = mountsContent.split('\n');
         for (const line of mounts) {
             const parts = line.split(' ');
@@ -417,7 +417,7 @@ app.get('/api/storage/list', (req, res) => {
             const device = parts[0];
             const mountPoint = parts[1];
             const fsType = parts[2];
-            
+
             if (!device || !mountPoint || !fsType) continue;
             if (SKIP_FS.has(fsType)) continue;
             if (!device.startsWith('/dev/sd') && !device.startsWith('/dev/nvme')) continue;
@@ -430,8 +430,8 @@ app.get('/api/storage/list', (req, res) => {
                 try {
                     const stat = fs.statfsSync(mountPoint);
                     sizeGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
-                    freeGB = ((stat.bfree  * stat.bsize) / 1e9).toFixed(1);
-                } catch(e) {}
+                    freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                } catch (e) { }
             }
 
             partitions.push({
@@ -443,7 +443,7 @@ app.get('/api/storage/list', (req, res) => {
                 label: device.includes('sd') ? `Puerto USB (${device.replace('/dev/', '')})` : `Disco NVMe (${device.replace('/dev/', '')})`
             });
         }
-    } catch(e) {
+    } catch (e) {
         console.error('[STORAGE] Error leyendo /proc/mounts:', e.message);
     }
 
@@ -454,7 +454,7 @@ app.get('/api/storage/list', (req, res) => {
 app.post('/api/storage/select', (req, res) => {
     // Soportar ambos formatos: {mountPoint, device} (frontend React) y {disk_path} (backend legacy)
     const { mountPoint, device, disk_path } = req.body;
-    
+
     // Manejo de desactivación de grabación (desde backend legacy)
     if (disk_path === 'disabled' || disk_path === 'none') {
         mediaRoot = null;
@@ -472,20 +472,20 @@ app.post('/api/storage/select', (req, res) => {
         if (forbidden.some(f => disk_path === f || disk_path.startsWith(f + '/'))) {
             return res.status(403).json({ error: 'Disco del sistema — no permitido' });
         }
-        
+
         const recDir = path.join(disk_path, 'recordings');
-        try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {
+        try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) {
             return res.status(500).json({ error: 'No se puede escribir en el disco: ' + e.message });
         }
-        
+
         mediaRoot = recDir;
         recordingDisabled = false;
         registerMediaStatic(mediaRoot);
-        
+
         db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', ?)", [recDir], (err) => {
             if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
         });
-        
+
         console.log(`[STORAGE] Disco de grabación cambiado a: ${mediaRoot}`);
         return res.json({ ok: true, success: true, path: mediaRoot });
     }
@@ -512,7 +512,7 @@ app.post('/api/storage/select', (req, res) => {
                 console.log(`[STORAGE] Montaje permanente añadido a /etc/fstab (UUID=${uuid})`);
             }
             targetMount = mntPoint;
-        } catch(e) {
+        } catch (e) {
             console.error('[STORAGE] Error montando partición:', e.message);
             return res.status(500).json({ error: `No se pudo montar ${device}: ${e.message}` });
         }
@@ -524,7 +524,7 @@ app.post('/api/storage/select', (req, res) => {
 
     // Crear subdirectorio recordings dentro del punto de montaje si no existe
     const recDir = path.join(targetMount, 'recordings');
-    try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+    try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) { }
 
     const finalPath = recDir;
 
@@ -544,7 +544,7 @@ app.post('/api/storage/select', (req, res) => {
                 const stat = fs.statfsSync(targetMount);
                 freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
             }
-        } catch(e) {}
+        } catch (e) { }
 
         // Devolver AMBOS 'ok' y 'success' para compatibilidad con frontend React y backend legacy
         res.json({ ok: true, success: true, path: mediaRoot, freeGB });
@@ -555,28 +555,28 @@ app.post('/api/storage/select', (req, res) => {
 /* =======================================
  *  API: LANZAR MONITOR EN SEGUNDO DISPLAY (Linux)
  * ======================================= */
-    let monitorClients = [];
+let monitorClients = [];
 
-    app.get('/api/monitor/events', (req, res) => {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        monitorClients.push(res);
-        req.on('close', () => { monitorClients = monitorClients.filter(c => c !== res); });
-    });
+app.get('/api/monitor/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    monitorClients.push(res);
+    req.on('close', () => { monitorClients = monitorClients.filter(c => c !== res); });
+});
 
-    app.post('/api/monitor/command', (req, res) => {
-        const cmd = req.body;
-        monitorClients.forEach(c => c.write(`data: ${JSON.stringify(cmd)}\n\n`));
-        res.sendStatus(200);
-    });
+app.post('/api/monitor/command', (req, res) => {
+    const cmd = req.body;
+    monitorClients.forEach(c => c.write(`data: ${JSON.stringify(cmd)}\n\n`));
+    res.sendStatus(200);
+});
 
 app.post('/api/monitor/open', (req, res) => {
     const { exec } = require('child_process');
     const os = require('os');
     const monitorUrl = `http://localhost:${process.env.PORT || 4000}/grabador/index.html?monitor=1#monitor`;
     const secondaryDisplay = { name: 'HDMI-Right', width: 1920, height: 1080, x: 1920, y: 0 };
-    
+
     console.log(`[MONITOR] Solicitud para abrir monitor secundario en OS: ${os.platform()}`);
 
     if (os.platform() === 'win32') {
@@ -594,19 +594,19 @@ app.post('/api/monitor/open', (req, res) => {
         // LINUX (Debian 13 u otros)
         // 1. Verificar pantallas conectadas via xrandr para no abrir si solo hay 1 monitor
         const checkCmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority xrandr --query 2>/dev/null || DISPLAY=:0 xrandr --query 2>/dev/null`;
-        
+
         exec(checkCmd, (xerr, xstdout) => {
             let secondaryDisplay = null;
-            
+
             if (!xerr && xstdout) {
                 const connectedLines = xstdout.split('\n').filter(line => /\bconnected\b/i.test(line));
                 console.log(`[MONITOR] Pantallas detectadas via xrandr: ${connectedLines.length}`);
-                
+
                 if (connectedLines.length < 2) {
                     console.log('[MONITOR] Cancelado: Solo se detecta 1 pantalla conectada.');
                     return res.json({ ok: false, reason: 'no_secondary_display' });
                 }
-                
+
                 // Buscar la pantalla secundaria (la que no sea 'primary' o la segunda de la lista)
                 const secLine = connectedLines.find(line => !line.includes('primary')) || connectedLines[1];
                 if (secLine) {
@@ -621,7 +621,7 @@ app.post('/api/monitor/open', (req, res) => {
                     }
                 }
             }
-            
+
             if (!secondaryDisplay) {
                 secondaryDisplay = { name: 'HDMI-Right', width: 1920, height: 1080, x: 1920, y: 0 };
             }
@@ -653,7 +653,7 @@ app.post('/api/monitor/open', (req, res) => {
                             `--class`, `racecontrolmonitor`,
                             `--no-remote`,
                             `-profile`, `/home/racecontrol/.config/firefox_monitor`,
-                            `--new-window`, monitorUrl, 
+                            `--new-window`, monitorUrl,
                             `--kiosk`
                         ];
                     } else if (isEpiphany(bin)) {
@@ -665,7 +665,7 @@ app.post('/api/monitor/open', (req, res) => {
                     const cmdArgs = args.map(arg => `"${arg}"`).join(' ');
                     const runCmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority ${bin} ${cmdArgs}`;
                     console.log(`[MONITOR] Ejecutando comando de lanzamiento nativo: ${runCmd}`);
-                    
+
                     exec(`${runCmd} &`, (err) => {
                         if (err) console.error('[MONITOR] Error en spawn nativo del navegador:', err.message);
                     });
@@ -674,13 +674,13 @@ app.post('/api/monitor/open', (req, res) => {
                     setTimeout(() => {
                         // Buscamos prioritariamente el título exclusivo que hemos definido para el monitor de multiview
                         const moveCmd = `(xdotool search --name "RACE CONTROL MONITOR PANTALLA SECUNDARIA" || xdotool search --class "racecontrolmonitor") | while read id; do ` +
-                                        `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
-                                        `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
-                                        `  xdotool windowactivate "$id" 2>/dev/null && ` +
-                                        `  xdotool key --window "$id" F11 2>/dev/null; ` +
-                                        `done || ` +
-                                        `(wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -b add,fullscreen)`;
-                        
+                            `  xdotool windowmove "$id" ${secondaryDisplay.x} ${secondaryDisplay.y} 2>/dev/null && ` +
+                            `  xdotool windowsize "$id" ${secondaryDisplay.width} ${secondaryDisplay.height} 2>/dev/null && ` +
+                            `  xdotool windowactivate "$id" 2>/dev/null && ` +
+                            `  xdotool key --window "$id" F11 2>/dev/null; ` +
+                            `done || ` +
+                            `(wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -e 0,${secondaryDisplay.x},${secondaryDisplay.y},${secondaryDisplay.width},${secondaryDisplay.height} && wmctrl -r "RACE CONTROL MONITOR PANTALLA SECUNDARIA" -b add,fullscreen)`;
+
                         console.log(`[MONITOR] Ejecutando comando de reposicionamiento robusto: ${moveCmd}`);
                         exec(moveCmd, (err) => {
                             if (err) console.error('[MONITOR] Error reposicionando ventana:', err.message);
@@ -749,9 +749,10 @@ app.get('/api/inputs', (req, res) => {
             return {
                 ...row,
                 online: !!isRunning,
-                codec: isRunning 
-                    ? (state.codec || streamManager.persistentCodecs[row.channel] || row.codec || '') 
-                    : (row.codec || streamManager.persistentCodecs[row.channel] || '')
+                codec: isRunning
+                    ? (state.codec || streamManager.persistentCodecs[row.channel] || row.codec || '')
+                    : (row.codec || streamManager.persistentCodecs[row.channel] || ''),
+                thumbTs: thumbCacheTs[row.channel] || 0
             };
         });
         res.json(decorated);
@@ -760,7 +761,7 @@ app.get('/api/inputs', (req, res) => {
 
 app.post('/api/inputs', (req, res) => {
     const { url, name, provider, location, remote, audiowtdg, wtdgsecs, enabled, buffer, ptz_enabled, ptz_ip, ptz_user, ptz_pass } = req.body;
-    
+
     // Asignar Udpsrv respetando los límites de Firewall (Settings)
     db.get('SELECT udpMin, udpMax FROM ports LIMIT 1', [], (err, ports) => {
         let udpsrv = req.body.udpsrv;
@@ -769,13 +770,13 @@ app.post('/api/inputs', (req, res) => {
             const max = ports ? ports.udpMax : 30000;
             udpsrv = Math.floor(Math.random() * (max - min + 1)) + min;
         }
-        
+
         const query = `INSERT INTO inputs (url, name, provider, location, remote, enabled, udpsrv, preview_enabled, buffer, ptz_enabled, ptz_ip, ptz_user, ptz_pass) 
                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`;
-        const params = [ url || '', name || 'Stream', provider || 'TodoStreaming', location || '', remote || '', 
-                         enabled !== false ? 1 : 0, udpsrv, buffer || 0, ptz_enabled || 0, ptz_ip || '', ptz_user || '', ptz_pass || '' ];
-        
-        db.run(query, params, function(err) {
+        const params = [url || '', name || 'Stream', provider || 'TodoStreaming', location || '', remote || '',
+        enabled !== false ? 1 : 0, udpsrv, buffer || 0, ptz_enabled || 0, ptz_ip || '', ptz_user || '', ptz_pass || ''];
+
+        db.run(query, params, function (err) {
             if (err) return res.status(500).json({ error: err.message });
             const channelId = this.lastID;
             res.status(201).json({ channel: channelId });
@@ -797,15 +798,15 @@ app.post('/api/inputs/:channel/toggle', (req, res) => {
     db.get('SELECT * FROM inputs WHERE channel = ?', [channelId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: 'Not found' });
         const newEnabled = row.enabled ? 0 : 1;
-        db.run('UPDATE inputs SET enabled = ? WHERE channel = ?', [newEnabled, channelId], function(err) {
+        db.run('UPDATE inputs SET enabled = ? WHERE channel = ?', [newEnabled, channelId], function (err) {
             io.emit('db_update', { event: 'input_toggled', channel: channelId, enabled: newEnabled });
             res.json({ enabled: newEnabled });
             if (newEnabled) {
                 // Must get updated row to spawn
                 db.get('SELECT * FROM inputs WHERE channel = ?', [channelId], (err, newRow) => {
-                   if (newRow) streamManager.startInput(newRow);
+                    if (newRow) streamManager.startInput(newRow);
                 });
-                
+
                 // Memory Feature: Restore previously active outputs
                 db.all('SELECT * FROM outputs WHERE channel = ? AND was_enabled = 1', [channelId], (err, outputs) => {
                     if (outputs && outputs.length > 0) {
@@ -819,7 +820,7 @@ app.post('/api/inputs/:channel/toggle', (req, res) => {
                 });
             } else {
                 streamManager.stopInput(channelId);
-                
+
                 // Memory Feature: Save active outputs and disable them
                 db.all('SELECT * FROM outputs WHERE channel = ? AND enabled = 1', [channelId], (err, outputs) => {
                     if (outputs && outputs.length > 0) {
@@ -839,10 +840,10 @@ app.post('/api/inputs/:channel/preview', (req, res) => {
     db.get('SELECT preview_enabled FROM inputs WHERE channel = ?', [channelId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: 'Not found' });
         const newState = row.preview_enabled ? 0 : 1;
-        db.run('UPDATE inputs SET preview_enabled = ? WHERE channel = ?', [newState, channelId], function(err) {
+        db.run('UPDATE inputs SET preview_enabled = ? WHERE channel = ?', [newState, channelId], function (err) {
             if (err) return res.status(500).json({ error: err.message });
             io.emit('db_update', { event: 'preview_changed', channel: channelId, preview_enabled: newState });
-            
+
             // Start or stop the actual visual ffmpeg processor independently 
             if (newState === 1) {
                 streamManager.startPreview(channelId);
@@ -866,10 +867,10 @@ app.put('/api/inputs/:channel', (req, res) => {
     const channelId = req.params.channel;
     const { url, name, buffer, ptz_enabled, ptz_ip, ptz_user, ptz_pass } = req.body;
     const query = `UPDATE inputs SET url = ?, name = ?, buffer = ?, ptz_enabled = ?, ptz_ip = ?, ptz_user = ?, ptz_pass = ? WHERE channel = ?`;
-    
-    db.run(query, [url, name, buffer || 0, ptz_enabled || 0, ptz_ip || '', ptz_user || '', ptz_pass || '', channelId], function(err) {
+
+    db.run(query, [url, name, buffer || 0, ptz_enabled || 0, ptz_ip || '', ptz_user || '', ptz_pass || '', channelId], function (err) {
         if (err) return res.status(500).json({ error: err.message });
-        
+
         // Restart the process if it was running with new data
         streamManager.stopInput(channelId);
         db.get('SELECT * FROM inputs WHERE channel = ?', [channelId], (err, row) => {
@@ -884,9 +885,9 @@ app.delete('/api/inputs/:channel', (req, res) => {
     const channelId = req.params.channel;
     streamManager.stopInput(channelId);
 
-    db.run('DELETE FROM inputs WHERE channel = ?', [channelId], function(err) {
+    db.run('DELETE FROM inputs WHERE channel = ?', [channelId], function (err) {
         if (err) return res.status(500).json({ error: err.message });
-        
+
         // Stop related outputs
         db.all('SELECT id FROM outputs WHERE channel = ?', [channelId], (err, rows) => {
             if (rows) rows.forEach(r => streamManager.stopOutput(r.id));
@@ -902,7 +903,7 @@ app.delete('/api/inputs/:channel', (req, res) => {
 app.post('/api/inputs/reorder', (req, res) => {
     const order = req.body; // [{ channel: 1, sort_order: 0 }, { channel: 5, sort_order: 1 }, ...]
     if (!Array.isArray(order)) return res.status(400).json({ error: 'Se espera un array' });
-    
+
     db.serialize(() => {
         const stmt = db.prepare('UPDATE inputs SET sort_order = ? WHERE channel = ?');
         for (const item of order) {
@@ -924,12 +925,12 @@ const onvif = require('onvif');
 app.post('/api/ptz/:channel/move', (req, res) => {
     const channelId = req.params.channel;
     const { command } = req.body; // 'Up', 'Down', 'Left', 'Right', 'ZoomTele', 'ZoomWide', 'Stop'
-    
+
     db.get('SELECT ptz_enabled, ptz_ip, ptz_user, ptz_pass FROM inputs WHERE channel = ?', [channelId], (err, row) => {
         if (err || !row || !row.ptz_enabled || !row.ptz_ip) {
             return res.status(400).json({ error: 'PTZ no configurado o deshabilitado para este canal' });
         }
-        
+
         const ipParts = row.ptz_ip.split(':');
         const host = ipParts[0];
         const port = ipParts.length > 1 ? parseInt(ipParts[1]) : 80;
@@ -939,27 +940,27 @@ app.post('/api/ptz/:channel/move', (req, res) => {
             username: row.ptz_user,
             password: row.ptz_pass,
             port: port
-        }, function(err) {
+        }, function (err) {
             if (err) return res.status(500).json({ error: 'No se pudo conectar a la cámara: ' + err.message });
-            
+
             if (command === 'Stop') {
                 cam.stop({}, () => res.json({ success: true }));
                 return;
             }
-            
+
             // Mapeo de comandos a ONVIF continuousMove
             let x = 0, y = 0, z = 0;
             const speed = 0.5;
-            
+
             if (command === 'Left') x = -speed;
             if (command === 'Right') x = speed;
             if (command === 'Up') y = speed;
             if (command === 'Down') y = -speed;
             if (command === 'ZoomTele') z = speed;
             if (command === 'ZoomWide') z = -speed;
-            
+
             // Dahua/X-Security cameras often silently ignore continuousMove if timeout is not specified
-            cam.continuousMove({ x: x, y: y, zoom: z, timeout: 5000 }, function(err) {
+            cam.continuousMove({ x: x, y: y, zoom: z, timeout: 5000 }, function (err) {
                 if (err) return res.status(500).json({ error: 'Error enviando comando: ' + err.message });
                 res.json({ success: true });
             });
@@ -969,12 +970,12 @@ app.post('/api/ptz/:channel/move', (req, res) => {
 
 app.get('/api/ptz/:channel/stream', (req, res) => {
     const channelId = req.params.channel;
-    
+
     db.get('SELECT ptz_enabled, ptz_ip, ptz_user, ptz_pass, url FROM inputs WHERE channel = ?', [channelId], (err, row) => {
         if (err || !row || !row.ptz_enabled || !row.ptz_ip) {
             return res.status(404).send('PTZ not configured');
         }
-        
+
         // Extract IP and Port from the main input URL if it's RTSP, otherwise fallback to ptz_ip
         let host = row.ptz_ip.split(':')[0];
         let port = '554';
@@ -984,24 +985,24 @@ app.get('/api/ptz/:channel/stream', (req, res) => {
                 host = urlObj.hostname;
                 if (urlObj.port) port = urlObj.port;
             }
-        } catch(e) {}
-        
+        } catch (e) { }
+
         // Construct RTSP substream URL for Dahua/X-Security
         const user = row.ptz_user ? encodeURIComponent(row.ptz_user) : '';
         const pass = row.ptz_pass ? encodeURIComponent(row.ptz_pass) : '';
         const auth = (user && pass) ? `${user}:${pass}@` : '';
         const rtspUrl = `rtsp://${auth}${host}:${port}/cam/realmonitor?channel=1&subtype=1&unicast=true`;
-        
+
         res.writeHead(200, {
             'Content-Type': 'multipart/x-mixed-replace; boundary=ffmpeg',
             'Cache-Control': 'no-cache',
             'Connection': 'close',
             'Pragma': 'no-cache'
         });
-        
+
         const { spawn } = require('child_process');
         const ffmpegCmd = streamManager.getFFmpegPath();
-        
+
         const args = [
             '-hide_banner', '-y',
             '-rtsp_transport', 'tcp',
@@ -1011,20 +1012,20 @@ app.get('/api/ptz/:channel/stream', (req, res) => {
             '-q:v', '5', // Quality (lower is better, 5 is a good balance)
             'pipe:1'
         ];
-        
+
         const child = spawn(ffmpegCmd, args);
-        
+
         child.stdout.pipe(res);
-        
+
         child.stderr.on('data', (data) => {
             // Uncomment for debugging if needed: console.log(`[PTZ-MJPEG] ${data.toString()}`);
         });
-        
+
         res.on('close', () => {
             console.log(`[PTZ-MJPEG] Client disconnected, killing ffmpeg for channel ${channelId}`);
             child.kill('SIGKILL');
         });
-        
+
         child.on('error', (err) => {
             console.error(`[PTZ-MJPEG] FFmpeg error: ${err.message}`);
             if (!res.headersSent) res.status(500).end();
@@ -1045,7 +1046,7 @@ app.get('/api/outputs', (req, res) => {
 app.post('/api/outputs', (req, res) => {
     const { channel, url, location, remote, enabled, vcodec } = req.body;
     if (!channel) return res.status(400).json({ error: "Input 'channel' is required" });
-    
+
     // We need the udpsrv of the parent channel to link them
     db.get('SELECT udpsrv FROM inputs WHERE channel = ?', [channel], (err, parentRaw) => {
         if (err || !parentRaw) return res.status(400).json({ error: "Parent input not found" });
@@ -1053,14 +1054,14 @@ app.post('/api/outputs', (req, res) => {
         const udpsrv = parentRaw.udpsrv;
         const query = `INSERT INTO outputs (channel, url, location, remote, enabled, udpsrv, vcodec) 
                        VALUES (?, ?, ?, ?, ?, ?, ?)`;
-        const params = [ channel, url || '', location || '', remote || '', enabled !== false ? 1 : 0, udpsrv, vcodec || 'copy' ];
-        
-        db.run(query, params, function(err) {
+        const params = [channel, url || '', location || '', remote || '', enabled !== false ? 1 : 0, udpsrv, vcodec || 'copy'];
+
+        db.run(query, params, function (err) {
             if (err) return res.status(500).json({ error: err.message });
             const outId = this.lastID;
             res.status(201).json({ id: outId });
             io.emit('db_update', { event: 'outputs_changed' });
-            
+
             if (enabled !== false) {
                 db.get('SELECT * FROM outputs WHERE id = ?', [outId], (err, row) => {
                     if (row) streamManager.startOutput(row);
@@ -1075,12 +1076,12 @@ app.post('/api/outputs/:id/toggle', (req, res) => {
     db.get('SELECT * FROM outputs WHERE id = ?', [id], (err, row) => {
         if (err || !row) return res.status(404).json({ error: 'Not found' });
         const newEnabled = row.enabled ? 0 : 1;
-        db.run('UPDATE outputs SET enabled = ?, was_enabled = 0 WHERE id = ?', [newEnabled, id], function(err) {
+        db.run('UPDATE outputs SET enabled = ?, was_enabled = 0 WHERE id = ?', [newEnabled, id], function (err) {
             io.emit('db_update', { event: 'output_toggled', id: id, enabled: newEnabled });
             res.json({ enabled: newEnabled });
             if (newEnabled) {
                 db.get('SELECT * FROM outputs WHERE id = ?', [id], (err, newRow) => {
-                   if (newRow) streamManager.startOutput(newRow);
+                    if (newRow) streamManager.startOutput(newRow);
                 });
             } else {
                 streamManager.stopOutput(id);
@@ -1092,9 +1093,9 @@ app.post('/api/outputs/:id/toggle', (req, res) => {
 app.put('/api/outputs/:id', (req, res) => {
     const id = req.params.id;
     const { url, location, vcodec } = req.body;
-    db.run(`UPDATE outputs SET url = ?, location = ?, vcodec = ? WHERE id = ?`, [url, location, vcodec || 'copy', id], function(err) {
+    db.run(`UPDATE outputs SET url = ?, location = ?, vcodec = ? WHERE id = ?`, [url, location, vcodec || 'copy', id], function (err) {
         if (err) return res.status(500).json({ error: err.message });
-        
+
         // Restart the process if it was running with new data
         streamManager.stopOutput(id);
         db.get('SELECT o.*, i.udpsrv FROM outputs o JOIN inputs i ON o.channel = i.channel WHERE o.id = ?', [id], (err, row) => {
@@ -1109,7 +1110,7 @@ app.delete('/api/outputs/:id', (req, res) => {
     const id = req.params.id;
     streamManager.stopOutput(id);
 
-    db.run('DELETE FROM outputs WHERE id = ?', [id], function(err) {
+    db.run('DELETE FROM outputs WHERE id = ?', [id], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ deleted: this.changes });
         io.emit('db_update', { event: 'outputs_changed' });
@@ -1146,8 +1147,8 @@ function stopAllRecordings() {
     activeSessions.forEach(sid => {
         const procs = activeRecordingProcs[sid] || [];
         procs.forEach(child => {
-            try { child.stdin.write('q'); } catch (e) {}
-            try { child.kill('SIGTERM'); } catch (e) {}
+            try { child.stdin.write('q'); } catch (e) { }
+            try { child.kill('SIGTERM'); } catch (e) { }
         });
 
         if (activeRecordingProcs[sid].lateJoinWatcher) {
@@ -1163,7 +1164,7 @@ function stopAllRecordings() {
                 if (!isDirectObj && sock.destroy) sock.destroy();
             });
         }
-        
+
         delete activeRecordingProcs[sid];
         console.log(`[REC] Stopped previous session ${sid} (${procs.length} processes)`);
     });
@@ -1177,7 +1178,7 @@ app.post('/api/recordings/start', (req, res) => {
         const detected = detectExternalDisk();
         if (detected) {
             const recDir = path.join(detected, 'recordings');
-            try { fs.mkdirSync(recDir, { recursive: true }); } catch(e) {}
+            try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) { }
             mediaRoot = recDir;
             // Registrar la ruta de media en express (hot-add)
             app.use('/media', express.static(mediaRoot, {
@@ -1203,194 +1204,194 @@ app.post('/api/recordings/start', (req, res) => {
     const startTime = new Date().toISOString();
 
     db.run('INSERT INTO recording_sessions (id, start_time, name) VALUES (?, ?, ?)',
-        [sessionId, startTime, req.body.name || 'Global Session'], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+        [sessionId, startTime, req.body.name || 'Global Session'], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
 
-        db.all('SELECT * FROM inputs WHERE enabled = 1', [], (err, inputs) => {
-            if (err || !inputs || inputs.length === 0)
-                return res.status(400).json({ error: 'No active inputs found' });
+            db.all('SELECT * FROM inputs WHERE enabled = 1', [], (err, inputs) => {
+                if (err || !inputs || inputs.length === 0)
+                    return res.status(400).json({ error: 'No active inputs found' });
 
-            const { spawn } = require('child_process');
-            const ffmpegCmd = streamManager.getFFmpegPath();
+                const { spawn } = require('child_process');
+                const ffmpegCmd = streamManager.getFFmpegPath();
 
-            activeRecordingProcs[sessionId] = [];
-            activeRecordingProcs[sessionId].sockets = []; // cleanup sockets on stop
-            activeRecordingProcs[sessionId].recordingChannels = new Set(); // canales ya en grabación
+                activeRecordingProcs[sessionId] = [];
+                activeRecordingProcs[sessionId].sockets = []; // cleanup sockets on stop
+                activeRecordingProcs[sessionId].recordingChannels = new Set(); // canales ya en grabación
 
-            // ── Función reutilizable: iniciar grabación de un canal individual ──
-            function startRecordingChannel(input) {
-                const inputState = streamManager.activeInputs[input.channel];
-                if (!inputState || !inputState.router) return false;
-                if (!activeRecordingProcs[sessionId]) return false;
-                if (activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) return false;
+                // ── Función reutilizable: iniciar grabación de un canal individual ──
+                function startRecordingChannel(input) {
+                    const inputState = streamManager.activeInputs[input.channel];
+                    if (!inputState || !inputState.router) return false;
+                    if (!activeRecordingProcs[sessionId]) return false;
+                    if (activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) return false;
 
-                const hlsPath = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.m3u8`);
-                const mp4Path = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.mp4`);
+                    const hlsPath = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.m3u8`);
+                    const mp4Path = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.mp4`);
 
-                const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
-                // Passthrough puro para TODAS las cámaras — sin transcodificación.
-                // H.265 en HLS funciona en navegadores modernos y evita crash de FFmpeg por GPU/CPU.
-                const hlsCodecArgs = ['-c:v', 'copy'];
+                    const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
+                    // Passthrough puro para TODAS las cámaras — sin transcodificación.
+                    // H.265 en HLS funciona en navegadores modernos y evita crash de FFmpeg por GPU/CPU.
+                    const hlsCodecArgs = ['-c:v', 'copy'];
 
-                const args = [
-                    '-hide_banner', '-y',
-                    '-fflags', '+genpts',
-                    '-err_detect', 'ignore_err',
-                    '-probesize', '500000',
-                    '-analyzeduration', '500000',
-                    '-thread_queue_size', '4096',
-                    '-f', 'mpegts',
-                    '-i', '-'
-                ];
+                    const args = [
+                        '-hide_banner', '-y',
+                        '-fflags', '+genpts',
+                        '-err_detect', 'ignore_err',
+                        '-probesize', '500000',
+                        '-analyzeduration', '500000',
+                        '-thread_queue_size', '4096',
+                        '-f', 'mpegts',
+                        '-i', '-'
+                    ];
 
-                const hlsOutArgs = [
-                    '-map', '0:v?', '-map', '0:a?',
-                    ...hlsCodecArgs,
-                    '-c:a', 'aac', '-b:a', '128k',
-                    '-hls_time', '2',
-                    '-hls_list_size', '0',
-                    '-hls_segment_type', 'mpegts',
-                    '-f', 'hls', hlsPath
-                ];
+                    const hlsOutArgs = [
+                        '-map', '0:v?', '-map', '0:a?',
+                        ...hlsCodecArgs,
+                        '-c:a', 'aac', '-b:a', '128k',
+                        '-hls_time', '2',
+                        '-hls_list_size', '0',
+                        '-hls_segment_type', 'mpegts',
+                        '-f', 'hls', hlsPath
+                    ];
 
-                const mp4OutArgs = [
-                    '-map', '0:v?', '-map', '0:a?',
-                    '-c:v', 'copy',
-                    '-c:a', 'aac', '-b:a', '128k',
-                    '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-                    '-f', 'mp4', mp4Path
-                ];
+                    const mp4OutArgs = [
+                        '-map', '0:v?', '-map', '0:a?',
+                        '-c:v', 'copy',
+                        '-c:a', 'aac', '-b:a', '128k',
+                        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+                        '-f', 'mp4', mp4Path
+                    ];
 
-                args.push(...hlsOutArgs, ...mp4OutArgs);
+                    args.push(...hlsOutArgs, ...mp4OutArgs);
 
-                console.log(`[REC-START] Session ${sessionId} ch${input.channel} via stdin`);
-                const child = spawn(ffmpegCmd, args);
+                    console.log(`[REC-START] Session ${sessionId} ch${input.channel} via stdin`);
+                    const child = spawn(ffmpegCmd, args);
 
-                let lastRecLog = 0;
-                child.stderr.on('data', d => {
-                    const text = d.toString();
-                    const isKnownNoise = /PPS id out of range|Skipping invalid undecodable NALU|aac_adtstoasc|Last message repeated|Malformed AAC|Error parsing NAL unit|hevc/i.test(text);
-                    if (isKnownNoise) return;
-                    const isImportant = /error|fail|unable|operation not permitted/i.test(text);
-                    const now = Date.now();
-                    if (isImportant) {
-                        const line = text.split('\n')[0].trim();
-                        if (line) broadCastLog('WARN', `[REC-${sessionId}|ch${input.channel}] ${line}`);
-                    } else if (now - lastRecLog > 8000) {
-                        lastRecLog = now;
-                    }
-                });
-                const recStartTime = Date.now();
-                let didFallback = false;
-
-                child.on('exit', code => {
-                    broadCastLog('INFO', `[REC-${sessionId}] ch${input.channel} FFmpeg exited ${code}`);
-                    
-                    const elapsed = Date.now() - recStartTime;
-                    if (code !== 0 && code !== null && elapsed < 4000 && streamManager.nvencAvailable && !didFallback) {
-                        broadCastLog('WARN', `⚠️ [REC-${sessionId}] Fallo de decodificador GPU en grabación para canal ${input.channel}. Reintentando con CPU de forma segura...`);
-                        didFallback = true;
-                        
-                        const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid'].includes(arg));
-                        const fallbackChild = spawn(ffmpegCmd, cleanArgs);
-                        
-                        if (activeRecordingProcs[sessionId]) {
-                            const pIdx = activeRecordingProcs[sessionId].indexOf(child);
-                            if (pIdx !== -1) {
-                                activeRecordingProcs[sessionId][pIdx] = fallbackChild;
-                            } else {
-                                activeRecordingProcs[sessionId].push(fallbackChild);
-                            }
-                            
-                            fallbackChild.on('exit', fCode => {
-                                broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
-                                if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
-                                    activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
-                                }
-                            });
-                            
-                            fallbackChild.stdin.on('error', () => {});
-                            const fallbackSub = {
-                                write(chunk) {
-                                    try {
-                                        if (!fallbackChild.killed && fallbackChild.stdin && fallbackChild.stdin.writable) {
-                                            fallbackChild.stdin.write(chunk);
-                                        }
-                                    } catch(e) {}
-                                }
-                            };
-                            const routerState2 = streamManager.activeInputs[input.channel];
-                            if (routerState2 && routerState2.router) {
-                                routerState2.router.subscribers.add(fallbackSub);
-                            }
-                            activeRecordingProcs[sessionId].sockets.push({ sock: fallbackSub, channel: input.channel, isDirectObj: true });
+                    let lastRecLog = 0;
+                    child.stderr.on('data', d => {
+                        const text = d.toString();
+                        const isKnownNoise = /PPS id out of range|Skipping invalid undecodable NALU|aac_adtstoasc|Last message repeated|Malformed AAC|Error parsing NAL unit|hevc/i.test(text);
+                        if (isKnownNoise) return;
+                        const isImportant = /error|fail|unable|operation not permitted/i.test(text);
+                        const now = Date.now();
+                        if (isImportant) {
+                            const line = text.split('\n')[0].trim();
+                            if (line) broadCastLog('WARN', `[REC-${sessionId}|ch${input.channel}] ${line}`);
+                        } else if (now - lastRecLog > 8000) {
+                            lastRecLog = now;
                         }
-                    } else {
-                        // Limpiar el canal para que el watcher pueda intentar reiniciarlo si la cámara vuelve
-                        if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
-                            activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
-                        }
-                    }
-                });
+                    });
+                    const recStartTime = Date.now();
+                    let didFallback = false;
 
-                activeRecordingProcs[sessionId].push(child);
+                    child.on('exit', code => {
+                        broadCastLog('INFO', `[REC-${sessionId}] ch${input.channel} FFmpeg exited ${code}`);
 
-                child.stdin.on('error', () => {});
-                const subObj = {
-                    write(chunk) {
-                        try {
-                            if (!child.killed && child.stdin && child.stdin.writable) {
-                                child.stdin.write(chunk);
+                        const elapsed = Date.now() - recStartTime;
+                        if (code !== 0 && code !== null && elapsed < 4000 && streamManager.nvencAvailable && !didFallback) {
+                            broadCastLog('WARN', `⚠️ [REC-${sessionId}] Fallo de decodificador GPU en grabación para canal ${input.channel}. Reintentando con CPU de forma segura...`);
+                            didFallback = true;
+
+                            const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid'].includes(arg));
+                            const fallbackChild = spawn(ffmpegCmd, cleanArgs);
+
+                            if (activeRecordingProcs[sessionId]) {
+                                const pIdx = activeRecordingProcs[sessionId].indexOf(child);
+                                if (pIdx !== -1) {
+                                    activeRecordingProcs[sessionId][pIdx] = fallbackChild;
+                                } else {
+                                    activeRecordingProcs[sessionId].push(fallbackChild);
+                                }
+
+                                fallbackChild.on('exit', fCode => {
+                                    broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
+                                    if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
+                                        activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
+                                    }
+                                });
+
+                                fallbackChild.stdin.on('error', () => { });
+                                const fallbackSub = {
+                                    write(chunk) {
+                                        try {
+                                            if (!fallbackChild.killed && fallbackChild.stdin && fallbackChild.stdin.writable) {
+                                                fallbackChild.stdin.write(chunk);
+                                            }
+                                        } catch (e) { }
+                                    }
+                                };
+                                const routerState2 = streamManager.activeInputs[input.channel];
+                                if (routerState2 && routerState2.router) {
+                                    routerState2.router.subscribers.add(fallbackSub);
+                                }
+                                activeRecordingProcs[sessionId].sockets.push({ sock: fallbackSub, channel: input.channel, isDirectObj: true });
                             }
-                        } catch(e) {}
-                    }
-                };
-                const routerState = streamManager.activeInputs[input.channel];
-                if (routerState && routerState.router) {
-                    routerState.router.subscribers.add(subObj);
-                }
-                activeRecordingProcs[sessionId].sockets.push({ sock: subObj, channel: input.channel, isDirectObj: true });
+                        } else {
+                            // Limpiar el canal para que el watcher pueda intentar reiniciarlo si la cámara vuelve
+                            if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
+                                activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
+                            }
+                        }
+                    });
 
-                db.run(`INSERT OR REPLACE INTO session_files
+                    activeRecordingProcs[sessionId].push(child);
+
+                    child.stdin.on('error', () => { });
+                    const subObj = {
+                        write(chunk) {
+                            try {
+                                if (!child.killed && child.stdin && child.stdin.writable) {
+                                    child.stdin.write(chunk);
+                                }
+                            } catch (e) { }
+                        }
+                    };
+                    const routerState = streamManager.activeInputs[input.channel];
+                    if (routerState && routerState.router) {
+                        routerState.router.subscribers.add(subObj);
+                    }
+                    activeRecordingProcs[sessionId].sockets.push({ sock: subObj, channel: input.channel, isDirectObj: true });
+
+                    db.run(`INSERT OR REPLACE INTO session_files
                     (session_id, channel, hls_path, mp4_path) VALUES (?,?,?,?)`,
-                    [sessionId, input.channel, hlsPath, mp4Path]);
+                        [sessionId, input.channel, hlsPath, mp4Path]);
 
-                activeRecordingProcs[sessionId].recordingChannels.add(input.channel);
-                return true;
-            }
-
-            // ── Iniciar grabación de todos los canales disponibles ahora ──
-            let startedCount = 0;
-            inputs.forEach(input => {
-                const ok = startRecordingChannel(input);
-                if (ok) startedCount++;
-                else console.log(`[REC] Ch${input.channel} router not active — will retry later`);
-            });
-
-            // ── Watcher: comprobar cada 10s si hay canales que se reconectaron y añadirlos ──
-            const lateJoinWatcher = setInterval(() => {
-                if (!activeRecordingProcs[sessionId]) {
-                    clearInterval(lateJoinWatcher);
-                    return;
+                    activeRecordingProcs[sessionId].recordingChannels.add(input.channel);
+                    return true;
                 }
-                inputs.forEach(input => {
-                    if (!activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) {
-                        const inputState = streamManager.activeInputs[input.channel];
-                        if (inputState && inputState.router) {
-                            console.log(`[REC-LATE-JOIN] Ch${input.channel} reconectada — iniciando grabación tardía`);
-                            broadCastLog('INFO', `📹 Canal ${input.channel} reconectado, grabación iniciada tardíamente`);
-                            startRecordingChannel(input);
-                        }
-                    }
-                });
-            }, 10000);
-            // Guardar referencia al watcher para limpiarlo al parar
-            activeRecordingProcs[sessionId].lateJoinWatcher = lateJoinWatcher;
 
-            io.emit('db_update', { event: 'recordings_started', session_id: sessionId });
-            res.json({ session_id: sessionId, start_time: startTime, message: `Started ${startedCount}/${inputs.length} recordings.` });
+                // ── Iniciar grabación de todos los canales disponibles ahora ──
+                let startedCount = 0;
+                inputs.forEach(input => {
+                    const ok = startRecordingChannel(input);
+                    if (ok) startedCount++;
+                    else console.log(`[REC] Ch${input.channel} router not active — will retry later`);
+                });
+
+                // ── Watcher: comprobar cada 10s si hay canales que se reconectaron y añadirlos ──
+                const lateJoinWatcher = setInterval(() => {
+                    if (!activeRecordingProcs[sessionId]) {
+                        clearInterval(lateJoinWatcher);
+                        return;
+                    }
+                    inputs.forEach(input => {
+                        if (!activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) {
+                            const inputState = streamManager.activeInputs[input.channel];
+                            if (inputState && inputState.router) {
+                                console.log(`[REC-LATE-JOIN] Ch${input.channel} reconectada — iniciando grabación tardía`);
+                                broadCastLog('INFO', `📹 Canal ${input.channel} reconectado, grabación iniciada tardíamente`);
+                                startRecordingChannel(input);
+                            }
+                        }
+                    });
+                }, 10000);
+                // Guardar referencia al watcher para limpiarlo al parar
+                activeRecordingProcs[sessionId].lateJoinWatcher = lateJoinWatcher;
+
+                io.emit('db_update', { event: 'recordings_started', session_id: sessionId });
+                res.json({ session_id: sessionId, start_time: startTime, message: `Started ${startedCount}/${inputs.length} recordings.` });
+            });
         });
-    });
 });
 
 app.post('/api/recordings/stop/:sessionId', (req, res) => {
@@ -1406,7 +1407,7 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
 
     // Desconectar sockets del router
     sockets.forEach(({ sock, channel }) => {
-        try { sock.destroy(); } catch (e) {}
+        try { sock.destroy(); } catch (e) { }
         if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
             streamManager.activeInputs[channel].router.subscribers.delete(sock);
         }
@@ -1414,15 +1415,15 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
 
     // Matar procesos FFmpeg
     procs.forEach(child => {
-        try { child.stdin.write('q'); } catch (e) {}
-        try { child.kill('SIGTERM'); } catch (e) {}
+        try { child.stdin.write('q'); } catch (e) { }
+        try { child.kill('SIGTERM'); } catch (e) { }
     });
     delete activeRecordingProcs[sessionId];
 
     // Update end_time
     const endTime = new Date().toISOString();
     db.run('UPDATE recording_sessions SET end_time = ? WHERE id = ?',
-        [endTime, sessionId], function(err) {
+        [endTime, sessionId], function (err) {
             io.emit('db_update', { event: 'outputs_changed' });
             res.json({ stopped: procs.length, session_id: sessionId, end_time: endTime });
         });
@@ -1451,176 +1452,180 @@ app.post('/api/recordings/export', (req, res) => {
     db.get('SELECT * FROM session_files WHERE session_id = ? AND channel = ?',
         [session_id, channel], (dbErr, fileRow) => {
 
-        // ── try-catch que cubre todo el callback asíncrono ──
-        try {
-            if (dbErr) {
-                console.error(`[EXPORT] DB error: ${dbErr.message}`);
-                return res.status(500).json({ error: 'Error de base de datos: ' + dbErr.message });
-            }
-
-            console.log('[EXPORT] DB result:', fileRow ? `mp4=${fileRow.mp4_path}, hls=${fileRow.hls_path}` : 'SIN REGISTRO');
-
-            // ── Resolver ruta del archivo fuente ──
-            let sourcePath = null;
-
-            if (fileRow && fileRow.mp4_path && fs.existsSync(fileRow.mp4_path)) {
-                sourcePath = fileRow.mp4_path;
-            } else if (fileRow && fileRow.hls_path && fs.existsSync(fileRow.hls_path)) {
-                sourcePath = fileRow.hls_path;
-            } else if (mediaRoot) {
-                const guessedMp4 = path.join(mediaRoot, `CAM_${channel}_${session_id}.mp4`);
-                if (fs.existsSync(guessedMp4)) sourcePath = guessedMp4;
-            }
-
-            if (!sourcePath) {
-                const detail = fileRow
-                    ? `MP4: ${fileRow.mp4_path || 'N/A'} (existe: ${fileRow.mp4_path ? fs.existsSync(fileRow.mp4_path) : 'N/A'}) | HLS: ${fileRow.hls_path || 'N/A'} (existe: ${fileRow.hls_path ? fs.existsSync(fileRow.hls_path) : 'N/A'})`
-                    : `No hay registro en session_files para sesión ${session_id} canal ${channel}`;
-                console.error(`[EXPORT] Archivo fuente no encontrado. ${detail}`);
-                return res.status(404).json({ error: 'Archivo de grabación no encontrado en disco', detail });
-            }
-
-            console.log(`[EXPORT] Fuente: ${sourcePath}`);
-
-            // ── Nombre del clip ──
-            const now = new Date();
-            const dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
-            const timeStr = `${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
-            const clipLabel = (label || `clip_${Math.floor(start_time)}s`).replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
-            const exportName = `${clipLabel}_${dateStr}_${timeStr}.mp4`;
-
-            // ── Destino ──
-            const baseDestDir = req.body.dest_path || mediaRoot;
-            if (!baseDestDir) {
-                console.error('[EXPORT] Sin disco de destino configurado');
-                return res.status(503).json({ error: 'No hay disco de grabación configurado' });
-            }
-
-            const destDir = path.join(baseDestDir, 'clips');
-            console.log(`[EXPORT] Destino: ${destDir}/${exportName}`);
-
+            // ── try-catch que cubre todo el callback asíncrono ──
             try {
-                fs.mkdirSync(destDir, { recursive: true });
-                fs.accessSync(destDir, fs.constants.W_OK);
-            } catch(mkErr) {
-                const isPermission = mkErr.code === 'EACCES' || mkErr.code === 'EPERM';
-                const hint = isPermission
-                    ? ' Ejecuta: sudo chmod 777 "' + baseDestDir + '" o comprueba que el disco no está montado como solo lectura.'
-                    : '';
-                console.error(`[EXPORT] No se puede crear/escribir en destino: ${mkErr.message}${hint}`);
-                return res.status(500).json({
-                    error: `No se puede escribir en el disco: ${mkErr.message}`,
-                    hint: hint || undefined
-                });
-            }
-
-            const exportPath = path.join(destDir, exportName);
-            const isInternalDest = mediaRoot && (baseDestDir === mediaRoot || baseDestDir.startsWith(mediaRoot));
-
-            // ── FFmpeg ──
-            let ffmpegBin;
-            try {
-                ffmpegBin = streamManager.getFFmpegPath();
-            } catch (e) {
-                ffmpegBin = 'ffmpeg'; // fallback al PATH del sistema
-            }
-            console.log(`[EXPORT] FFmpeg: ${ffmpegBin}`);
-
-            if (path.isAbsolute(ffmpegBin) && !fs.existsSync(ffmpegBin)) {
-                console.error(`[EXPORT] FFmpeg no encontrado en: ${ffmpegBin}`);
-                return res.status(500).json({ error: `FFmpeg no encontrado en: ${ffmpegBin}` });
-            }
-
-            const args = [
-                '-hide_banner', '-y',
-                '-ss', String(start_time),
-                '-i', sourcePath,
-                '-t', String(end_time - start_time),
-                '-c', 'copy',
-                '-movflags', '+faststart',
-                exportPath
-            ];
-
-            console.log(`[EXPORT] Comando: ${ffmpegBin} ${args.join(' ')}`);
-
-            let responded = false;
-            const safeRespond = (fn) => {
-                if (!responded && !res.headersSent) {
-                    responded = true;
-                    try { fn(); } catch(e) { console.error('[EXPORT] Error al enviar respuesta:', e.message); }
+                if (dbErr) {
+                    console.error(`[EXPORT] DB error: ${dbErr.message}`);
+                    return res.status(500).json({ error: 'Error de base de datos: ' + dbErr.message });
                 }
-            };
 
-            let stderrLines = [];
-            let child;
-            try {
-                child = spawn(ffmpegBin, args);
-            } catch (spawnErr) {
-                console.error(`[EXPORT] Error al lanzar FFmpeg: ${spawnErr.message}`);
-                return res.status(500).json({ error: `No se pudo lanzar FFmpeg: ${spawnErr.message}` });
-            }
+                console.log('[EXPORT] DB result:', fileRow ? `mp4=${fileRow.mp4_path}, hls=${fileRow.hls_path}` : 'SIN REGISTRO');
 
-            child.stderr.on('data', (d) => {
-                const line = d.toString().trim();
-                if (line) stderrLines.push(line);
-                if (stderrLines.length > 20) stderrLines.shift();
-            });
+                // ── Resolver ruta del archivo fuente ──
+                let sourcePath = null;
 
-            child.on('error', (err) => {
-                console.error(`[EXPORT] FFmpeg spawn error: ${err.message}`);
-                safeRespond(() => res.status(500).json({ error: `FFmpeg no se pudo ejecutar: ${err.message}` }));
-            });
+                if (fileRow && fileRow.mp4_path && fs.existsSync(fileRow.mp4_path)) {
+                    sourcePath = fileRow.mp4_path;
+                } else if (fileRow && fileRow.hls_path && fs.existsSync(fileRow.hls_path)) {
+                    sourcePath = fileRow.hls_path;
+                } else if (mediaRoot) {
+                    const guessedMp4 = path.join(mediaRoot, `CAM_${channel}_${session_id}.mp4`);
+                    if (fs.existsSync(guessedMp4)) sourcePath = guessedMp4;
+                }
 
-            child.on('close', code => {
+                if (!sourcePath) {
+                    const detail = fileRow
+                        ? `MP4: ${fileRow.mp4_path || 'N/A'} (existe: ${fileRow.mp4_path ? fs.existsSync(fileRow.mp4_path) : 'N/A'}) | HLS: ${fileRow.hls_path || 'N/A'} (existe: ${fileRow.hls_path ? fs.existsSync(fileRow.hls_path) : 'N/A'})`
+                        : `No hay registro en session_files para sesión ${session_id} canal ${channel}`;
+                    console.error(`[EXPORT] Archivo fuente no encontrado. ${detail}`);
+                    return res.status(404).json({ error: 'Archivo de grabación no encontrado en disco', detail });
+                }
+
+                console.log(`[EXPORT] Fuente: ${sourcePath}`);
+
+                // ── Nombre del clip ──
+                const now = new Date();
+                const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+                const timeStr = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+                const clipLabel = (label || `clip_${Math.floor(start_time)}s`).replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
+                const exportName = `${clipLabel}_${dateStr}_${timeStr}.mp4`;
+
+                // ── Destino ──
+                const baseDestDir = req.body.dest_path || mediaRoot;
+                if (!baseDestDir) {
+                    console.error('[EXPORT] Sin disco de destino configurado');
+                    return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+                }
+
+                const destDir = path.join(baseDestDir, 'clips');
+                console.log(`[EXPORT] Destino: ${destDir}/${exportName}`);
+
                 try {
-                    const lastErr = stderrLines.slice(-3).join(' | ');
-                    if (code === 0) {
-                        console.log(`[EXPORT] ✓ OK: ${exportName}`);
-                        io.emit('server_log', { timestamp: new Date().toISOString(), level: 'INFO',
-                            message: `✓ Clip exportado: ${exportName}` });
-                        safeRespond(() => {
-                            const response = { ok: true, filename: exportName, path: exportPath };
-                            if (isInternalDest) {
-                                response.downloadUrl = `/api/exports/download/${encodeURIComponent(exportName)}`;
-                            }
-                            res.json(response);
-                        });
-                    } else {
-                        console.error(`[EXPORT] ✗ FALLO: ${exportName} (código ${code}) — ${lastErr}`);
-                        io.emit('server_log', { timestamp: new Date().toISOString(), level: 'ERROR',
-                            message: `✗ Export fallido (${code}): ${lastErr}` });
-                        safeRespond(() => res.status(500).json({
-                            error: `FFmpeg falló con código ${code}`,
-                            detail: lastErr || 'Sin detalle disponible',
-                            source: sourcePath,
-                            dest: exportPath
+                    fs.mkdirSync(destDir, { recursive: true });
+                    fs.accessSync(destDir, fs.constants.W_OK);
+                } catch (mkErr) {
+                    const isPermission = mkErr.code === 'EACCES' || mkErr.code === 'EPERM';
+                    const hint = isPermission
+                        ? ' Ejecuta: sudo chmod 777 "' + baseDestDir + '" o comprueba que el disco no está montado como solo lectura.'
+                        : '';
+                    console.error(`[EXPORT] No se puede crear/escribir en destino: ${mkErr.message}${hint}`);
+                    return res.status(500).json({
+                        error: `No se puede escribir en el disco: ${mkErr.message}`,
+                        hint: hint || undefined
+                    });
+                }
+
+                const exportPath = path.join(destDir, exportName);
+                const isInternalDest = mediaRoot && (baseDestDir === mediaRoot || baseDestDir.startsWith(mediaRoot));
+
+                // ── FFmpeg ──
+                let ffmpegBin;
+                try {
+                    ffmpegBin = streamManager.getFFmpegPath();
+                } catch (e) {
+                    ffmpegBin = 'ffmpeg'; // fallback al PATH del sistema
+                }
+                console.log(`[EXPORT] FFmpeg: ${ffmpegBin}`);
+
+                if (path.isAbsolute(ffmpegBin) && !fs.existsSync(ffmpegBin)) {
+                    console.error(`[EXPORT] FFmpeg no encontrado en: ${ffmpegBin}`);
+                    return res.status(500).json({ error: `FFmpeg no encontrado en: ${ffmpegBin}` });
+                }
+
+                const args = [
+                    '-hide_banner', '-y',
+                    '-ss', String(start_time),
+                    '-i', sourcePath,
+                    '-t', String(end_time - start_time),
+                    '-c', 'copy',
+                    '-movflags', '+faststart',
+                    exportPath
+                ];
+
+                console.log(`[EXPORT] Comando: ${ffmpegBin} ${args.join(' ')}`);
+
+                let responded = false;
+                const safeRespond = (fn) => {
+                    if (!responded && !res.headersSent) {
+                        responded = true;
+                        try { fn(); } catch (e) { console.error('[EXPORT] Error al enviar respuesta:', e.message); }
+                    }
+                };
+
+                let stderrLines = [];
+                let child;
+                try {
+                    child = spawn(ffmpegBin, args);
+                } catch (spawnErr) {
+                    console.error(`[EXPORT] Error al lanzar FFmpeg: ${spawnErr.message}`);
+                    return res.status(500).json({ error: `No se pudo lanzar FFmpeg: ${spawnErr.message}` });
+                }
+
+                child.stderr.on('data', (d) => {
+                    const line = d.toString().trim();
+                    if (line) stderrLines.push(line);
+                    if (stderrLines.length > 20) stderrLines.shift();
+                });
+
+                child.on('error', (err) => {
+                    console.error(`[EXPORT] FFmpeg spawn error: ${err.message}`);
+                    safeRespond(() => res.status(500).json({ error: `FFmpeg no se pudo ejecutar: ${err.message}` }));
+                });
+
+                child.on('close', code => {
+                    try {
+                        const lastErr = stderrLines.slice(-3).join(' | ');
+                        if (code === 0) {
+                            console.log(`[EXPORT] ✓ OK: ${exportName}`);
+                            io.emit('server_log', {
+                                timestamp: new Date().toISOString(), level: 'INFO',
+                                message: `✓ Clip exportado: ${exportName}`
+                            });
+                            safeRespond(() => {
+                                const response = { ok: true, filename: exportName, path: exportPath };
+                                if (isInternalDest) {
+                                    response.downloadUrl = `/api/exports/download/${encodeURIComponent(exportName)}`;
+                                }
+                                res.json(response);
+                            });
+                        } else {
+                            console.error(`[EXPORT] ✗ FALLO: ${exportName} (código ${code}) — ${lastErr}`);
+                            io.emit('server_log', {
+                                timestamp: new Date().toISOString(), level: 'ERROR',
+                                message: `✗ Export fallido (${code}): ${lastErr}`
+                            });
+                            safeRespond(() => res.status(500).json({
+                                error: `FFmpeg falló con código ${code}`,
+                                detail: lastErr || 'Sin detalle disponible',
+                                source: sourcePath,
+                                dest: exportPath
+                            }));
+                        }
+                    } catch (closeErr) {
+                        console.error(`[EXPORT] Error en close handler: ${closeErr.message}`);
+                        safeRespond(() => res.status(500).json({ error: `Error procesando resultado: ${closeErr.message}` }));
+                    }
+                });
+
+                // Timeout de seguridad: si FFmpeg no responde en 120s, matar y devolver error
+                setTimeout(() => {
+                    if (!responded) {
+                        console.error(`[EXPORT] Timeout 120s — matando FFmpeg`);
+                        try { child.kill('SIGKILL'); } catch (_) { }
+                        safeRespond(() => res.status(504).json({
+                            error: 'Tiempo de espera agotado (120s). El clip puede ser demasiado largo o el disco demasiado lento.',
+                            detail: stderrLines.slice(-3).join(' | ')
                         }));
                     }
-                } catch (closeErr) {
-                    console.error(`[EXPORT] Error en close handler: ${closeErr.message}`);
-                    safeRespond(() => res.status(500).json({ error: `Error procesando resultado: ${closeErr.message}` }));
-                }
-            });
+                }, 120000);
 
-            // Timeout de seguridad: si FFmpeg no responde en 120s, matar y devolver error
-            setTimeout(() => {
-                if (!responded) {
-                    console.error(`[EXPORT] Timeout 120s — matando FFmpeg`);
-                    try { child.kill('SIGKILL'); } catch (_) {}
-                    safeRespond(() => res.status(504).json({
-                        error: 'Tiempo de espera agotado (120s). El clip puede ser demasiado largo o el disco demasiado lento.',
-                        detail: stderrLines.slice(-3).join(' | ')
-                    }));
+            } catch (asyncErr) {
+                console.error(`[EXPORT] Error inesperado en callback: ${asyncErr.stack || asyncErr.message}`);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: `Error inesperado: ${asyncErr.message}` });
                 }
-            }, 120000);
-
-        } catch (asyncErr) {
-            console.error(`[EXPORT] Error inesperado en callback: ${asyncErr.stack || asyncErr.message}`);
-            if (!res.headersSent) {
-                res.status(500).json({ error: `Error inesperado: ${asyncErr.message}` });
             }
-        }
-    });
+        });
 });
 
 // ── Descarga HTTP de clips exportados al disco interno ──────────────────────
@@ -1675,30 +1680,30 @@ app.get('/api/exports', (req, res) => {
 app.get('/api/clips/:sessionId', (req, res) => {
     db.all('SELECT * FROM clips WHERE session_id = ? ORDER BY in_point ASC',
         [req.params.sessionId], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
-    });
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows);
+        });
 });
 
 app.post('/api/clips', (req, res) => {
     const { session_id, in_point, out_point, label, channels } = req.body;
     const baseLabel = label || 'Clip';
-    
+
     // Si no envían canales, guardamos un clip genérico (comportamiento legacy)
     const chList = Array.isArray(channels) && channels.length > 0 ? channels : [null];
-    
+
     let inserted = [];
     let errors = [];
-    
+
     // Usamos Promesas para insertar múltiples clips
     const insertClip = (ch) => new Promise((resolve) => {
         const lbl = ch !== null ? `${baseLabel} - CH${ch}` : baseLabel;
         db.run('INSERT INTO clips (session_id, channel, in_point, out_point, label) VALUES (?,?,?,?,?)',
-            [session_id, ch, in_point, out_point, lbl], function(err) {
-            if (err) errors.push(err.message);
-            else inserted.push({ id: this.lastID, session_id, channel: ch, in_point, out_point, label: lbl });
-            resolve();
-        });
+            [session_id, ch, in_point, out_point, lbl], function (err) {
+                if (err) errors.push(err.message);
+                else inserted.push({ id: this.lastID, session_id, channel: ch, in_point, out_point, label: lbl });
+                resolve();
+            });
     });
 
     Promise.all(chList.map(ch => insertClip(ch))).then(() => {
@@ -1718,10 +1723,10 @@ app.delete('/api/clips/:id', (req, res) => {
 app.put('/api/clips/:id', (req, res) => {
     const { label, in_point, out_point } = req.body;
     db.run('UPDATE clips SET label = COALESCE(?, label), in_point = COALESCE(?, in_point), out_point = COALESCE(?, out_point) WHERE id = ?',
-        [label ?? null, in_point ?? null, out_point ?? null, req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ updated: this.changes });
-    });
+        [label ?? null, in_point ?? null, out_point ?? null, req.params.id], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ updated: this.changes });
+        });
 });
 
 // ── Recording Sessions ──────────────────────────────
@@ -1734,13 +1739,13 @@ app.get('/api/recordings', (req, res) => {
 
 app.delete('/api/recordings/:id', (req, res) => {
     const sessionId = req.params.id;
-    
+
     // Borrado en cascada manual de las tablas asociadas para evitar conflictos de Foreign Key
     db.serialize(() => {
         db.run('DELETE FROM markers WHERE session_id = ?', [sessionId]);
         db.run('DELETE FROM clips WHERE session_id = ?', [sessionId]);
         db.run('DELETE FROM session_files WHERE session_id = ?', [sessionId]);
-        db.run('DELETE FROM recording_sessions WHERE id = ?', [sessionId], function(err) {
+        db.run('DELETE FROM recording_sessions WHERE id = ?', [sessionId], function (err) {
             if (err) {
                 console.error(`[DB] Error al eliminar sesión ${sessionId}:`, err.message);
                 return res.status(500).json({ success: false, error: err.message });
@@ -1755,20 +1760,20 @@ app.delete('/api/recordings/:id', (req, res) => {
 app.post('/api/markers', (req, res) => {
     const { session_id, timestamp_offset, label } = req.body;
     db.run('INSERT INTO markers (session_id, timestamp_offset, label) VALUES (?, ?, ?)',
-        [session_id, timestamp_offset, label || 'Marca'], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        const marker = { id: this.lastID, session_id, timestamp_offset, label };
-        io.emit('marker_added', marker);
-        res.status(201).json(marker);
-    });
+        [session_id, timestamp_offset, label || 'Marca'], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            const marker = { id: this.lastID, session_id, timestamp_offset, label };
+            io.emit('marker_added', marker);
+            res.status(201).json(marker);
+        });
 });
 
 app.get('/api/markers/:sessionId', (req, res) => {
     db.all('SELECT * FROM markers WHERE session_id = ? ORDER BY timestamp_offset ASC',
         [req.params.sessionId], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
-    });
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows);
+        });
 });
 
 /* =======================================
@@ -1784,7 +1789,7 @@ app.get('/api/users', (req, res) => {
 app.post('/api/users', (req, res) => {
     const { username, password, role, email } = req.body;
     if (!username || !password) return res.status(400).json({ error: "Missing fields" });
-    db.run('INSERT INTO users (username, password, role, email) VALUES (?, ?, ?, ?)', [username, password, role || 2, email || ''], function(err) {
+    db.run('INSERT INTO users (username, password, role, email) VALUES (?, ?, ?, ?)', [username, password, role || 2, email || ''], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.status(201).json({ success: true });
     });
@@ -1793,7 +1798,7 @@ app.post('/api/users', (req, res) => {
 app.delete('/api/users/:username', (req, res) => {
     const user = req.params.username;
     if (user === 'admin') return res.status(403).json({ error: 'Cannot delete root admin' }); // Prevent lockout
-    db.run('DELETE FROM users WHERE username = ?', [user], function(err) {
+    db.run('DELETE FROM users WHERE username = ?', [user], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ deleted: this.changes });
     });
@@ -1807,7 +1812,7 @@ app.get('/api/disks', async (req, res) => {
     if (!mediaRoot) {
         return res.json(drives);
     }
-    
+
     // Verificar accesibilidad del disco con timeout de 2 segundos (previene cuelgues en montajes lentos)
     const checkAccess = (p) => new Promise((resolve) => {
         const timer = setTimeout(() => resolve(false), 2000);
@@ -1816,7 +1821,7 @@ app.get('/api/disks', async (req, res) => {
             resolve(!err);
         });
     });
-    
+
     try {
         const accessible = await checkAccess(mediaRoot);
         let freeGB = null, totalGB = null, usedPct = null;
@@ -1831,9 +1836,9 @@ app.get('/api/disks', async (req, res) => {
                 totalGB = ((statResult.blocks * statResult.bsize) / 1e9).toFixed(1);
                 freeGB = ((statResult.bfree * statResult.bsize) / 1e9).toFixed(1);
                 usedPct = Math.round(((statResult.blocks - statResult.bfree) / statResult.blocks) * 100);
-            } catch(e) {}
+            } catch (e) { }
         }
-        
+
         drives.push({
             id: mediaRoot.replace(/[:\\/]/g, '_'),
             name: accessible ? `\uD83D\uDCBE Disco de grabaci\u00f3n activo` : `\uD83D\uDCBE Disco de grabaci\u00f3n (desconectado)`,
@@ -1890,12 +1895,12 @@ app.get('/api/files', async (req, res) => {
 
         // Leer directorio de forma ASYNC (no bloquea el event loop)
         const files = await fs.promises.readdir(reqPath);
-        
+
         // Procesar cada archivo de forma async (con límite para evitar respuestas enormes)
         const maxFiles = 500;
         const filesToProcess = files.slice(0, maxFiles);
         const items = [];
-        
+
         for (const file of filesToProcess) {
             const fp = path.join(reqPath, file);
             let isDir = false;
@@ -1917,10 +1922,10 @@ app.get('/api/files', async (req, res) => {
                 modified: mtime.toISOString()
             });
         }
-        
+
         // Ordenar: carpetas primero, luego por fecha modificación descendente
         items.sort((a, b) => b.isDir - a.isDir || new Date(b.modified) - new Date(a.modified));
-        
+
         const parentPath = reqPath === mediaRoot ? null : path.dirname(reqPath);
         const truncated = files.length > maxFiles;
         res.json({ currentPath: reqPath, parentPath, items, totalFiles: files.length, truncated });
@@ -1947,7 +1952,7 @@ app.post('/api/files/delete', (req, res) => {
             fs.unlinkSync(filepath);
         }
         res.json({ success: true });
-    } catch(e) {
+    } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
@@ -1977,7 +1982,7 @@ app.post('/api/files/bulk-delete', (req, res) => {
                 }
                 deletedCount++;
             }
-        } catch(e) {
+        } catch (e) {
             errors.push(`${filepath}: ${e.message}`);
         }
     });
@@ -2020,7 +2025,7 @@ const livePreviewProcs = {};
 app.get('/api/preview/ts/:channel', (req, res) => {
     const channel = parseInt(req.params.channel);
     const routerState = streamManager.activeInputs[channel];
-    
+
     if (!routerState || !routerState.router) {
         return res.status(503).send('Input not ready');
     }
@@ -2028,7 +2033,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     // Desactivar timeout del socket y habilitar keep-alive para mantener flujo continuo
     req.socket.setTimeout(0);
     req.socket.setKeepAlive(true, 5000);
-    
+
     res.writeHead(200, {
         'Content-Type': 'video/mp2t',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -2040,18 +2045,18 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         'Access-Control-Allow-Headers': '*',
         'Access-Control-Allow-Methods': 'GET, OPTIONS'
     });
-    
+
     const { spawn } = require('child_process');
     const ffmpegCmd = streamManager.getFFmpegPath();
-    
+
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
     const transcodeRequested = req.query.transcode === '1' || req.query.transcode === 'true';
-    
+
     // Decisión de transcodificación:
     // SOLO transcodificar a H.264 si el cliente lo solicita explícitamente con ?transcode=true.
     // Por defecto: Passthrough directo 100% puro en H.265/H.264 sin usar CPU ni lanzar procesos FFmpeg.
     const mustTranscode = transcodeRequested;
-    
+
     if (!mustTranscode) {
         originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming passthrough directo 0% CPU (codec: ${codec || 'passthrough'})`);
         const subObj = {
@@ -2059,22 +2064,22 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             write(chunk) {
                 try {
                     res.write(chunk);
-                } catch (e) {}
+                } catch (e) { }
             },
             destroy() {
-                try { res.end(); } catch(e) {}
+                try { res.end(); } catch (e) { }
             }
         };
-        
+
         routerState.router.subscribers.add(subObj);
-        
+
         const cleanup = () => {
             if (routerState && routerState.router) {
                 routerState.router.subscribers.delete(subObj);
             }
-            try { res.end(); } catch(e) {}
+            try { res.end(); } catch (e) { }
         };
-        
+
         req.on('close', cleanup);
         return;
     }
@@ -2084,13 +2089,13 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     const useGpu = streamManager.nvencAvailable && isHevc;
     const encoderType = useGpu ? 'GPU NVENC' : 'CPU libx264';
     originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando -> H.264 (${encoderType}, codec fuente: ${codec || 'desconocido'})`);
-    
-    const encoderArgs = streamManager.getH264EncoderArgs({ 
-        scale: '-2:720', 
-        cq: 28, 
-        hwaccel: useGpu ? 'cuda' : undefined 
+
+    const encoderArgs = streamManager.getH264EncoderArgs({
+        scale: '-2:720',
+        cq: 28,
+        hwaccel: useGpu ? 'cuda' : undefined
     });
-    
+
     const args = [
         '-hide_banner',
         '-y',
@@ -2111,11 +2116,11 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         '-f', 'mpegts',
         '-'
     ];
-    
+
     const tsStartTime = Date.now();
     let child = spawn(ffmpegCmd, args);
     let didTsFallback = false;
-    
+
     if (child.stdin) {
         child.stdin.on('error', (err) => {
             // Silenciar tuberías rotas
@@ -2124,7 +2129,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
     child.on('error', (err) => {
         originalLog(`[HTTP-TS] Ch${channel} error de proceso FFmpeg: ${err.message}`);
     });
-    
+
     let subObj = {
         writableLength: 0,
         write(chunk) {
@@ -2132,32 +2137,32 @@ app.get('/api/preview/ts/:channel', (req, res) => {
             this.writableLength = child.stdin.writableLength;
             try {
                 child.stdin.write(chunk);
-            } catch (e) {}
+            } catch (e) { }
         },
         destroy() {
-            try { child.kill('SIGKILL'); } catch(e) {}
+            try { child.kill('SIGKILL'); } catch (e) { }
         }
     };
-    
+
     routerState.router.subscribers.add(subObj);
     child.stdout.pipe(res);
-    
+
     const cleanup = () => {
         if (routerState && routerState.router) {
             routerState.router.subscribers.delete(subObj);
         }
-        try { child.kill('SIGKILL'); } catch(e) {}
+        try { child.kill('SIGKILL'); } catch (e) { }
         originalLog(`[HTTP-TS] Ch${channel} finalizado`);
     };
-    
+
     req.on('close', cleanup);
-    
+
     child.on('close', (code) => {
         const elapsed = Date.now() - tsStartTime;
         if (code !== 0 && code !== null && elapsed < 2000 && mustTranscode && streamManager.nvencAvailable && !didTsFallback) {
             originalLog(`⚠️ [HTTP-TS] Fallo de GPU en transcodificación en vivo para Ch${channel}. Relanzando usando CPU...`);
             didTsFallback = true;
-            
+
             // Generar argumentos H.264 limpios para CPU desde cero
             const finalArgs = [
                 '-hide_banner',
@@ -2179,16 +2184,16 @@ app.get('/api/preview/ts/:channel', (req, res) => {
                 '-f', 'mpegts',
                 '-'
             ];
-            
+
             // Eliminar al suscriptor antiguo de la lista
             if (routerState && routerState.router) {
                 routerState.router.subscribers.delete(subObj);
             }
-            
+
             // Iniciar nuevo proceso transcodificador seguro en CPU
             const fallbackChild = spawn(ffmpegCmd, finalArgs);
             child = fallbackChild;
-            
+
             subObj = {
                 writableLength: 0,
                 write(chunk) {
@@ -2196,18 +2201,18 @@ app.get('/api/preview/ts/:channel', (req, res) => {
                     this.writableLength = fallbackChild.stdin.writableLength;
                     try {
                         fallbackChild.stdin.write(chunk);
-                    } catch (e) {}
+                    } catch (e) { }
                 },
                 destroy() {
-                    try { fallbackChild.kill('SIGKILL'); } catch(e) {}
+                    try { fallbackChild.kill('SIGKILL'); } catch (e) { }
                 }
             };
-            
+
             if (routerState && routerState.router) {
                 routerState.router.subscribers.add(subObj);
             }
             fallbackChild.stdout.pipe(res);
-            
+
             fallbackChild.on('close', () => {
                 if (!res.writableEnded) res.end();
             });
@@ -2220,11 +2225,11 @@ app.get('/api/preview/ts/:channel', (req, res) => {
 app.post('/api/preview/live/:channel', (req, res) => {
     const channel = parseInt(req.params.channel);
     const routerState = streamManager.activeInputs[channel];
-    
+
     if (!routerState || !routerState.router) {
         return res.status(503).json({ error: 'Input not ready', reason: 'router_not_active' });
     }
-    
+
     // Retornamos directamente el stream HTTP-TS sin arrancar FFmpeg extra
     return res.json({ url: `/api/preview/ts/${channel}`, previewId: `ts_ch${channel}`, isMpegTs: true });
 });
@@ -2241,7 +2246,7 @@ app.delete('/api/preview/live/:channel', (req, res) => {
 app.post('/api/disks/wipe', (req, res) => {
     const { disk_path } = req.body;
     if (!disk_path) return res.status(400).json({ error: 'Missing disk_path' });
-    
+
     // Protección: nunca borrar el disco del sistema operativo
     const forbidden = ['/', 'C:\\', 'C:', '/usr', '/etc', '/home', '/root', '/var', '/boot', '/sys', '/proc'];
     const isForbidden = forbidden.some(f => disk_path === f || disk_path.toLowerCase() === f.toLowerCase());
@@ -2257,12 +2262,12 @@ app.post('/api/disks/wipe', (req, res) => {
             try {
                 fs.rmSync(fullPath, { recursive: true, force: true });
                 removed++;
-            } catch(e) {
+            } catch (e) {
                 // continue with next file
             }
         }
         res.json({ ok: true, removed });
-    } catch(e) {
+    } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
@@ -2271,31 +2276,31 @@ app.post('/api/disks/wipe', (req, res) => {
 app.get('/api/files', (req, res) => {
     const scanPath = req.query.disk;
     if (!scanPath) return res.json({ currentPath: null, parentPath: null, items: [] });
-    
+
     let targetPath = req.query.path ? path.resolve(req.query.path) : path.resolve(scanPath);
-    
+
     // Seguridad: asegurar que targetPath empieza con scanPath o está dentro de las rutas permitidas
     const resolvedScan = path.resolve(scanPath);
     const allowedRoots = ['/media', '/mnt', '/run/media'];
-    
+
     const isAllowed = targetPath === resolvedScan || targetPath.startsWith(resolvedScan + path.sep) ||
-                      allowedRoots.some(root => {
-                          const resolvedRoot = path.resolve(root);
-                          return targetPath === resolvedRoot || targetPath.startsWith(resolvedRoot + path.sep);
-                      });
-    
+        allowedRoots.some(root => {
+            const resolvedRoot = path.resolve(root);
+            return targetPath === resolvedRoot || targetPath.startsWith(resolvedRoot + path.sep);
+        });
+
     if (!isAllowed) {
         return res.status(403).json({ error: 'Acceso denegado a la ruta especificada' });
     }
-    
+
     if (!fs.existsSync(targetPath)) {
         return res.json({ currentPath: targetPath, parentPath: null, items: [] });
     }
-    
+
     try {
         const items = fs.readdirSync(targetPath, { withFileTypes: true });
         const results = [];
-        
+
         for (const item of items) {
             const absolutePath = path.join(targetPath, item.name);
             try {
@@ -2321,13 +2326,13 @@ app.get('/api/files', (req, res) => {
                 // Ignorar archivos inaccesibles
             }
         }
-        
+
         const dirs = results.filter(r => r.isDir).sort((a, b) => a.name.localeCompare(b.name));
         const files = results.filter(r => !r.isDir).sort((a, b) => b.date - a.date);
-        
+
         const isAtDiskRoot = targetPath === resolvedScan;
         const parentPath = isAtDiskRoot ? null : path.dirname(targetPath);
-        
+
         res.json({
             currentPath: targetPath,
             parentPath: parentPath,
@@ -2377,7 +2382,7 @@ app.post('/api/files/copy', (req, res) => {
     } catch (e) {
         // Ignorar si no se puede crear, usaremos la raíz del destino
     }
-    
+
     const finalDestPath = path.join(fs.existsSync(targetDir) ? targetDir : resolvedDestDisk, filename);
 
     if (fs.existsSync(finalDestPath)) {
@@ -2412,7 +2417,7 @@ app.post('/api/files/copy', (req, res) => {
 
         const handleCopyError = (err) => {
             console.error(`[COPY] Error copiando ${filename}:`, err.message);
-            try { fs.unlinkSync(finalDestPath); } catch (_) {}
+            try { fs.unlinkSync(finalDestPath); } catch (_) { }
             io.emit('copy_progress', { filename, progress: 0, status: 'error', error: err.message, sourcePath: resolvedSource });
         };
 
@@ -2436,10 +2441,10 @@ app.get('/api/media/play', (req, res) => {
 
 app.post('/api/files/delete', (req, res) => {
     const { filepath } = req.body;
-    
+
     // filepath podria venir como /api/media/play?path=...
     let absolutePath = filepath;
-    if(filepath && filepath.includes('?path=')) {
+    if (filepath && filepath.includes('?path=')) {
         absolutePath = decodeURIComponent(filepath.split('?path=')[1]);
     }
 
@@ -2453,7 +2458,7 @@ app.post('/api/files/delete', (req, res) => {
     try {
         fs.unlinkSync(absolutePath);
         res.json({ success: true });
-    } catch(e) {
+    } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
@@ -2467,18 +2472,18 @@ app.get('/api/ports', (req, res) => {
 
 app.put('/api/ports', (req, res) => {
     const { chanMin, chanMax, udpMin, udpMax } = req.body;
-    
-    db.run('UPDATE ports SET chanMin=?, chanMax=?, udpMin=?, udpMax=?', 
-        [chanMin, chanMax, udpMin, udpMax], function(err) {
-        
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ updated: true });
-    });
+
+    db.run('UPDATE ports SET chanMin=?, chanMax=?, udpMin=?, udpMax=?',
+        [chanMin, chanMax, udpMin, udpMax], function (err) {
+
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ updated: true });
+        });
 });
 
 app.get('/api/time', (req, res) => {
     const d = new Date();
-    res.json({ 
+    res.json({
         time: d.toISOString(),
         timezoneOffset: d.getTimezoneOffset()
     });
@@ -2491,13 +2496,13 @@ app.get('/api/network', (req, res) => {
     const { exec } = require('child_process');
     const os = require('os');
     const fs = require('fs');
-    
+
     // Función de fallback para obtener datos de red reales en caso de que nmcli falle o no controle la interfaz
     const getFallbackNetworkData = (errorMsg) => {
         const interfaces = os.networkInterfaces();
         let ip = '';
         let cidr = '24';
-        
+
         // Priorizar nombres de interfaz físicos reales (eth, eno, enp, ens, wlan, wlp)
         const keys = Object.keys(interfaces).sort((a, b) => {
             const aIsPhys = /^(eth|eno|enp|ens|wlan|wlp)/i.test(a);
@@ -2531,10 +2536,10 @@ app.get('/api/network', (req, res) => {
             }
             if (ip) break;
         }
-        
+
         let gateway = '';
         let dns = '';
-        
+
         if (process.platform === 'linux') {
             try {
                 if (fs.existsSync('/proc/net/route')) {
@@ -2555,8 +2560,8 @@ app.get('/api/network', (req, res) => {
                         }
                     }
                 }
-            } catch(e) {}
-            
+            } catch (e) { }
+
             try {
                 if (fs.existsSync('/etc/resolv.conf')) {
                     const resolv = fs.readFileSync('/etc/resolv.conf', 'utf8');
@@ -2565,16 +2570,16 @@ app.get('/api/network', (req, res) => {
                         dns = matches.map(m => m.replace('nameserver', '').trim()).join(', ');
                     }
                 }
-            } catch(e) {}
+            } catch (e) { }
         }
-        
+
         // Obtener el nombre del dispositivo activo para el fallback
         let activeDevName = 'eth0';
         try {
             const interfaces = os.networkInterfaces();
             const keys = Object.keys(interfaces).filter(n => !n.startsWith('lo') && !n.startsWith('docker') && !n.startsWith('veth') && !n.startsWith('br-'));
             if (keys.length > 0) activeDevName = keys[0];
-        } catch (_) {}
+        } catch (_) { }
 
         return {
             ok: true,
@@ -2588,7 +2593,7 @@ app.get('/api/network', (req, res) => {
             reason: errorMsg
         };
     };
-    
+
     // 1. Detectar dispositivo físico activo con salida a internet usando la tabla de rutas del Kernel
     const getActiveDevice = () => new Promise((resolve) => {
         exec("ip route show | grep default | awk '{print $5}'", (errRoute, stdoutRoute) => {
@@ -2608,7 +2613,7 @@ app.get('/api/network', (req, res) => {
         // Encontrar el nombre de la conexión activa de NetworkManager asociada al dispositivo
         exec(`nmcli -t -f NAME,DEVICE con show --active | grep -E ':${activeDev}$' | cut -d: -f1`, (errConn, stdoutConn) => {
             let activeConn = stdoutConn ? stdoutConn.trim().split('\n')[0] : null;
-            
+
             const proceedWithDetails = (connName) => {
                 // 1. Obtener la configuración del método (auto o manual) desde el perfil de conexión
                 exec(`nmcli -t -f ipv4.method con show "${connName}"`, (err2, stdout2) => {
@@ -2622,13 +2627,13 @@ app.get('/api/network', (req, res) => {
                             }
                         }
                     }
-                    
+
                     // 2. Obtener la IP, gateway y DNS activos reales del dispositivo en ejecución
                     exec(`nmcli -t dev show "${activeDev}"`, (err3, stdout3) => {
                         if (err3 || !stdout3) {
                             return res.json(getFallbackNetworkData('Error leyendo detalles del dispositivo con nmcli'));
                         }
-                        
+
                         const details = stdout3.trim().split('\n').reduce((acc, line) => {
                             const parts = line.split(':');
                             if (parts.length >= 2) {
@@ -2638,7 +2643,7 @@ app.get('/api/network', (req, res) => {
                             }
                             return acc;
                         }, {});
-                        
+
                         let addressRaw = '';
                         for (let k of Object.keys(details)) {
                             if (k.startsWith('IP4.ADDRESS')) {
@@ -2646,9 +2651,9 @@ app.get('/api/network', (req, res) => {
                                 break;
                             }
                         }
-                        
+
                         const [ip, cidr] = addressRaw.split('/');
-                        
+
                         let gateway = '';
                         for (let k of Object.keys(details)) {
                             if (k.startsWith('IP4.GATEWAY')) {
@@ -2656,7 +2661,7 @@ app.get('/api/network', (req, res) => {
                                 break;
                             }
                         }
-                        
+
                         const dnsList = [];
                         for (let k of Object.keys(details)) {
                             if (k.startsWith('IP4.DNS')) {
@@ -2664,7 +2669,7 @@ app.get('/api/network', (req, res) => {
                             }
                         }
                         const dns = dnsList.join(', ');
-                        
+
                         res.json({
                             ok: true,
                             connectionName: connName,
@@ -2698,9 +2703,9 @@ app.get('/api/network', (req, res) => {
 app.post('/api/network', (req, res) => {
     const { exec } = require('child_process');
     const { connectionName, mode, ip, cidr, gateway, dns } = req.body;
-    
+
     if (!connectionName) return res.status(400).json({ ok: false, error: 'Falta connectionName' });
-    
+
     // 1. Detectar dispositivo físico activo con salida a internet usando la tabla de rutas del Kernel
     const getActiveDevice = () => new Promise((resolve) => {
         exec("ip route show | grep default | awk '{print $5}'", (errRoute, stdoutRoute) => {
@@ -2720,23 +2725,23 @@ app.post('/api/network', (req, res) => {
         let cmd = '';
         if (mode === 'auto') {
             cmd = `nmcli con mod "${connectionName}" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ; ` +
-                  `nmcli con down "${connectionName}" ; ` +
-                  `nmcli con up "${connectionName}" ; ` +
-                  `sudo dhclient -r ${physicalDev} ; sudo dhclient -v ${physicalDev}`;
+                `nmcli con down "${connectionName}" ; ` +
+                `nmcli con up "${connectionName}" ; ` +
+                `sudo dhclient -r ${physicalDev} ; sudo dhclient -v ${physicalDev}`;
         } else {
             const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
             cmd = `nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} ; ` +
-                  `nmcli con down "${connectionName}" ; ` +
-                  `nmcli con up "${connectionName}" ; ` +
-                  `sudo ip addr flush dev ${physicalDev} ; sudo ip addr add ${ip}/${cidr} dev ${physicalDev} ; sudo ip link set ${physicalDev} up ; sudo ip route add default via ${gateway} dev ${physicalDev}`;
+                `nmcli con down "${connectionName}" ; ` +
+                `nmcli con up "${connectionName}" ; ` +
+                `sudo ip addr flush dev ${physicalDev} ; sudo ip addr add ${ip}/${cidr} dev ${physicalDev} ; sudo ip link set ${physicalDev} up ; sudo ip route add default via ${gateway} dev ${physicalDev}`;
         }
-        
+
         // Redirigir la salida a un archivo para poder debugear si falla en el sistema del usuario
         cmd = `(${cmd}) > /tmp/net_debug.log 2>&1`;
-        
+
         console.log(`[NETWORK] Aplicando red sobre conexión="${connectionName}" e interfaz físico="${physicalDev}"...`);
         res.json({ ok: true, message: 'Aplicando configuración...' });
-        
+
         setTimeout(() => {
             exec(cmd, (err) => {
                 if (err) {
@@ -2759,11 +2764,11 @@ app.post('/api/network', (req, res) => {
 app.post('/api/terminal/run', (req, res) => {
     const { exec } = require('child_process');
     const { command } = req.body;
-    
+
     if (!command) {
         return res.status(400).json({ error: 'Falta el comando' });
     }
-    
+
     // Filtro de seguridad básico: no permitir comandos destructivos críticos
     if (command.includes('rm -rf /') || command.includes('mkfs')) {
         return res.status(403).json({ error: 'Comando no permitido por seguridad' });
@@ -2788,18 +2793,18 @@ function bootActiveStreams() {
     console.log("[BOOT] Iniciando secuencia de encendido escalonado de Streams...");
     setTimeout(() => {
         db.all('SELECT * FROM inputs WHERE enabled = 1', [], (err, rows) => {
-            if(rows && rows.length > 0) {
+            if (rows && rows.length > 0) {
                 let delayAccumulator = 0;
-                
+
                 // Stagger inputs by 200ms each to prevent CPU max-out
                 rows.forEach(r => {
                     setTimeout(() => streamManager.startInput(r), delayAccumulator);
                     delayAccumulator += 200;
                 });
-                
+
                 // Wait for all inputs to bind their UDP ports, then stagger outputs
                 db.all('SELECT * FROM outputs WHERE enabled = 1', [], (err, outRows) => {
-                    if(outRows && outRows.length > 0) {
+                    if (outRows && outRows.length > 0) {
                         outRows.forEach(o => {
                             setTimeout(() => streamManager.startOutput(o), delayAccumulator);
                             delayAccumulator += 200;
@@ -2814,7 +2819,7 @@ bootActiveStreams();
 
 io.on('connection', (socket) => {
     console.log(`Frontend Connected: ${socket.id}`);
-    
+
     // Al conectarse el frontend, le enviamos las estadísticas inmediatamente
     // a través del Socket.io global (sysMonitor lo emite automáticamente a todos los conectados)
 });
@@ -2839,7 +2844,7 @@ function startListen() {
     server.listen(PORT, '0.0.0.0', () => {
         _listenRetries = 0;
         console.log(`TSST SERVER running on port ${PORT}`);
-        
+
         // Escribir diagnóstico de pantallas X11 localmente para depuración sin conexión externa
         const { exec } = require('child_process');
         const fs = require('fs');
