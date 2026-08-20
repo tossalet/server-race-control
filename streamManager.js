@@ -149,13 +149,13 @@ function startInput(inputObj) {
     // Main Output: copy codec or encode if test pattern, output to local MPEG-TS TCP
     args.push('-map', '0:v?');
     args.push('-map', '0:a?');
-    
+
     if (isTestSource) {
         args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p');
     } else {
         args.push('-c:v', 'copy');
     }
-    
+
     args.push('-c:a', 'aac');
     args.push('-b:a', '128k');
     if (!isTestSource && url.startsWith('rtmp')) {
@@ -181,13 +181,13 @@ function startInput(inputObj) {
 
     let lastParseTime = 0;
     let codecFound = false;
-    
+
     const errorLogBuffer = [];
     child.stderr.on('data', (data) => {
         const out = data.toString();
         errorLogBuffer.push(out);
         if (errorLogBuffer.length > 30) errorLogBuffer.shift();
-        
+
         // Extraer codec en cuanto aparezca (suele estar en los primeros chunks, no limitarlo por tiempo)
         if (!codecFound) {
             const codecMatch = out.match(/Video:\s*([a-zA-Z0-9_-]+)/);
@@ -195,13 +195,13 @@ function startInput(inputObj) {
                 let parsedCodec = codecMatch[1].toUpperCase();
                 if (parsedCodec === 'HEVC') parsedCodec = 'H.265';
                 else if (parsedCodec === 'H264') parsedCodec = 'H.264';
-                
+
                 codecFound = true;
-                
+
                 if (activeInputs[channel].codec !== parsedCodec) {
                     activeInputs[channel].codec = parsedCodec;
                     persistentCodecs[channel] = parsedCodec;
-                    
+
                     const db = require('./db');
                     db.run("UPDATE inputs SET codec = ? WHERE channel = ?", [parsedCodec, channel], (err) => {
                         if (err) console.error(`[DB-CODEC] Error updating codec for Ch${channel}:`, err.message);
@@ -215,21 +215,21 @@ function startInput(inputObj) {
         // THRESHOLD LIMIT: Solo analizamos estadísticas 2 veces por segundo para evitar saturar NodeJS
         if (now - lastParseTime < 500) return;
         lastParseTime = now;
-        
+
         // Match FFmpeg stats
         const bitrateMatch = out.match(/bitrate=\s*([\d.]+kbits\/s)/);
         const timeMatch = out.match(/time=([\d:.]+)/);
-        
+
         if (bitrateMatch && ioInstance) {
             if (activeInputs[channel]) activeInputs[channel].lastUpdate = now;
-            
+
             if (!telemetryCache[channel]) telemetryCache[channel] = [];
             const brText = bitrateMatch[1];
             const br = parseFloat(brText); // ej. "4500.5kbits/s" -> 4500.5
-            
+
             telemetryCache[channel].push({ t: new Date().toLocaleTimeString(), y: br || 0 });
             if (telemetryCache[channel].length > 60) telemetryCache[channel].shift(); // Keep last 60 points
-            
+
             ioInstance.emit('stats', {
                 channel: channel,
                 bitrate: brText,
@@ -259,18 +259,18 @@ function startInput(inputObj) {
                 }
             }
         });
-        socket.on('error', () => {});
+        socket.on('error', () => { });
     });
     router.subscribers = new Set();
     router.port = udpsrv;
-    
+
     // Bind to the udpsrv generated port to receive FFmpeg feed
     let _routerRetries = 0;
     const _routerBind = () => router.listen(udpsrv, '127.0.0.1', () => {
         console.log(`[ROUTER] Channel ${channel} bound on TCP ${udpsrv}`);
     });
     _routerBind();
-    
+
     router.on('error', (err) => {
         if (err.code === 'EADDRINUSE') {
             _routerRetries++;
@@ -280,7 +280,7 @@ function startInput(inputObj) {
             }
             console.log(`[ROUTER ${channel}] Port ${udpsrv} busy (TIME_WAIT), retry ${_routerRetries}/6 in 5s...`);
             setTimeout(() => {
-                try { router.close(() => _routerBind()); } catch(e) { _routerBind(); }
+                try { router.close(() => _routerBind()); } catch (e) { _routerBind(); }
             }, 5000);
         } else {
             console.error(`[ROUTER ${channel}] TCP Socket Error:`, err.message);
@@ -308,15 +308,15 @@ function startInput(inputObj) {
             }
             router.activeIncomingSockets.clear();
         }
-        try { router.close(); } catch (e) {}
-        try { sender.close(); } catch (e) {}
-        
+        try { router.close(); } catch (e) { }
+        try { sender.close(); } catch (e) { }
+
         if (telemetryCache[channel]) delete telemetryCache[channel]; // Limpiar RAM historico
-        
+
         // Remove thumbnail so UI flips to TV Bars
         const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`);
-        fs.unlink(extPath, (err) => {});
-        
+        fs.unlink(extPath, (err) => { });
+
         stopPreview(channel);
 
         // Collect associated outputs that need to be restarted
@@ -336,7 +336,7 @@ function startInput(inputObj) {
             console.log(`[IN-${channel}] Connection lost or crashed. Auto-restarting in 10s...`);
             // Turn yellow in UI (we fake an active signal with 0 bitrate)
             if (ioInstance) ioInstance.emit('stats', { channel: channel, active: true, bitrate: '0.0kbits/s', time: '--:--:--' });
-            
+
             const doRestart = () => {
                 startInput(inputObj);
                 // Restart outputs 2 seconds later
@@ -363,17 +363,17 @@ function startInput(inputObj) {
         }
     });
 
-    activeInputs[channel] = { 
-        process: child, 
-        router: router, 
-        lastUpdate: Date.now(), 
-        inputObj: inputObj, 
-        isStopping: false, 
-        prevProcess: null, 
+    activeInputs[channel] = {
+        process: child,
+        router: router,
+        lastUpdate: Date.now(),
+        inputObj: inputObj,
+        isStopping: false,
+        prevProcess: null,
         prevPort: null,
         codec: inputObj.codec || persistentCodecs[channel] || ''
     };
-    
+
     // Fase 1: Extraer un frame inicial de manera escalonada para no saturar la CPU
     previewQueueDelay += 2500;
     setTimeout(() => {
@@ -399,9 +399,9 @@ function startPreview(channel, singleFrame = true) {
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const outPath = extPath + '.jpg';
     const ffmpegCmd = getFFmpegPath();
-    
+
     // FFmpeg lee MPEG-TS desde stdin (pipe directa del router, 0% HTTP, 0% conflictos SRT)
-    const args = [ 
+    const args = [
         '-hide_banner', '-y',
         '-loglevel', 'warning',
         '-fflags', '+genpts+discardcorrupt+nobuffer',
@@ -422,7 +422,7 @@ function startPreview(channel, singleFrame = true) {
     console.log(`[PREVIEW CH-${channel}] Extrayendo thumbnail via pipe directa del router...`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
-    
+
     // Suscribir al router para recibir datos MPEG-TS directamente
     const subscriber = {
         writableLength: 0,
@@ -431,19 +431,19 @@ function startPreview(channel, singleFrame = true) {
                 try {
                     const ok = child.stdin.write(chunk);
                     if (!ok) this.writableLength += chunk.length;
-                } catch(e) {}
+                } catch (e) { }
             }
         },
         destroy() {
-            try { child.stdin.destroy(); } catch(e) {}
+            try { child.stdin.destroy(); } catch (e) { }
         }
     };
     router.subscribers.add(subscriber);
     activeInputs[channel].prevSubscriber = subscriber;
 
-    child.stdin.on('error', () => {}); // Silenciar EPIPE
+    child.stdin.on('error', () => { }); // Silenciar EPIPE
     child.stdin.on('drain', () => { subscriber.writableLength = 0; });
-    
+
     child.on('error', (err) => {
         console.error(`[PREVIEW ERROR CH-${channel}] Failed to run ffmpeg:`, err.message);
     });
@@ -472,12 +472,12 @@ function startPreview(channel, singleFrame = true) {
         if (activeInputs[channel]) {
             activeInputs[channel].prevProcess = null;
             activeInputs[channel].prevSubscriber = null;
-            
+
             if (code === 0 && ioInstance) {
                 console.log(`[PREVIEW CH-${channel}] ✓ Thumbnail guardado con éxito.`);
                 ioInstance.emit('thumbnail_ready', { channel: channel });
                 activeInputs[channel].thumbRetries = 0;
-                
+
                 // Regenerar cada 60s
                 activeInputs[channel].autoPreviewTimer = setTimeout(() => {
                     if (activeInputs[channel] && !activeInputs[channel].isStopping) {
@@ -492,10 +492,10 @@ function startPreview(channel, singleFrame = true) {
                     console.log(`[PREVIEW CH-${channel}] FFmpeg stderr: ${lastLines.substring(0, 300)}`);
                 }
                 const retryDelay = activeInputs[channel].thumbRetries <= 10 ? 5000 : 30000;
-                const retryLabel = activeInputs[channel].thumbRetries <= 10 
-                    ? `${activeInputs[channel].thumbRetries}/10` 
+                const retryLabel = activeInputs[channel].thumbRetries <= 10
+                    ? `${activeInputs[channel].thumbRetries}/10`
                     : `#${activeInputs[channel].thumbRetries} (lento)`;
-                console.log(`[PREVIEW CH-${channel}] Falló (código ${code}). Reintento ${retryLabel} en ${retryDelay/1000}s...`);
+                console.log(`[PREVIEW CH-${channel}] Falló (código ${code}). Reintento ${retryLabel} en ${retryDelay / 1000}s...`);
                 activeInputs[channel].autoPreviewTimer = setTimeout(() => {
                     if (activeInputs[channel] && !activeInputs[channel].isStopping) {
                         startPreview(channel, true);
@@ -516,7 +516,7 @@ function stopPreview(channel) {
             inp.autoPreviewTimer = null;
         }
         if (inp.prevProcess) {
-            try { inp.prevProcess.kill('SIGKILL'); } catch(e) {}
+            try { inp.prevProcess.kill('SIGKILL'); } catch (e) { }
             inp.prevProcess = null;
         }
         if (inp.prevSubscriber) {
@@ -536,7 +536,7 @@ function stopInput(channel) {
         console.log(`[STOPPING INPUT ${channel}] Killing process and router...`);
         if (activeInputs[channel].autoRestart) clearTimeout(activeInputs[channel].autoRestart);
         if (activeInputs[channel].autoPreviewTimer) clearTimeout(activeInputs[channel].autoPreviewTimer);
-        
+
         if (activeInputs[channel].process) {
             if (typeof activeInputs[channel].process.markIntentionalStop === 'function') {
                 activeInputs[channel].process.markIntentionalStop();
@@ -556,9 +556,9 @@ function stopInput(channel) {
                 }
                 activeInputs[channel].router.activeIncomingSockets.clear();
             }
-            try { activeInputs[channel].router.close(); } catch(e){}
+            try { activeInputs[channel].router.close(); } catch (e) { }
         }
-        
+
         delete activeInputs[channel];
         return true;
     }
@@ -590,7 +590,7 @@ function startOutput(outputObj) {
 
     // Generate unique local UDP port for this specific output receiver
     const localPort = 20000 + Math.floor(Math.random() * 30000); // 20000-50000 range
-    
+
     // We assign child process FIRST so we can measure if it dies instantly
     let processStarted = false;
 
@@ -602,19 +602,19 @@ function startOutput(outputObj) {
     const isDisk = url.startsWith('disk://');
     let format = 'mpegts';
     let destUrl = url;
-    
+
     if (isRtmp) format = 'flv';
     if (isDisk) {
         destUrl = url.replace('disk://', '');
-        
+
         // AUTO-TIMESTAMP TO PREVENT OVERWRITES:
         // Inject current datetime into filename: NombreInput_20260418_223500.mp4
         const now = new Date();
-        const df = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
-        
+        const df = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+
         const lastSlash = Math.max(destUrl.lastIndexOf('/'), destUrl.lastIndexOf('\\'));
         const lastDot = destUrl.lastIndexOf('.');
-        
+
         if (!destUrl.toLowerCase().endsWith('.m3u8')) {
             if (lastDot > lastSlash) {
                 destUrl = destUrl.substring(0, lastDot) + '_' + df + destUrl.substring(lastDot);
@@ -636,9 +636,11 @@ function startOutput(outputObj) {
         '-y',
         '-fflags', '+genpts', // Critical for UDP to MP4 timebase
         '-thread_queue_size', '4096', // Evita que el hilo de lectura TCP dropee paquetes si la escritura a disco o SRT se atasca
+        '-probesize', '15000000',     // Dar más margen a streams H.265 tardíos para encontrar SPS/PPS
+        '-analyzeduration', '15000000',
         '-i', localTcpIn
     ];
-    
+
     if (vcodec === 'copy') {
         args.push('-c', 'copy');
     } else {
@@ -650,9 +652,9 @@ function startOutput(outputObj) {
         args.push('-c:a', 'aac');
         args.push('-b:a', '128k');
     }
-    
+
     args.push('-max_muxing_queue_size', '9999'); // Prevenir hangs del ffmpeg en la cola de muxing
-    
+
     // Critical bitstream filter for AAC audio inside MP4 container from raw UDP streams
     if (format === 'mp4' || format === 'hls') {
         args.push('-bsf:a', 'aac_adtstoasc');
@@ -661,11 +663,11 @@ function startOutput(outputObj) {
         args.push('-muxdelay', '0.5');
         args.push('-muxpreload', '0.5');
     }
-    
+
     if (isDisk && format === 'mp4') {
         args.push('-movflags', '+frag_keyframe+empty_moov+default_base_moof'); // MP4 fragmentado rocoso
     }
-    
+
     if (format === 'hls') {
         args.push('-hls_time', '2');       // 2s segments = faster live edge
         args.push('-hls_list_size', '0'); // Keep all segments for replay
@@ -681,7 +683,7 @@ function startOutput(outputObj) {
 
     const child = spawn(ffmpegCmd, args);
     processStarted = true;
-    
+
     // Subscribe this output ONLY IF ffmpeg survives the first 1.5 seconds.
     setTimeout(() => {
         if (child.exitCode === null && activeInputs[channel] && activeInputs[channel].router) {
@@ -699,12 +701,12 @@ function startOutput(outputObj) {
             sock.on('error', () => {
                 console.log(`[OUT-${id}] Router port ${localPort} unreachable. FFmpeg will fail.`);
             });
-            sock.on('close', () => { 
+            sock.on('close', () => {
                 if (activeInputs[channel] && activeInputs[channel].router) {
-                    activeInputs[channel].router.subscribers.delete(sock); 
+                    activeInputs[channel].router.subscribers.delete(sock);
                 }
             });
-            
+
             if (activeOutputs[id]) activeOutputs[id].tcpSocket = sock;
         }
     }, 1500);
@@ -715,27 +717,27 @@ function startOutput(outputObj) {
 
     // Suppress heavy console logs but quietly parse bitrate metrics for UI telemetry without blocking V8
     let lastParseTime = 0;
-    
+
     child.stderr.on('data', (data) => {
         const now = Date.now();
         if (now - lastParseTime < 500) return;
         lastParseTime = now;
-        
+
         const out = data.toString();
         const bitrateMatch = out.match(/bitrate=\s*([\d.]+kbits\/s)/);
         const timeMatch = out.match(/time=([\d:.]+)/);
-        
+
         if (bitrateMatch && ioInstance) {
             const outChan = 'out_' + id;
             if (activeOutputs[id]) activeOutputs[id].lastUpdate = now;
-            
+
             if (!telemetryCache[outChan]) telemetryCache[outChan] = [];
             const brText = bitrateMatch[1];
             const br = parseFloat(brText); // ej. "4500.5kbits/s" -> 4500.5
-            
+
             telemetryCache[outChan].push({ t: new Date().toLocaleTimeString(), y: br || 0 });
             if (telemetryCache[outChan].length > 60) telemetryCache[outChan].shift();
-            
+
             ioInstance.emit('stats', {
                 channel: outChan,
                 bitrate: brText,
@@ -751,7 +753,7 @@ function startOutput(outputObj) {
 
     child.on('close', (code) => {
         console.log(`Output ${id} exited with code ${code}`);
-        
+
         // Remove subscriber socket
         if (activeOutputs[id] && activeOutputs[id].tcpSocket) {
             activeOutputs[id].tcpSocket.destroy();
@@ -759,7 +761,7 @@ function startOutput(outputObj) {
                 activeInputs[channel].router.subscribers.delete(activeOutputs[id].tcpSocket);
             }
         }
-        
+
         // Auto-Restart Logic
         if (!intentionalStop) {
             console.log(`[OUT-${id}] Connection lost or crashed. Auto-restarting target in 10s...`);
@@ -782,23 +784,23 @@ function stopOutput(id) {
     if (activeOutputs[id]) {
         console.log(`[STOPPING OUTPUT ${id}] Killing process...`);
         if (activeOutputs[id].autoRestart) clearTimeout(activeOutputs[id].autoRestart);
-        
+
         const { process, localPort, parentChannel } = activeOutputs[id];
-        
+
         if (process) {
             if (typeof process.markIntentionalStop === 'function') {
                 process.markIntentionalStop();
             }
             process.kill('SIGKILL');
         }
-        
+
         if (activeOutputs[id].tcpSocket) {
             activeOutputs[id].tcpSocket.destroy();
             if (activeInputs[parentChannel] && activeInputs[parentChannel].router) {
                 activeInputs[parentChannel].router.subscribers.delete(activeOutputs[id].tcpSocket);
             }
         }
-        
+
         delete activeOutputs[id];
         return true;
     }
@@ -814,20 +816,20 @@ setInterval(() => {
             if (!telemetryCache[channel]) telemetryCache[channel] = [];
             telemetryCache[channel].push({ t: new Date().toLocaleTimeString(), y: 0 });
             if (telemetryCache[channel].length > 60) telemetryCache[channel].shift();
-            
+
             if (ioInstance) {
                 ioInstance.emit('stats', {
                     channel: channel,
                     bitrate: '0.0kbits/s',
-                    time: '--:--:--', 
+                    time: '--:--:--',
                     active: true,
                     history: telemetryCache[channel]
                 });
             }
-            inp.lastUpdate = now; 
+            inp.lastUpdate = now;
         }
     }
-    
+
     // Heartbeat for Active Outputs
     for (const id in activeOutputs) {
         const outp = activeOutputs[id];
@@ -836,12 +838,12 @@ setInterval(() => {
             if (!telemetryCache[outChan]) telemetryCache[outChan] = [];
             telemetryCache[outChan].push({ t: new Date().toLocaleTimeString(), y: 0 });
             if (telemetryCache[outChan].length > 60) telemetryCache[outChan].shift();
-            
+
             if (ioInstance) {
                 ioInstance.emit('stats', {
                     channel: outChan,
                     bitrate: '0.0kbits/s',
-                    time: '--:--:--', 
+                    time: '--:--:--',
                     active: true,
                     history: telemetryCache[outChan]
                 });
