@@ -393,34 +393,55 @@ function startPreview(channel, singleFrame = true) {
     if (!activeInputs[channel] || !activeInputs[channel].router) return;
     if (activeInputs[channel].prevProcess) stopPreview(channel);
 
+    const router = activeInputs[channel].router;
+    if (!router || !router.subscribers) return;
+
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
+    const outPath = extPath + '.jpg';
     const ffmpegCmd = getFFmpegPath();
     
-    // Conectar a la API HTTP interna como si fuera un reproductor web más
-    // Esto asegura que recibe los datos TS perfectos y formateados
-    const internalUrl = `http://127.0.0.1:${process.env.PORT || 4000}/api/preview/ts/${channel}`;
-    
+    // FFmpeg lee MPEG-TS desde stdin (pipe directa del router, 0% HTTP)
     const args = [ 
         '-hide_banner', '-y',
         '-fflags', '+genpts+discardcorrupt+nobuffer',
         '-err_detect', 'ignore_err',
-        '-probesize', '5000000', // 5MB — necesario para H.265 donde los keyframes pueden estar separados por varios MB
-        '-analyzeduration', '5000000', // 5s
-        '-i', internalUrl,
+        '-probesize', '5000000',
+        '-analyzeduration', '5000000',
+        '-f', 'mpegts',
+        '-i', 'pipe:0',
         '-map', '0:v?',
         '-vf', 'scale=240:-1',
         '-q:v', '5',
         '-frames:v', '1',
         '-f', 'image2',
-        '-update', '1'
+        '-update', '1',
+        outPath
     ];
-    
-    const outPath = extPath + '.jpg';
-    args.push(outPath);
 
-    console.log(`[PREVIEW START CH-${channel}] Conectando a ${internalUrl} para frame estático...`);
+    console.log(`[PREVIEW CH-${channel}] Extrayendo thumbnail via pipe directa del router...`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
+    
+    // Suscribir al router para recibir datos MPEG-TS directamente
+    const subscriber = {
+        writableLength: 0,
+        write(chunk) {
+            if (child.stdin && !child.stdin.destroyed) {
+                try {
+                    const ok = child.stdin.write(chunk);
+                    if (!ok) this.writableLength += chunk.length;
+                } catch(e) {}
+            }
+        },
+        destroy() {
+            // Cleanup automático del subscriber
+        }
+    };
+    router.subscribers.add(subscriber);
+    activeInputs[channel].prevSubscriber = subscriber;
+
+    child.stdin.on('error', () => {}); // Silenciar EPIPE
+    child.stdin.on('drain', () => { subscriber.writableLength = 0; });
     
     child.on('error', (err) => {
         console.error(`[PREVIEW ERROR CH-${channel}] Failed to run ffmpeg:`, err.message);
@@ -439,21 +460,28 @@ function startPreview(channel, singleFrame = true) {
         }
     });
 
-    // Timeout de seguridad de 30s (H.265 necesita más tiempo para encontrar un keyframe)
-    const killTimer = setTimeout(() => stopPreview(channel), 30000);
+    // Timeout de seguridad de 20s
+    const killTimer = setTimeout(() => {
+        console.log(`[PREVIEW CH-${channel}] Timeout 20s, matando proceso...`);
+        stopPreview(channel);
+    }, 20000);
 
     child.on('close', (code) => {
         clearTimeout(killTimer);
+        // Limpiar subscriber del router
+        if (activeInputs[channel] && activeInputs[channel].router) {
+            activeInputs[channel].router.subscribers.delete(subscriber);
+        }
         if (activeInputs[channel]) {
             activeInputs[channel].prevProcess = null;
+            activeInputs[channel].prevSubscriber = null;
             
-            // Emitir evento para avisar al frontend que el thumbnail está listo
             if (code === 0 && ioInstance) {
-                console.log(`[PREVIEW CH-${channel}] Thumbnail estático guardado con éxito.`);
+                console.log(`[PREVIEW CH-${channel}] ✓ Thumbnail guardado con éxito.`);
                 ioInstance.emit('thumbnail_ready', { channel: channel });
-                activeInputs[channel].thumbRetries = 0; // Reset retries
+                activeInputs[channel].thumbRetries = 0;
                 
-                // Programar regeneración periódica cada 60 segundos para mantener thumbnail fresco
+                // Regenerar cada 60s para mantener thumbnail fresco
                 activeInputs[channel].autoPreviewTimer = setTimeout(() => {
                     if (activeInputs[channel] && !activeInputs[channel].isStopping) {
                         activeInputs[channel].thumbRetries = 0;
@@ -461,7 +489,6 @@ function startPreview(channel, singleFrame = true) {
                     }
                 }, 60000);
             } else if (code !== 0 && !activeInputs[channel].isStopping) {
-                // Reintentar: rápido los primeros 10, luego cada 30s sin rendirse
                 activeInputs[channel].thumbRetries = (activeInputs[channel].thumbRetries || 0) + 1;
                 const retryDelay = activeInputs[channel].thumbRetries <= 10 ? 5000 : 30000;
                 const retryLabel = activeInputs[channel].thumbRetries <= 10 

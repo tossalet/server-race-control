@@ -1228,10 +1228,9 @@ app.post('/api/recordings/start', (req, res) => {
                 const mp4Path = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.mp4`);
 
                 const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
-                const isH265 = codec.toLowerCase().includes('265') || codec.toLowerCase().includes('hevc');
-                const hlsCodecArgs = isH265
-                    ? streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28, hwaccel: streamManager.nvencAvailable ? 'cuda' : undefined })
-                    : ['-c:v', 'copy'];
+                // Passthrough puro para TODAS las cámaras — sin transcodificación.
+                // H.265 en HLS funciona en navegadores modernos y evita crash de FFmpeg por GPU/CPU.
+                const hlsCodecArgs = ['-c:v', 'copy'];
 
                 const args = [
                     '-hide_banner', '-y',
