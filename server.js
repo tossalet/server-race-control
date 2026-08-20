@@ -752,7 +752,7 @@ app.get('/api/inputs', (req, res) => {
                 codec: isRunning
                     ? (state.codec || streamManager.persistentCodecs[row.channel] || row.codec || '')
                     : (row.codec || streamManager.persistentCodecs[row.channel] || ''),
-                thumbTs: thumbCacheTs[row.channel] || 0
+                thumbTs: state ? (state.thumbTs || 0) : 0
             };
         });
         res.json(decorated);

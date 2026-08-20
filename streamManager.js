@@ -477,6 +477,8 @@ function startPreview(channel, singleFrame = true) {
                 console.log(`[PREVIEW CH-${channel}] ✓ Thumbnail guardado con éxito.`);
                 ioInstance.emit('thumbnail_ready', { channel: channel });
                 activeInputs[channel].thumbRetries = 0;
+                activeInputs[channel].thumbTs = Date.now();
+
 
                 // Regenerar cada 60s
                 activeInputs[channel].autoPreviewTimer = setTimeout(() => {
