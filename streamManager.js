@@ -390,98 +390,82 @@ function startInput(inputObj) {
 let previewQueueDelay = 0;
 
 function startPreview(channel, singleFrame = true) {
-    if (!activeInputs[channel] || !activeInputs[channel].router) return;
+    if (!activeInputs[channel]) return;
     if (activeInputs[channel].prevProcess) stopPreview(channel);
 
-    const router = activeInputs[channel].router;
-    if (!router || !router.subscribers) return;
+    const inputObj = activeInputs[channel].inputObj;
+    if (!inputObj || !inputObj.url) return;
 
     const extPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}`);
     const outPath = extPath + '.jpg';
     const ffmpegCmd = getFFmpegPath();
+    const url = inputObj.url;
     
-    // FFmpeg lee MPEG-TS desde stdin (pipe directa del router, 0% HTTP)
+    // FFmpeg se conecta DIRECTAMENTE a la fuente SRT/RTSP de la cámara.
+    // Esto es más fiable que la pipe interna porque recibe el stream
+    // completo desde el inicio con keyframes y headers válidos.
     const args = [ 
         '-hide_banner', '-y',
+        '-loglevel', 'warning',
         '-fflags', '+genpts+discardcorrupt+nobuffer',
         '-err_detect', 'ignore_err',
         '-probesize', '5000000',
         '-analyzeduration', '5000000',
-        '-f', 'mpegts',
-        '-i', 'pipe:0',
-        '-map', '0:v?',
+    ];
+    
+    // Opciones específicas por protocolo
+    if (url.startsWith('srt://')) {
+        args.push('-timeout', '5000000'); // 5s timeout
+    } else if (url.startsWith('rtsp://')) {
+        args.push('-rtsp_transport', 'tcp');
+    }
+    
+    args.push(
+        '-i', url,
+        '-map', '0:v:0',
         '-vf', 'scale=240:-1',
         '-q:v', '5',
         '-frames:v', '1',
         '-f', 'image2',
         '-update', '1',
         outPath
-    ];
+    );
 
-    console.log(`[PREVIEW CH-${channel}] Extrayendo thumbnail via pipe directa del router...`);
+    console.log(`[PREVIEW CH-${channel}] Conectando a ${url} para extraer thumbnail...`);
     const child = spawn(ffmpegCmd, args);
     activeInputs[channel].prevProcess = child;
-    
-    // Suscribir al router para recibir datos MPEG-TS directamente
-    const subscriber = {
-        writableLength: 0,
-        write(chunk) {
-            if (child.stdin && !child.stdin.destroyed) {
-                try {
-                    const ok = child.stdin.write(chunk);
-                    if (!ok) this.writableLength += chunk.length;
-                } catch(e) {}
-            }
-        },
-        destroy() {
-            // Cleanup automático del subscriber
-        }
-    };
-    router.subscribers.add(subscriber);
-    activeInputs[channel].prevSubscriber = subscriber;
-
-    child.stdin.on('error', () => {}); // Silenciar EPIPE
-    child.stdin.on('drain', () => { subscriber.writableLength = 0; });
     
     child.on('error', (err) => {
         console.error(`[PREVIEW ERROR CH-${channel}] Failed to run ffmpeg:`, err.message);
     });
 
-    let lastStderrLog = 0;
+    // Capturar TODA la salida stderr para diagnóstico
+    let stderrOutput = '';
     child.stderr.on('data', (d) => {
-        const text = d.toString().trim();
-        if (!text) return;
-        const isError = /error|fail|unable|invalid/i.test(text);
-        const now = Date.now();
-        if (isError || now - lastStderrLog > 10000) {
-            lastStderrLog = now;
-            const line = text.split('\n')[0].substring(0, 200);
-            console.log(`[PREV-STDERR CH-${channel}] ${line}`);
-        }
+        stderrOutput += d.toString();
     });
 
-    // Timeout de seguridad de 20s
+    // Timeout de seguridad de 15s
     const killTimer = setTimeout(() => {
-        console.log(`[PREVIEW CH-${channel}] Timeout 20s, matando proceso...`);
+        console.log(`[PREVIEW CH-${channel}] Timeout 15s, matando proceso...`);
+        if (stderrOutput.trim()) {
+            const lastLines = stderrOutput.trim().split('\n').slice(-3).join(' | ');
+            console.log(`[PREVIEW CH-${channel}] Último stderr: ${lastLines.substring(0, 300)}`);
+        }
         stopPreview(channel);
-    }, 20000);
+    }, 15000);
 
     child.on('close', (code) => {
         clearTimeout(killTimer);
-        // Limpiar subscriber del router
-        if (activeInputs[channel] && activeInputs[channel].router) {
-            activeInputs[channel].router.subscribers.delete(subscriber);
-        }
         if (activeInputs[channel]) {
             activeInputs[channel].prevProcess = null;
-            activeInputs[channel].prevSubscriber = null;
             
             if (code === 0 && ioInstance) {
                 console.log(`[PREVIEW CH-${channel}] ✓ Thumbnail guardado con éxito.`);
                 ioInstance.emit('thumbnail_ready', { channel: channel });
                 activeInputs[channel].thumbRetries = 0;
                 
-                // Regenerar cada 60s para mantener thumbnail fresco
+                // Regenerar cada 60s
                 activeInputs[channel].autoPreviewTimer = setTimeout(() => {
                     if (activeInputs[channel] && !activeInputs[channel].isStopping) {
                         activeInputs[channel].thumbRetries = 0;
@@ -490,6 +474,11 @@ function startPreview(channel, singleFrame = true) {
                 }, 60000);
             } else if (code !== 0 && !activeInputs[channel].isStopping) {
                 activeInputs[channel].thumbRetries = (activeInputs[channel].thumbRetries || 0) + 1;
+                // Log detallado del fallo
+                if (stderrOutput.trim()) {
+                    const lastLines = stderrOutput.trim().split('\n').slice(-3).join(' | ');
+                    console.log(`[PREVIEW CH-${channel}] FFmpeg stderr: ${lastLines.substring(0, 300)}`);
+                }
                 const retryDelay = activeInputs[channel].thumbRetries <= 10 ? 5000 : 30000;
                 const retryLabel = activeInputs[channel].thumbRetries <= 10 
                     ? `${activeInputs[channel].thumbRetries}/10` 
