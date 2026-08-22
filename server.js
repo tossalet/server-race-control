@@ -259,7 +259,7 @@ app.get('/thumbs/:filename', (req, res, next) => {
             delete thumbCache[channel];
             delete thumbCacheTs[channel];
         }
-        fs.unlink(filePath, () => { });
+        // fs.unlink(filePath, () => { }); // Comentado temporalmente por seguridad
         return serveFallback();
     }
 
@@ -286,7 +286,7 @@ app.get('/thumbs/:filename', (req, res, next) => {
         // - Tamaño mínimo 1KB (frames de transición de señal son más pequeños)
         // - Scan más amplio (512 bytes) para encontrar EOI de forma fiable
         let isValidJpeg = false;
-        if (data.length > 1000) {
+        if (data.length > 100) {
             const hasStart = data[0] === 0xFF && data[1] === 0xD8;
             if (hasStart) {
                 const limit = Math.max(0, data.length - 512);
