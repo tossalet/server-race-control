@@ -403,18 +403,18 @@ function startPreview(channel, singleFrame = true) {
     // FFmpeg lee MPEG-TS desde stdin (pipe directa del router, 0% HTTP, 0% conflictos SRT)
     const args = [
         '-hide_banner', '-y',
-        '-loglevel', 'warning',
+        '-hwaccel', 'auto', // Intentar usar la gráfica para descomprimir el I-Frame
         '-fflags', '+genpts+discardcorrupt+nobuffer',
         '-err_detect', 'ignore_err',
-        '-skip_frame', 'nokey', // Obligar a esperar un I-Frame (evita frames grises/corruptos)
         '-probesize', '5000000',
         '-analyzeduration', '5000000',
         '-f', 'mpegts',
         '-i', 'pipe:0',
         '-map', '0:v:0',
-        '-vf', 'scale=240:-1',
+        '-vf', "select='eq(pict_type,I)',scale=240:-1", // Seleccionar solo el I-Frame completo, sin crashear el demuxer
         '-q:v', '5',
         '-frames:v', '1',
+        '-vsync', 'vfr', // Necesario al usar select para evitar que ffmpeg genere frames duplicados
         '-f', 'image2',
         '-update', '1',
         outPath

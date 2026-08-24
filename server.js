@@ -295,6 +295,7 @@ app.get('/api/thumbs/:filename', (req, res, next) => {
             thumbCacheTs[channel] = Date.now();
             res.setHeader('Content-Type', 'image/jpeg');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            console.log(`[HTTP] Sirviendo thumbnail válido para CH-${channel}`);
             return res.send(data);
         } else {
             // Si está incompleto o a medio escribir por FFmpeg, servimos el último válido de la caché
@@ -303,12 +304,15 @@ app.get('/api/thumbs/:filename', (req, res, next) => {
                 if (cacheAge > 30000) {
                     delete thumbCache[channel];
                     delete thumbCacheTs[channel];
+                    console.log(`[HTTP] Caché expirada, sirviendo barras para CH-${channel}`);
                     return serveFallback();
                 }
                 res.setHeader('Content-Type', 'image/jpeg');
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                console.log(`[HTTP] Sirviendo thumbnail de caché para CH-${channel}`);
                 return res.send(thumbCache[channel]);
             }
+            console.log(`[HTTP] No hay caché válida, sirviendo barras para CH-${channel}`);
             return serveFallback();
         }
     });
