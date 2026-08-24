@@ -406,6 +406,7 @@ function startPreview(channel, singleFrame = true) {
         '-loglevel', 'warning',
         '-fflags', '+genpts+discardcorrupt+nobuffer',
         '-err_detect', 'ignore_err',
+        '-skip_frame', 'nokey', // Obligar a esperar un I-Frame (evita frames grises/corruptos)
         '-probesize', '5000000',
         '-analyzeduration', '5000000',
         '-f', 'mpegts',
@@ -474,10 +475,16 @@ function startPreview(channel, singleFrame = true) {
             activeInputs[channel].prevSubscriber = null;
 
             if (code === 0 && ioInstance) {
-                console.log(`[PREVIEW CH-${channel}] ✓ Thumbnail guardado con éxito.`);
-                ioInstance.emit('thumbnail_ready', { channel: channel });
-                activeInputs[channel].thumbRetries = 0;
-                activeInputs[channel].thumbTs = Date.now();
+                const fs = require('fs');
+                if (fs.existsSync(outPath)) {
+                    const stats = fs.statSync(outPath);
+                    console.log(`[PREVIEW CH-${channel}] ✓ Thumbnail guardado con éxito (Tamaño: ${stats.size} bytes).`);
+                    ioInstance.emit('thumbnail_ready', { channel: channel });
+                    activeInputs[channel].thumbRetries = 0;
+                    activeInputs[channel].thumbTs = Date.now();
+                } else {
+                    console.error(`[PREVIEW CH-${channel}] ❌ FFmpeg terminó con éxito pero el archivo ${outPath} NO EXISTE.`);
+                }
 
 
                 // Regenerar cada 60s

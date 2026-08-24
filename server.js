@@ -220,7 +220,7 @@ if (!fs.existsSync(thumbsDir)) {
 }
 const thumbCache = {};      // channel -> Buffer (último JPEG válido)
 const thumbCacheTs = {};     // channel -> timestamp de cuándo se cacheó
-app.get('/thumbs/:filename', (req, res, next) => {
+app.get('/api/thumbs/:filename', (req, res, next) => {
     const filename = req.params.filename;
     const match = filename.match(/^thumb_(\d+)\.jpg$/);
     if (!match) {
@@ -286,17 +286,8 @@ app.get('/thumbs/:filename', (req, res, next) => {
         // - Tamaño mínimo 1KB (frames de transición de señal son más pequeños)
         // - Scan más amplio (512 bytes) para encontrar EOI de forma fiable
         let isValidJpeg = false;
-        if (data.length > 100) {
-            const hasStart = data[0] === 0xFF && data[1] === 0xD8;
-            if (hasStart) {
-                const limit = Math.max(0, data.length - 512);
-                for (let i = data.length - 2; i >= limit; i--) {
-                    if (data[i] === 0xFF && data[i + 1] === 0xD9) {
-                        isValidJpeg = true;
-                        break;
-                    }
-                }
-            }
+        if (data.length > 50) { // Un JPEG válido minúsculo
+            isValidJpeg = data[0] === 0xFF && data[1] === 0xD8;
         }
 
         if (isValidJpeg) {
