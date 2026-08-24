@@ -487,13 +487,9 @@ function startPreview(channel, singleFrame = true) {
                 }
 
 
-                // Regenerar cada 60s
-                activeInputs[channel].autoPreviewTimer = setTimeout(() => {
-                    if (activeInputs[channel] && !activeInputs[channel].isStopping) {
-                        activeInputs[channel].thumbRetries = 0;
-                        startPreview(channel, true);
-                    }
-                }, 60000);
+                // NOTA: Auto-refresh desactivado a petición del usuario.
+                // El thumbnail se extraerá una única vez al conectarse la cámara.
+                // activeInputs[channel].autoPreviewTimer = setTimeout(() => { ... }, 60000);
             } else if (code !== 0 && !activeInputs[channel].isStopping) {
                 activeInputs[channel].thumbRetries = (activeInputs[channel].thumbRetries || 0) + 1;
                 if (stderrOutput.trim()) {
