@@ -865,28 +865,38 @@ app.put('/api/inputs/:channel', (req, res) => {
 
     db.run(query, [url, name, buffer || 0, ptz_enabled || 0, ptz_ip || '', ptz_user || '', ptz_pass || '', channelId], function (err) {
         if (err) return res.status(500).json({ error: err.message });
+        const changes = this.changes;
 
         // Restart the process if it was running with new data
         streamManager.stopInput(channelId);
         db.get('SELECT * FROM inputs WHERE channel = ?', [channelId], (err, row) => {
             if (row && row.enabled) streamManager.startInput(row);
             io.emit('db_update', { event: 'inputs_changed' });
-            res.json({ updated: this.changes });
+            res.json({ updated: changes });
         });
     });
 });
 
 app.delete('/api/inputs/:channel', (req, res) => {
     const channelId = req.params.channel;
-    streamManager.stopInput(channelId);
 
-    db.run('DELETE FROM inputs WHERE channel = ?', [channelId], function (err) {
+    // 1. Encontrar y detener los outputs primero
+    db.all('SELECT id FROM outputs WHERE channel = ?', [channelId], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-
-        // Stop related outputs
-        db.all('SELECT id FROM outputs WHERE channel = ?', [channelId], (err, rows) => {
-            if (rows) rows.forEach(r => streamManager.stopOutput(r.id));
-            db.run('DELETE FROM outputs WHERE channel = ?', [channelId], () => {
+        
+        if (rows) rows.forEach(r => streamManager.stopOutput(r.id));
+        
+        // 2. Eliminar los outputs (respeta Foreign Keys)
+        db.run('DELETE FROM outputs WHERE channel = ?', [channelId], function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            
+            // 3. Detener la entrada
+            streamManager.stopInput(channelId);
+            
+            // 4. Eliminar la entrada
+            db.run('DELETE FROM inputs WHERE channel = ?', [channelId], function(err) {
+                if (err) return res.status(500).json({ error: err.message });
+                
                 res.json({ deleted: true });
                 io.emit('db_update', { event: 'inputs_changed' });
             });
