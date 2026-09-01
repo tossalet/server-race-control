@@ -135,9 +135,11 @@ function startInput(inputObj) {
 
         // Flags específicos para entradas SRT (mejorar estabilidad y reconexión)
         if (url.startsWith('srt://')) {
-            // Timeout de conexión: 5 segundos (en microsegundos)
-            // Si la fuente SRT no responde, FFmpeg intenta reconectar en lugar de colgar
-            args.push('-timeout', '5000000');
+            // Solo aplicar timeout estricto si NO es listener (caller mode)
+            if (!url.includes('mode=listener')) {
+                // Timeout de conexión: 5 segundos (en microsegundos)
+                args.push('-timeout', '5000000');
+            }
             // Forzar detección de stream más rápida para fuentes SRT (evita esperas largas)
             args.push('-probesize', '1048576');   // 1 MB
             args.push('-analyzeduration', '1000000'); // 1 segundo
