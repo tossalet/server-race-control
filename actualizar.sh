@@ -140,6 +140,23 @@ killall -q -9 firefox firefox-esr 2>/dev/null || true
 find "$RC_HOME/.mozilla" -name ".parentlock" -delete 2>/dev/null || true
 find "$RC_HOME/.config/firefox_monitor" -name ".parentlock" -delete 2>/dev/null || true
 
+# Proteger contra el OOM killer asegurando al menos 4GB de SWAP en disco
+SWAP_TOTAL=$(free -m | awk '/^Swap:/ {print $2}')
+if [ -z "$SWAP_TOTAL" ] || [ "$SWAP_TOTAL" -lt 2000 ]; then
+    echo "💾 Configurando archivo de SWAP de 4GB para blindar contra el OOM Killer..."
+    if [ ! -f /swapfile ]; then
+        fallocate -l 4G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=4096
+        chmod 600 /swapfile
+        mkswap /swapfile 2>/dev/null || true
+    fi
+    swapon /swapfile 2>/dev/null || true
+    grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+fi
+
+# Conservar el botón de encendido/apagado físico funcional para apagar la máquina
+rm -f /etc/systemd/logind.conf.d/race-control.conf 2>/dev/null || true
+systemctl restart systemd-logind 2>/dev/null || true
+
 # Forzar recarga de Openbox para aplicar las nuevas reglas de ventanas en caliente
 sudo -u $RC_USER DISPLAY=:0 openbox --reconfigure 2>/dev/null || true
 
