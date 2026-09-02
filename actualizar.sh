@@ -52,12 +52,82 @@ awk '
 mv "$tmpfile" "$XML_FILE"
 chown $RC_USER:$RC_USER "$XML_FILE"
 
-# Actualizar el script de autoarranque local para asociar la clase al grabador principal
+# Actualizar el script de autoarranque local con supervisión continua y autorestart anti-cuelgues
 KIOSK_SCRIPT="$RC_HOME/.config/race-control/launch_kiosk.sh"
-if [ -f "$KIOSK_SCRIPT" ]; then
-    sed -i 's/firefox-esr --kiosk/firefox-esr --class racecontrolgrabador --kiosk/g' "$KIOSK_SCRIPT"
-    chown $RC_USER:$RC_USER "$KIOSK_SCRIPT"
+echo "🖥️  Actualizando script supervisor de Kiosko ($KIOSK_SCRIPT)..."
+cat > "$KIOSK_SCRIPT" << 'KIOSK_EOF'
+#!/bin/bash
+LOGFILE="/tmp/kiosk.log"
+exec > >(tee -a "$LOGFILE") 2>&1
+echo "=== Kiosk Supervisor Started at $(date) ==="
+
+# Teclado y configuración X11
+setxkbmap es 2>/dev/null || setxkbmap us 2>/dev/null || true
+unclutter -idle 3 &
+xset s noblank
+xset s off
+xset -dpms
+
+# Fondo de pantalla
+if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then
+    feh --bg-scale /usr/share/plymouth/themes/racecontrol/bg.png &
 fi
+
+# Leer puerto del .env
+ENV_PORT=$(grep '^PORT=' /opt/race-control/.env 2>/dev/null | cut -d'=' -f2)
+PORT=${ENV_PORT:-3000}
+echo "window.KIOSK_CONFIG = { port: '$PORT' };" > /opt/race-control/public/config.js
+
+# Apagar Plymouth
+command -v plymouth &>/dev/null && sudo plymouth quit 2>/dev/null || true
+
+# Configurar preferencias en los perfiles de Firefox para evitar cuelgues, diálogos de bloqueo y desbordamiento de caché
+mkdir -p "$HOME/.mozilla/firefox"
+for pdir in $(find "$HOME/.mozilla/firefox" -maxdepth 1 -type d); do
+    if [ -d "$pdir" ] && [ "$pdir" != "$HOME/.mozilla/firefox" ]; then
+        cat > "$pdir/user.js" << 'USERJS_EOF'
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("browser.sessionstore.interval", 86400000);
+user_pref("toolkit.startup.max_resumed_crashes", -1);
+user_pref("browser.cache.disk.enable", false);
+user_pref("browser.cache.memory.enable", true);
+user_pref("browser.cache.memory.capacity", 65536);
+user_pref("dom.ipc.processHangMonitor", false);
+user_pref("media.autoplay.default", 0);
+user_pref("media.autoplay.enabled.user-gestures-needed", false);
+USERJS_EOF
+    fi
+done
+
+# Helper de foco y pantalla completa inicial en segundo plano
+(
+    sleep 3
+    for i in $(seq 1 20); do
+        WID=$(xdotool search --onlyvisible --class "firefox" 2>/dev/null | head -n 1)
+        if [ -n "$WID" ]; then
+            xdotool windowactivate "$WID" 2>/dev/null
+            xdotool windowfocus "$WID" 2>/dev/null
+            break
+        fi
+        sleep 1
+    done
+) &
+
+# BUCLE INFINITO DE SUPERVISIÓN: Si Firefox se cierra o crashea, se relanza automáticamente
+while true; do
+    echo "[$(date)] Iniciando Firefox ESR en modo Kiosk..."
+    find "$HOME/.mozilla" -name ".parentlock" -delete 2>/dev/null || true
+    
+    firefox-esr --class racecontrolgrabador --kiosk "file:///opt/race-control/public/splash.html"
+    
+    EXIT_CODE=$?
+    echo "[$(date)] ⚠️ AVISO: Firefox ESR se cerró con código $EXIT_CODE. Relanzando en 1 segundo..."
+    sleep 1
+done
+KIOSK_EOF
+
+chmod +x "$KIOSK_SCRIPT"
+chown $RC_USER:$RC_USER "$KIOSK_SCRIPT"
 
 # Asegurar que el perfil temporal de Firefox para el monitor tiene los permisos correctos
 mkdir -p "$RC_HOME/.config/firefox_monitor"
@@ -65,6 +135,7 @@ chown -R $RC_USER:$RC_USER "$RC_HOME/.config/firefox_monitor"
 
 # Limpiar bloqueos parentlock de Firefox para evitar cuelgues al arrancar
 echo "🧹 Limpiando bloqueos zombis de Firefox..."
+pkill -f "launch_kiosk.sh" 2>/dev/null || true
 killall -q -9 firefox firefox-esr 2>/dev/null || true
 find "$RC_HOME/.mozilla" -name ".parentlock" -delete 2>/dev/null || true
 find "$RC_HOME/.config/firefox_monitor" -name ".parentlock" -delete 2>/dev/null || true
@@ -79,6 +150,12 @@ sleep 0.5
 systemctl daemon-reload
 systemctl reset-failed race-control
 systemctl start race-control
+
+# Relanzar el kiosko inmediatamente en la sesión activa si X11 está corriendo
+if pgrep -x "Xorg" >/dev/null || pgrep -x "X" >/dev/null; then
+    echo "🖥️  Relanzando Kiosko en pantalla activa (DISPLAY=:0)..."
+    sudo -u $RC_USER DISPLAY=:0 nohup bash "$KIOSK_SCRIPT" >/dev/null 2>&1 &
+fi
 
 echo "✅ Servidor actualizado y corriendo correctamente."
 systemctl status race-control --no-pager -n 5
