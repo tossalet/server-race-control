@@ -1435,13 +1435,54 @@ app.post('/api/recordings/stop/:sessionId', (req, res) => {
 });
 
 
-// Export clip from MP4 using fast stream-copy (no re-encode)
+// ── EventSource SSE para el progreso de exportación en tiempo real ─────────────
+let exportProgressClients = [];
+app.get('/api/exports/events', (req, res) => {
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+    });
+    res.write(': connected\n\n');
+    exportProgressClients.push(res);
+    req.on('close', () => {
+        exportProgressClients = exportProgressClients.filter(c => c !== res);
+    });
+});
+
+function broadcastExportProgress(data) {
+    const payload = `data: ${JSON.stringify(data)}\n\n`;
+    exportProgressClients.forEach(client => {
+        try { client.write(payload); } catch (e) { }
+    });
+    if (io) io.emit('export_progress', data);
+}
+
+// Helper para detectar fuentes TrueType para el filtro drawtext de FFmpeg
+function getDrawtextFontOption() {
+    const candidates = process.platform === 'win32'
+        ? ['C:/Windows/Fonts/arialbd.ttf', 'C:/Windows/Fonts/arial.ttf']
+        : [
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+            '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+        ];
+    for (const p of candidates) {
+        if (fs.existsSync(p)) {
+            return `fontfile='${p.replace(':', '\\:')}':`;
+        }
+    }
+    return '';
+}
+
+// Export clip from MP4 with optional burn-in overlay and progress reporting
 app.post('/api/recordings/export', (req, res) => {
     const { spawn } = require('child_process');
     console.log('[EXPORT] ── Petición recibida ──');
     console.log('[EXPORT] Body:', JSON.stringify(req.body || {}));
 
-    const { session_id, channel, start_time, end_time, label } = req.body || {};
+    const { session_id, channel, start_time, end_time, label, dest_path, overlay_text, clip_id } = req.body || {};
 
     if (!session_id || start_time == null || end_time == null) {
         console.error('[EXPORT] Parámetros incompletos:', { session_id, channel, start_time, end_time });
@@ -1496,7 +1537,7 @@ app.post('/api/recordings/export', (req, res) => {
                 const exportName = `${clipLabel}_${dateStr}_${timeStr}.mp4`;
 
                 // ── Destino ──
-                const baseDestDir = req.body.dest_path || mediaRoot;
+                const baseDestDir = dest_path || mediaRoot;
                 if (!baseDestDir) {
                     console.error('[EXPORT] Sin disco de destino configurado');
                     return res.status(503).json({ error: 'No hay disco de grabación configurado' });
@@ -1537,15 +1578,37 @@ app.post('/api/recordings/export', (req, res) => {
                     return res.status(500).json({ error: `FFmpeg no encontrado en: ${ffmpegBin}` });
                 }
 
+                const clipDuration = Math.max(0.1, Number(end_time) - Number(start_time));
                 const args = [
                     '-hide_banner', '-y',
                     '-ss', String(start_time),
                     '-i', sourcePath,
-                    '-t', String(end_time - start_time),
-                    '-c', 'copy',
-                    '-movflags', '+faststart',
-                    exportPath
+                    '-t', String(clipDuration)
                 ];
+
+                // Si se solicita overlay con la información de cámara y slidebar, quemarlo con drawtext (SIN REPLAY)
+                if (overlay_text && typeof overlay_text === 'string' && overlay_text.trim()) {
+                    const fontOpt = getDrawtextFontOption();
+                    const safeText = overlay_text.trim()
+                        .replace(/\s*-\s*REPLAY$/i, '')
+                        .replace(/\s+REPLAY$/i, '')
+                        .replace(/\\/g, '\\\\')
+                        .replace(/'/g, "\\'")
+                        .replace(/:/g, '\\:')
+                        .replace(/%/g, '\\%');
+
+                    const drawtextFilter = `drawtext=${fontOpt}text='${safeText}':x=32:y=32:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.75:boxborderw=10`;
+                    args.push('-vf', drawtextFilter);
+                    args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22', '-pix_fmt', 'yuv420p');
+                    // Mapeo seguro: toma primer stream de video y audio solo si existe (evita fallos si la cámara no tiene audio)
+                    args.push('-map', '0:v:0', '-map', '0:a?');
+                    args.push('-c:a', 'aac', '-b:a', '128k');
+                } else {
+                    args.push('-c', 'copy');
+                }
+
+                args.push('-progress', 'pipe:1');
+                args.push('-movflags', '+faststart', exportPath);
 
                 console.log(`[EXPORT] Comando: ${ffmpegBin} ${args.join(' ')}`);
 
@@ -1563,8 +1626,52 @@ app.post('/api/recordings/export', (req, res) => {
                     child = spawn(ffmpegBin, args);
                 } catch (spawnErr) {
                     console.error(`[EXPORT] Error al lanzar FFmpeg: ${spawnErr.message}`);
+                    broadcastExportProgress({
+                        clip_id: clip_id || null, channel, session_id, progress: 0,
+                        status: 'error', error: spawnErr.message
+                    });
                     return res.status(500).json({ error: `No se pudo lanzar FFmpeg: ${spawnErr.message}` });
                 }
+
+                // Notificar inicio inmediato (1%)
+                broadcastExportProgress({
+                    clip_id: clip_id || null, channel, session_id, progress: 1, status: 'exporting'
+                });
+
+                // Parsear progreso en tiempo real desde stdout (-progress pipe:1)
+                let stdoutBuf = '';
+                child.stdout.on('data', (d) => {
+                    stdoutBuf += d.toString();
+                    const lines = stdoutBuf.split('\n');
+                    stdoutBuf = lines.pop() || '';
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (trimmed === 'progress=end') {
+                            broadcastExportProgress({
+                                clip_id: clip_id || null,
+                                channel: channel,
+                                session_id: session_id,
+                                progress: 100,
+                                status: 'completed'
+                            });
+                            continue;
+                        }
+                        const match = trimmed.match(/^out_time_us=(\d+)/) || trimmed.match(/^out_time_ms=(\d+)/);
+                        if (match) {
+                            const val = parseInt(match[1]);
+                            const isMs = trimmed.startsWith('out_time_ms=');
+                            const totalVal = isMs ? (clipDuration * 1000) : (clipDuration * 1000000);
+                            const pct = Math.min(99, Math.max(1, Math.round((val / totalVal) * 100)));
+                            broadcastExportProgress({
+                                clip_id: clip_id || null,
+                                channel: channel,
+                                session_id: session_id,
+                                progress: pct,
+                                status: 'exporting'
+                            });
+                        }
+                    }
+                });
 
                 child.stderr.on('data', (d) => {
                     const line = d.toString().trim();
@@ -1574,6 +1681,10 @@ app.post('/api/recordings/export', (req, res) => {
 
                 child.on('error', (err) => {
                     console.error(`[EXPORT] FFmpeg spawn error: ${err.message}`);
+                    broadcastExportProgress({
+                        clip_id: clip_id || null, channel, session_id, progress: 0,
+                        status: 'error', error: err.message
+                    });
                     safeRespond(() => res.status(500).json({ error: `FFmpeg no se pudo ejecutar: ${err.message}` }));
                 });
 
@@ -1585,6 +1696,10 @@ app.post('/api/recordings/export', (req, res) => {
                             io.emit('server_log', {
                                 timestamp: new Date().toISOString(), level: 'INFO',
                                 message: `✓ Clip exportado: ${exportName}`
+                            });
+                            broadcastExportProgress({
+                                clip_id: clip_id || null, channel, session_id,
+                                progress: 100, status: 'completed'
                             });
                             safeRespond(() => {
                                 const response = { ok: true, filename: exportName, path: exportPath };
@@ -1598,6 +1713,10 @@ app.post('/api/recordings/export', (req, res) => {
                             io.emit('server_log', {
                                 timestamp: new Date().toISOString(), level: 'ERROR',
                                 message: `✗ Export fallido (${code}): ${lastErr}`
+                            });
+                            broadcastExportProgress({
+                                clip_id: clip_id || null, channel, session_id, progress: 0,
+                                status: 'error', error: lastErr || `FFmpeg falló (${code})`
                             });
                             safeRespond(() => res.status(500).json({
                                 error: `FFmpeg falló con código ${code}`,
@@ -1617,6 +1736,10 @@ app.post('/api/recordings/export', (req, res) => {
                     if (!responded) {
                         console.error(`[EXPORT] Timeout 120s — matando FFmpeg`);
                         try { child.kill('SIGKILL'); } catch (_) { }
+                        broadcastExportProgress({
+                            clip_id: clip_id || null, channel, session_id, progress: 0,
+                            status: 'error', error: 'Tiempo de espera agotado (120s)'
+                        });
                         safeRespond(() => res.status(504).json({
                             error: 'Tiempo de espera agotado (120s). El clip puede ser demasiado largo o el disco demasiado lento.',
                             detail: stderrLines.slice(-3).join(' | ')
