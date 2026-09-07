@@ -1805,12 +1805,20 @@ app.get('/api/exports', (req, res) => {
 });
 
 // ── Clips (IN/OUT pairs) ────────────────────────────
-app.get('/api/clips/:sessionId', (req, res) => {
-    db.all('SELECT * FROM clips WHERE session_id = ? ORDER BY in_point ASC',
-        [req.params.sessionId], (err, rows) => {
+app.get(['/api/clips', '/api/clips/:sessionId'], (req, res) => {
+    const sessionId = req.params.sessionId || req.query.session_id;
+    if (!sessionId) {
+        db.all('SELECT * FROM clips ORDER BY in_point ASC', (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
-            res.json(rows);
+            res.json(rows || []);
         });
+    } else {
+        db.all('SELECT * FROM clips WHERE session_id = ? ORDER BY in_point ASC',
+            [sessionId], (err, rows) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json(rows || []);
+            });
+    }
 });
 
 app.post('/api/clips', (req, res) => {
