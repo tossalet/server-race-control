@@ -1867,27 +1867,141 @@ app.put('/api/clips/:id', (req, res) => {
 
 // ── Recording Sessions ──────────────────────────────
 app.get('/api/recordings', (req, res) => {
-    db.all('SELECT * FROM recording_sessions ORDER BY start_time DESC', [], (err, rows) => {
+    db.all(`SELECT s.*, 
+            (SELECT COUNT(*) FROM clips WHERE session_id = s.id) AS clips_count 
+            FROM recording_sessions s ORDER BY s.start_time DESC`, [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(rows);
+    });
+});
+
+// Eliminar solo los clips de una sesión individual
+app.delete('/api/recordings/:id/clips', (req, res) => {
+    const sessionId = req.params.id;
+    db.run('DELETE FROM clips WHERE session_id = ?', [sessionId], function (err) {
+        if (err) {
+            console.error(`[DB] Error al eliminar clips de sesión ${sessionId}:`, err.message);
+            return res.status(500).json({ success: false, error: err.message });
+        }
+        console.log(`[DB] Clips de la sesión ${sessionId} eliminados (${this.changes} clips).`);
+        res.json({ success: true, deletedClips: this.changes });
+    });
+});
+
+// Borrado múltiple / por lotes (seleccionar clips o todo)
+app.post('/api/recordings/batch-delete', (req, res) => {
+    const { sessionIds, onlyClips } = req.body;
+    if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+        return res.status(400).json({ success: false, error: 'Lista de sesiones vacía' });
+    }
+    const placeholders = sessionIds.map(() => '?').join(',');
+
+    if (onlyClips) {
+        db.run(`DELETE FROM clips WHERE session_id IN (${placeholders})`, sessionIds, function (err) {
+            if (err) {
+                console.error('[DB] Error en borrado múltiple de clips:', err.message);
+                return res.status(500).json({ success: false, error: err.message });
+            }
+            console.log(`[DB] Borrado múltiple: ${this.changes} clips eliminados de ${sessionIds.length} sesiones.`);
+            return res.json({ success: true, deletedClips: this.changes });
+        });
+    } else {
+        // Intentar limpiar del disco los archivos mp4 y hls/ts asociados
+        db.all(`SELECT hls_path, mp4_path FROM session_files WHERE session_id IN (${placeholders})`, sessionIds, (errFiles, files) => {
+            if (!errFiles && Array.isArray(files)) {
+                files.forEach(f => {
+                    try {
+                        if (f.mp4_path && fs.existsSync(f.mp4_path)) fs.unlinkSync(f.mp4_path);
+                    } catch (e) { }
+                    try {
+                        if (f.hls_path && fs.existsSync(f.hls_path)) {
+                            fs.unlinkSync(f.hls_path);
+                            const hlsDir = path.dirname(f.hls_path);
+                            const baseName = path.basename(f.hls_path, '.m3u8');
+                            if (fs.existsSync(hlsDir)) {
+                                const dirFiles = fs.readdirSync(hlsDir);
+                                dirFiles.filter(name => name.startsWith(baseName) && name.endsWith('.ts')).forEach(tsFile => {
+                                    try { fs.unlinkSync(path.join(hlsDir, tsFile)); } catch (e) { }
+                                });
+                            }
+                        }
+                    } catch (e) { }
+                });
+            }
+
+            db.serialize(() => {
+                db.run(`DELETE FROM markers WHERE session_id IN (${placeholders})`, sessionIds);
+                db.run(`DELETE FROM clips WHERE session_id IN (${placeholders})`, sessionIds);
+                db.run(`DELETE FROM session_files WHERE session_id IN (${placeholders})`, sessionIds);
+                db.run(`DELETE FROM recording_sessions WHERE id IN (${placeholders})`, sessionIds, function (err) {
+                    if (err) {
+                        console.error('[DB] Error en borrado múltiple de sesiones:', err.message);
+                        return res.status(500).json({ success: false, error: err.message });
+                    }
+                    console.log(`[DB] Borrado múltiple: ${this.changes} sesiones eliminadas por completo.`);
+                    return res.json({ success: true, deletedSessions: this.changes });
+                });
+            });
+        });
+    }
+});
+
+// Borrado múltiple de clips por ID
+app.post('/api/clips/batch-delete', (req, res) => {
+    const { clipIds } = req.body;
+    if (!Array.isArray(clipIds) || clipIds.length === 0) {
+        return res.status(400).json({ success: false, error: 'Lista de clips vacía' });
+    }
+    const placeholders = clipIds.map(() => '?').join(',');
+    db.run(`DELETE FROM clips WHERE id IN (${placeholders})`, clipIds, function (err) {
+        if (err) {
+            console.error('[DB] Error al borrar clips en lote:', err.message);
+            return res.status(500).json({ success: false, error: err.message });
+        }
+        console.log(`[DB] Borrado en lote: ${this.changes} clips eliminados.`);
+        res.json({ success: true, deletedCount: this.changes });
     });
 });
 
 app.delete('/api/recordings/:id', (req, res) => {
     const sessionId = req.params.id;
 
-    // Borrado en cascada manual de las tablas asociadas para evitar conflictos de Foreign Key
-    db.serialize(() => {
-        db.run('DELETE FROM markers WHERE session_id = ?', [sessionId]);
-        db.run('DELETE FROM clips WHERE session_id = ?', [sessionId]);
-        db.run('DELETE FROM session_files WHERE session_id = ?', [sessionId]);
-        db.run('DELETE FROM recording_sessions WHERE id = ?', [sessionId], function (err) {
-            if (err) {
-                console.error(`[DB] Error al eliminar sesión ${sessionId}:`, err.message);
-                return res.status(500).json({ success: false, error: err.message });
-            }
-            console.log(`[DB] Sesión ${sessionId} eliminada con éxito en cascada.`);
-            res.json({ success: true, message: `Sesión ${sessionId} eliminada con éxito.` });
+    // Intentar limpiar ficheros en disco
+    db.all('SELECT hls_path, mp4_path FROM session_files WHERE session_id = ?', [sessionId], (errFiles, files) => {
+        if (!errFiles && Array.isArray(files)) {
+            files.forEach(f => {
+                try {
+                    if (f.mp4_path && fs.existsSync(f.mp4_path)) fs.unlinkSync(f.mp4_path);
+                } catch (e) { }
+                try {
+                    if (f.hls_path && fs.existsSync(f.hls_path)) {
+                        fs.unlinkSync(f.hls_path);
+                        const hlsDir = path.dirname(f.hls_path);
+                        const baseName = path.basename(f.hls_path, '.m3u8');
+                        if (fs.existsSync(hlsDir)) {
+                            const dirFiles = fs.readdirSync(hlsDir);
+                            dirFiles.filter(name => name.startsWith(baseName) && name.endsWith('.ts')).forEach(tsFile => {
+                                try { fs.unlinkSync(path.join(hlsDir, tsFile)); } catch (e) { }
+                            });
+                        }
+                    }
+                } catch (e) { }
+            });
+        }
+
+        // Borrado en cascada manual de las tablas asociadas para evitar conflictos de Foreign Key
+        db.serialize(() => {
+            db.run('DELETE FROM markers WHERE session_id = ?', [sessionId]);
+            db.run('DELETE FROM clips WHERE session_id = ?', [sessionId]);
+            db.run('DELETE FROM session_files WHERE session_id = ?', [sessionId]);
+            db.run('DELETE FROM recording_sessions WHERE id = ?', [sessionId], function (err) {
+                if (err) {
+                    console.error(`[DB] Error al eliminar sesión ${sessionId}:`, err.message);
+                    return res.status(500).json({ success: false, error: err.message });
+                }
+                console.log(`[DB] Sesión ${sessionId} eliminada con éxito en cascada.`);
+                res.json({ success: true, message: `Sesión ${sessionId} eliminada con éxito.` });
+            });
         });
     });
 });
