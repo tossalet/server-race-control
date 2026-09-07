@@ -1945,57 +1945,259 @@ app.delete('/api/users/:username', (req, res) => {
  * ======================================= */
 app.get('/api/disks', async (req, res) => {
     const drives = [];
-    if (!mediaRoot) {
-        return res.json(drives);
+    const seenPaths = new Set();
+
+    // 1. Disco de grabación activo (si existe)
+    if (mediaRoot) {
+        try {
+            seenPaths.add(path.resolve(mediaRoot));
+            let freeGB = null, totalGB = null, usedPct = null, accessible = false;
+            if (fs.existsSync(mediaRoot)) {
+                accessible = true;
+                const stat = fs.statfsSync(mediaRoot);
+                totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+            }
+            drives.push({
+                id: mediaRoot.replace(/[:\\/]/g, '_'),
+                name: accessible ? `💾 Disco de grabación activo` : `💾 Disco de grabación (desconectado)`,
+                path: mediaRoot,
+                freeGB,
+                totalGB,
+                usedPct,
+                internal: true,
+                active: true
+            });
+        } catch (e) {
+            drives.push({
+                id: mediaRoot.replace(/[:\\/]/g, '_'),
+                name: `💾 Disco de grabación activo`,
+                path: mediaRoot,
+                freeGB: null,
+                totalGB: null,
+                usedPct: null,
+                internal: true,
+                active: true
+            });
+        }
     }
 
-    // Verificar accesibilidad del disco con timeout de 2 segundos (previene cuelgues en montajes lentos)
-    const checkAccess = (p) => new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(false), 2000);
-        fs.access(p, fs.constants.F_OK, (err) => {
-            clearTimeout(timer);
-            resolve(!err);
-        });
-    });
-
-    try {
-        const accessible = await checkAccess(mediaRoot);
-        let freeGB = null, totalGB = null, usedPct = null;
-        if (accessible) {
+    // 2. Detección de discos externos y pendrives USB
+    if (process.platform === 'win32') {
+        // En Windows (desarrollo): escanear letras de unidad D: a Z:
+        for (let code = 68; code <= 90; code++) {
+            const driveLetter = String.fromCharCode(code) + ':\\';
             try {
-                const { promisify } = require('util');
-                const statfsAsync = promisify(fs.statfs);
-                const statResult = await Promise.race([
-                    statfsAsync(mediaRoot),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('statfs timeout')), 2000))
-                ]);
-                totalGB = ((statResult.blocks * statResult.bsize) / 1e9).toFixed(1);
-                freeGB = ((statResult.bfree * statResult.bsize) / 1e9).toFixed(1);
-                usedPct = Math.round(((statResult.blocks - statResult.bfree) / statResult.blocks) * 100);
-            } catch (e) { }
+                if (fs.existsSync(driveLetter)) {
+                    const resolved = path.resolve(driveLetter);
+                    if (seenPaths.has(resolved)) continue;
+                    seenPaths.add(resolved);
+                    let freeGB = null, totalGB = null, usedPct = null;
+                    try {
+                        const stat = fs.statfsSync(driveLetter);
+                        totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                        freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                        usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+                    } catch (_) { }
+                    drives.push({
+                        id: `win_${driveLetter[0]}`,
+                        name: `🔌 Disco USB / Externo (${driveLetter[0]}:)`,
+                        path: driveLetter,
+                        freeGB,
+                        totalGB,
+                        usedPct,
+                        internal: false,
+                        active: false
+                    });
+                }
+            } catch (_) { }
+        }
+    } else {
+        // En Linux:
+        const SKIP_FS = new Set(['tmpfs', 'devtmpfs', 'sysfs', 'proc', 'devpts', 'cgroup', 'cgroup2',
+            'overlay', 'squashfs', 'udev', 'securityfs', 'fusectl', 'pstore', 'efivarfs',
+            'debugfs', 'tracefs', 'hugetlbfs', 'mqueue', 'ramfs', 'bpf', 'configfs']);
+        const SKIP_PFX = ['/', '/boot', '/sys', '/proc', '/dev', '/run/user', '/run/lock',
+            '/run/systemd', '/run/credentials', '/snap', '/usr', '/var', '/opt', '/etc', '/home'];
+
+        // A) Buscar particiones montadas en /proc/mounts
+        try {
+            if (fs.existsSync('/proc/mounts')) {
+                const mountsContent = fs.readFileSync('/proc/mounts', 'utf8');
+                const lines = mountsContent.split('\n');
+                for (const line of lines) {
+                    const parts = line.split(' ');
+                    if (parts.length < 3) continue;
+                    const dev = parts[0];
+                    const mnt = parts[1];
+                    const fst = parts[2];
+
+                    if (!dev || !mnt || !fst) continue;
+                    if (SKIP_FS.has(fst)) continue;
+                    if (!dev.startsWith('/dev/sd') && !dev.startsWith('/dev/nvme') && !dev.startsWith('/dev/mmcblk')) continue;
+                    if (SKIP_PFX.some(p => mnt === p || mnt.startsWith(p + '/'))) continue;
+
+                    const resolvedMnt = path.resolve(mnt);
+                    if (seenPaths.has(resolvedMnt)) continue;
+                    if (mediaRoot && (resolvedMnt === path.resolve(mediaRoot) || mediaRoot.startsWith(resolvedMnt))) continue;
+
+                    seenPaths.add(resolvedMnt);
+
+                    let freeGB = null, totalGB = null, usedPct = null;
+                    try {
+                        const stat = fs.statfsSync(mnt);
+                        totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                        freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                        usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+                    } catch (_) { }
+
+                    const devName = dev.replace('/dev/', '');
+                    const folderName = path.basename(mnt);
+                    const displayName = folderName && folderName !== devName ? `🔌 USB ${folderName} (${devName})` : `🔌 Disco USB (${devName})`;
+
+                    drives.push({
+                        id: `usb_${devName}`,
+                        name: displayName,
+                        path: mnt,
+                        freeGB,
+                        totalGB,
+                        usedPct,
+                        internal: false,
+                        active: false
+                    });
+                }
+            }
+        } catch (e) {
+            console.error('[STORAGE] Error leyendo /proc/mounts:', e.message);
         }
 
-        drives.push({
-            id: mediaRoot.replace(/[:\\/]/g, '_'),
-            name: accessible ? `\uD83D\uDCBE Disco de grabaci\u00f3n activo` : `\uD83D\uDCBE Disco de grabaci\u00f3n (desconectado)`,
-            path: mediaRoot,
-            freeGB,
-            totalGB,
-            usedPct,
-            internal: true,
-            active: true
-        });
-    } catch (e) {
-        drives.push({
-            id: mediaRoot.replace(/[:\\/]/g, '_'),
-            name: `\uD83D\uDCBE Disco de grabaci\u00f3n activo (error)`,
-            path: mediaRoot,
-            freeGB: null,
-            totalGB: null,
-            usedPct: null,
-            internal: true,
-            active: true
-        });
+        // B) Explorar directorios típicos de automontaje en /media, /mnt y /run/media
+        const checkDirs = ['/media', '/mnt', '/run/media'];
+        for (const baseDir of checkDirs) {
+            try {
+                if (fs.existsSync(baseDir)) {
+                    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+                    for (const ent of entries) {
+                        if (!ent.isDirectory()) continue;
+                        const subPath = path.join(baseDir, ent.name);
+                        const resolvedSub = path.resolve(subPath);
+                        if (seenPaths.has(resolvedSub)) continue;
+                        if (mediaRoot && (resolvedSub === path.resolve(mediaRoot) || mediaRoot.startsWith(resolvedSub))) continue;
+
+                        if (ent.name === 'root' || ent.name === 'racecontrol') {
+                            try {
+                                const userEntries = fs.readdirSync(subPath, { withFileTypes: true });
+                                for (const uEnt of userEntries) {
+                                    if (!uEnt.isDirectory()) continue;
+                                    const uPath = path.join(subPath, uEnt.name);
+                                    const resolvedU = path.resolve(uPath);
+                                    if (seenPaths.has(resolvedU)) continue;
+                                    if (mediaRoot && (resolvedU === path.resolve(mediaRoot) || mediaRoot.startsWith(resolvedU))) continue;
+
+                                    seenPaths.add(resolvedU);
+                                    let freeGB = null, totalGB = null, usedPct = null;
+                                    try {
+                                        const stat = fs.statfsSync(uPath);
+                                        totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                                        freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                                        usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+                                    } catch (_) { }
+
+                                    drives.push({
+                                        id: `usb_${uEnt.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+                                        name: `🔌 USB ${uEnt.name}`,
+                                        path: uPath,
+                                        freeGB,
+                                        totalGB,
+                                        usedPct,
+                                        internal: false,
+                                        active: false
+                                    });
+                                }
+                            } catch (_) { }
+                            continue;
+                        }
+
+                        try {
+                            const stat = fs.statfsSync(subPath);
+                            totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                            freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                            usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+                            if (stat.blocks > 0) {
+                                seenPaths.add(resolvedSub);
+                                drives.push({
+                                    id: `dir_${ent.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+                                    name: `🔌 USB / Externo (${ent.name})`,
+                                    path: subPath,
+                                    freeGB,
+                                    totalGB,
+                                    usedPct,
+                                    internal: false,
+                                    active: false
+                                });
+                            }
+                        } catch (_) { }
+                    }
+                }
+            } catch (_) { }
+        }
+
+        // C) Detección de particiones USB mediante lsblk y auto-montaje de las que no estén montadas
+        try {
+            const { execSync } = require('child_process');
+            const lsblkOut = execSync('lsblk -J -b -o NAME,PATH,LABEL,MOUNTPOINT,FSTYPE,SIZE,TRAN,RM,TYPE 2>/dev/null', { timeout: 2500 }).toString();
+            const lsblkData = JSON.parse(lsblkOut);
+            if (lsblkData && Array.isArray(lsblkData.blockdevices)) {
+                for (const dev of lsblkData.blockdevices) {
+                    const isUsb = dev.tran === 'usb' || dev.rm === true || dev.rm === '1' || (dev.name && dev.name.startsWith('sd') && !dev.mountpoint?.startsWith('/boot'));
+                    if (!isUsb) continue;
+
+                    const parts = Array.isArray(dev.children) && dev.children.length > 0 ? dev.children : [dev];
+                    for (const p of parts) {
+                        if (p.fstype && !SKIP_FS.has(p.fstype)) {
+                            let mountTarget = p.mountpoint;
+                            if (!mountTarget && p.path) {
+                                const targetDir = `/media/usb_${p.name}`;
+                                try {
+                                    fs.mkdirSync(targetDir, { recursive: true });
+                                    execSync(`mount ${p.path} "${targetDir}" 2>/dev/null || mount -t ntfs-3g ${p.path} "${targetDir}" 2>/dev/null || mount -t vfat ${p.path} "${targetDir}" 2>/dev/null || mount -t exfat ${p.path} "${targetDir}" 2>/dev/null`, { timeout: 3000 });
+                                    mountTarget = targetDir;
+                                } catch (_) { }
+                            }
+
+                            if (mountTarget) {
+                                const resolvedP = path.resolve(mountTarget);
+                                if (!seenPaths.has(resolvedP)) {
+                                    if (mediaRoot && (resolvedP === path.resolve(mediaRoot) || mediaRoot.startsWith(resolvedP))) continue;
+                                    seenPaths.add(resolvedP);
+
+                                    let freeGB = null, totalGB = null, usedPct = null;
+                                    try {
+                                        const stat = fs.statfsSync(mountTarget);
+                                        totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                                        freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                                        usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+                                    } catch (_) { }
+
+                                    const pLabel = p.label || p.name;
+                                    drives.push({
+                                        id: `usb_${p.name}`,
+                                        name: `🔌 USB ${pLabel} (${(p.size / 1e9).toFixed(0)} GB)`,
+                                        path: mountTarget,
+                                        freeGB,
+                                        totalGB,
+                                        usedPct,
+                                        internal: false,
+                                        active: false
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_) { }
     }
 
     res.json(drives);
