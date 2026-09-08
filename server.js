@@ -702,23 +702,6 @@ app.get('/api/monitor/debug', (req, res) => {
     });
 });
 
-// ── Abrir el configurador de Input Remapper en la pantalla del servidor ─────
-app.post('/api/system/open-input-remapper', (req, res) => {
-    const { exec } = require('child_process');
-    const os = require('os');
-    if (os.platform() !== 'linux') {
-        return res.json({ ok: false, error: 'Esta utilidad solo está disponible cuando el servidor corre en Linux.' });
-    }
-    const cmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority input-remapper-gtk >/dev/null 2>&1 &`;
-    exec(cmd, (err) => {
-        if (err) {
-            console.error('[INPUT-REMAPPER] Error al abrir:', err.message);
-            return res.status(500).json({ ok: false, error: err.message });
-        }
-        console.log('[INPUT-REMAPPER] Ventana gráfica lanzada con éxito en DISPLAY=:0.');
-        res.json({ ok: true, message: 'Input Remapper abierto en la pantalla del servidor.' });
-    });
-});
 
 const os = require('os');
 app.get('/api/server-ip', (req, res) => {
