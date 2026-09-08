@@ -1483,7 +1483,7 @@ app.post('/api/recordings/export', (req, res) => {
     console.log('[EXPORT] ── Petición recibida ──');
     console.log('[EXPORT] Body:', JSON.stringify(req.body || {}));
 
-    const { session_id, channel, start_time, end_time, label, dest_path, overlay_text, clip_id } = req.body || {};
+    const { session_id, channel, start_time, end_time, label, dest_path, overlay_text, clip_id, camera_name } = req.body || {};
 
     if (!session_id || start_time == null || end_time == null) {
         console.error('[EXPORT] Parámetros incompletos:', { session_id, channel, start_time, end_time });
@@ -1530,21 +1530,33 @@ app.post('/api/recordings/export', (req, res) => {
 
                 console.log(`[EXPORT] Fuente: ${sourcePath}`);
 
-                // ── Nombre del clip ──
+                // ── Nombre del clip (un archivo por cámara) ──
                 const now = new Date();
                 const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
                 const timeStr = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-                const clipLabel = (label || `clip_${Math.floor(start_time)}s`).replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
-                const exportName = `${clipLabel}_${dateStr}_${timeStr}.mp4`;
+                const clipLabel = (label || `clip_${Math.floor(start_time)}s`)
+                    .replace(/[^a-zA-Z0-9_\- ]/g, '_')
+                    .replace(/\s+/g, '_')
+                    .trim();
+                const camTag = (camera_name || `CAM_${channel}`)
+                    .replace(/\s*-\s*REPLAY$/i, '')
+                    .replace(/\s+REPLAY$/i, '')
+                    .replace(/[^a-zA-Z0-9_\-]/g, '_')
+                    .trim() || `CAM_${channel}`;
+
+                const exportName = `${clipLabel}_${camTag}_${dateStr}_${timeStr}.mp4`;
 
                 // ── Destino ──
-                const baseDestDir = dest_path || mediaRoot;
-                if (!baseDestDir) {
-                    console.error('[EXPORT] Sin disco de destino configurado');
-                    return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+                // Si el usuario eligió un destino específico (Finder), usarlo directamente; si no, guardar en /clips
+                let destDir = dest_path;
+                if (!destDir) {
+                    if (!mediaRoot) {
+                        console.error('[EXPORT] Sin disco de destino configurado');
+                        return res.status(503).json({ error: 'No hay disco de grabación configurado' });
+                    }
+                    destDir = path.join(mediaRoot, 'clips');
                 }
 
-                const destDir = path.join(baseDestDir, 'clips');
                 console.log(`[EXPORT] Destino: ${destDir}/${exportName}`);
 
                 try {
@@ -1553,7 +1565,7 @@ app.post('/api/recordings/export', (req, res) => {
                 } catch (mkErr) {
                     const isPermission = mkErr.code === 'EACCES' || mkErr.code === 'EPERM';
                     const hint = isPermission
-                        ? ' Ejecuta: sudo chmod 777 "' + baseDestDir + '" o comprueba que el disco no está montado como solo lectura.'
+                        ? ' Ejecuta: sudo chmod 777 "' + destDir + '" o comprueba que el disco no esté montado en solo lectura.'
                         : '';
                     console.error(`[EXPORT] No se puede crear/escribir en destino: ${mkErr.message}${hint}`);
                     return res.status(500).json({
@@ -1563,7 +1575,7 @@ app.post('/api/recordings/export', (req, res) => {
                 }
 
                 const exportPath = path.join(destDir, exportName);
-                const isInternalDest = mediaRoot && (baseDestDir === mediaRoot || baseDestDir.startsWith(mediaRoot));
+                const isInternalDest = mediaRoot && (destDir === mediaRoot || destDir.startsWith(mediaRoot));
 
                 // ── FFmpeg ──
                 let ffmpegBin;
@@ -1587,7 +1599,7 @@ app.post('/api/recordings/export', (req, res) => {
                     '-t', String(clipDuration)
                 ];
 
-                // Si se solicita overlay con la información de cámara y slidebar, quemarlo con drawtext (SIN REPLAY)
+                // Si se solicita overlay quemado con información de cámara
                 if (overlay_text && typeof overlay_text === 'string' && overlay_text.trim()) {
                     const fontOpt = getDrawtextFontOption();
                     const safeText = overlay_text.trim()
@@ -1600,16 +1612,24 @@ app.post('/api/recordings/export', (req, res) => {
 
                     const drawtextFilter = `drawtext=${fontOpt}text='${safeText}':x=32:y=32:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.75:boxborderw=10`;
                     args.push('-vf', drawtextFilter);
-                    args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22', '-pix_fmt', 'yuv420p');
-                    // Mapeo seguro: toma primer stream de video y audio solo si existe (evita fallos si la cámara no tiene audio)
-                    args.push('-map', '0:v:0', '-map', '0:a?');
-                    args.push('-c:a', 'aac', '-b:a', '128k');
-                } else {
-                    args.push('-c', 'copy');
                 }
 
-                args.push('-progress', 'pipe:1');
-                args.push('-movflags', '+faststart', exportPath);
+                // RECODIFICACIÓN UNIVERSAL MP4 (H.264 + AAC):
+                // Garantiza corte exacto al frame (evita congelados/pantalla negra por falta de keyframe)
+                // y máxima compatibilidad en Windows Media Player, QuickTime, navegadores, Smart TVs y móviles.
+                args.push(
+                    '-c:v', 'libx264',
+                    '-preset', 'veryfast',
+                    '-crf', '20',
+                    '-pix_fmt', 'yuv420p',
+                    '-map', '0:v:0',
+                    '-map', '0:a?',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-progress', 'pipe:1',
+                    '-movflags', '+faststart',
+                    exportPath
+                );
 
                 console.log(`[EXPORT] Comando: ${ffmpegBin} ${args.join(' ')}`);
 
@@ -2318,6 +2338,115 @@ app.get('/api/disks', async (req, res) => {
     res.json(drives);
 });
 
+// ── Explorador de directorios y creador de carpetas para Export Finder ──
+app.get('/api/storage/browse', async (req, res) => {
+    try {
+        let reqPath = req.query.path;
+        if (!reqPath) {
+            reqPath = mediaRoot || (process.platform === 'win32' ? 'C:\\' : '/');
+        }
+
+        reqPath = path.resolve(reqPath);
+
+        if (!fs.existsSync(reqPath)) {
+            return res.status(404).json({ error: 'Ruta no encontrada' });
+        }
+
+        const stat = await fs.promises.stat(reqPath);
+        if (!stat.isDirectory()) {
+            return res.status(400).json({ error: 'La ruta no es un directorio' });
+        }
+
+        // Permisos de escritura
+        let canWrite = false;
+        try {
+            await fs.promises.access(reqPath, fs.constants.W_OK);
+            canWrite = true;
+        } catch (_) {
+            canWrite = false;
+        }
+
+        // Espacio libre
+        let freeGB = null, totalGB = null;
+        try {
+            const fsStat = fs.statfsSync(reqPath);
+            totalGB = ((fsStat.blocks * fsStat.bsize) / 1e9).toFixed(1);
+            freeGB = ((fsStat.bfree * fsStat.bsize) / 1e9).toFixed(1);
+        } catch (_) {}
+
+        // Leer subcarpetas
+        const entries = await fs.promises.readdir(reqPath, { withFileTypes: true });
+        const folders = [];
+
+        for (const ent of entries) {
+            if (ent.isDirectory()) {
+                if (ent.name.startsWith('.') && ent.name !== '..') continue;
+                if (ent.name === '$RECYCLE.BIN' || ent.name === 'System Volume Information') continue;
+
+                const fullPath = path.join(reqPath, ent.name);
+                let mtime = null;
+                try {
+                    const s = await fs.promises.stat(fullPath);
+                    mtime = s.mtime;
+                } catch (_) {}
+
+                folders.push({
+                    name: ent.name,
+                    path: fullPath,
+                    modified: mtime ? mtime.toISOString() : null
+                });
+            }
+        }
+
+        folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+
+        const parentPath = path.dirname(reqPath);
+        const hasParent = parentPath && parentPath !== reqPath;
+
+        res.json({
+            currentPath: reqPath,
+            parentPath: hasParent ? parentPath : null,
+            folders,
+            canWrite,
+            freeGB,
+            totalGB
+        });
+    } catch (e) {
+        console.error('[STORAGE BROWSE] Error:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/storage/mkdir', async (req, res) => {
+    try {
+        const { parentPath, folderName } = req.body || {};
+        if (!parentPath || !folderName) {
+            return res.status(400).json({ error: 'Faltan parámetros: parentPath y folderName son requeridos' });
+        }
+
+        const cleanName = String(folderName).replace(/[/\\?%*:|"<>]/g, '').trim();
+        if (!cleanName || cleanName === '.' || cleanName === '..') {
+            return res.status(400).json({ error: 'Nombre de carpeta no válido' });
+        }
+
+        const resolvedParent = path.resolve(parentPath);
+        if (!fs.existsSync(resolvedParent)) {
+            return res.status(404).json({ error: 'El directorio contenedor no existe' });
+        }
+
+        const targetDir = path.join(resolvedParent, cleanName);
+        if (fs.existsSync(targetDir)) {
+            return res.status(409).json({ error: 'Ya existe una carpeta con ese nombre' });
+        }
+
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        console.log(`[STORAGE MKDIR] Carpeta creada con éxito: ${targetDir}`);
+        res.json({ success: true, path: targetDir, name: cleanName });
+    } catch (e) {
+        console.error('[STORAGE MKDIR] Error:', e.message);
+        res.status(500).json({ error: `No se pudo crear la carpeta: ${e.message}` });
+    }
+});
 
 // Explorador de archivos dinámico y seguro (100% async, sin cuelgues)
 app.get('/api/files', async (req, res) => {
