@@ -552,6 +552,38 @@ app.post('/api/storage/select', (req, res) => {
  * ======================================= */
 let monitorClients = [];
 
+const isMonitorAlreadyOpen = () => new Promise((resolve) => {
+    // 1. Si hay conexiones SSE activas desde la pantalla de monitor
+    if (monitorClients && monitorClients.length > 0) {
+        return resolve(true);
+    }
+
+    // 2. En Linux, comprobar si el proceso firefox del monitor o la ventana X11 ya existen
+    if (process.platform !== 'win32') {
+        const { exec } = require('child_process');
+        exec('pgrep -f "firefox.*firefox_monitor" || xdotool search --class "racecontrolmonitor" 2>/dev/null', (err, stdout) => {
+            if (!err && stdout && stdout.trim()) {
+                return resolve(true);
+            }
+            resolve(false);
+        });
+    } else {
+        // En Windows
+        const { exec } = require('child_process');
+        exec('tasklist /FI "WINDOWTITLE eq *RACE CONTROL MONITOR*" 2>nul', (err, stdout) => {
+            if (!err && stdout && (stdout.includes('chrome') || stdout.includes('msedge'))) {
+                return resolve(true);
+            }
+            resolve(false);
+        });
+    }
+});
+
+app.get('/api/monitor/status', async (req, res) => {
+    const isOpen = await isMonitorAlreadyOpen();
+    res.json({ isOpen, clients: monitorClients.length });
+});
+
 app.get('/api/monitor/events', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -566,13 +598,24 @@ app.post('/api/monitor/command', (req, res) => {
     res.sendStatus(200);
 });
 
-app.post('/api/monitor/open', (req, res) => {
+app.post('/api/monitor/open', async (req, res) => {
     const { exec } = require('child_process');
     const os = require('os');
     const monitorUrl = `http://localhost:${process.env.PORT || 4000}/grabador/index.html?monitor=1#monitor`;
     const secondaryDisplay = { name: 'HDMI-Right', width: 1920, height: 1080, x: 1920, y: 0 };
 
     console.log(`[MONITOR] Solicitud para abrir monitor secundario en OS: ${os.platform()}`);
+
+    // Si ya está abierto, NUNCA volver a abrir otro proceso o ventana
+    const alreadyOpen = await isMonitorAlreadyOpen();
+    if (alreadyOpen) {
+        console.log('[MONITOR] Solicitud omitida: El monitor secundario ya está abierto y activo.');
+        if (os.platform() !== 'win32') {
+            // Traer al frente la ventana existente en X11 sin duplicarla
+            exec('DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority xdotool search --class "racecontrolmonitor" windowactivate 2>/dev/null', () => {});
+        }
+        return res.json({ ok: true, already_open: true, message: 'El monitor ya se encuentra abierto' });
+    }
 
     if (os.platform() === 'win32') {
         const chromeCmd = `start chrome --user-data-dir="%temp%\\monitor_profile" --window-position=${secondaryDisplay.x},${secondaryDisplay.y} --kiosk "${monitorUrl}"`;
