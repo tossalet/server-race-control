@@ -594,34 +594,49 @@ SCREEN_RES=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
 SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 
-# Abrir Firefox ESR en modo Kiosko nativo (oculta al 100% barras de direcciones y marcos por diseño)
-# Asignamos la clase "racecontrolgrabador" para que Openbox la posicione en el Monitor 1
-firefox-esr --class racecontrolgrabador --kiosk "file:///opt/race-control/public/splash.html" &
-FIREFOX_PID=$!
+# Configurar preferencias en los perfiles de Firefox para evitar cuelgues, diálogos de bloqueo y desbordamiento de caché
+mkdir -p "$HOME/.mozilla/firefox"
+for pdir in $(find "$HOME/.mozilla/firefox" -maxdepth 1 -type d); do
+    if [ -d "$pdir" ] && [ "$pdir" != "$HOME/.mozilla/firefox" ]; then
+        cat > "$pdir/user.js" << 'USERJS_EOF'
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("browser.sessionstore.interval", 86400000);
+user_pref("toolkit.startup.max_resumed_crashes", -1);
+user_pref("browser.cache.disk.enable", false);
+user_pref("browser.cache.memory.enable", true);
+user_pref("browser.cache.memory.capacity", 65536);
+user_pref("dom.ipc.processHangMonitor", false);
+user_pref("media.autoplay.default", 0);
+user_pref("media.autoplay.enabled.user-gestures-needed", false);
+USERJS_EOF
+    fi
+done
 
-# Esperar a que la ventana de Firefox aparezca (xdotool --sync)
-echo "Esperando a que la ventana de Firefox aparezca (xdotool --sync)..."
-WID=$(xdotool search --sync --onlyvisible --class "firefox" 2>/dev/null | head -n 1)
-
-if [ -z "$WID" ]; then
-    for i in $(seq 1 30); do
-        WID=$(xdotool search --name "Mozilla" 2>/dev/null | head -n 1 \
-           || xdotool search --name "Race" 2>/dev/null | head -n 1 \
-           || xdotool search --class "firefox" 2>/dev/null | head -n 1)
-        [ -n "$WID" ] && break
+# Helper de foco inicial en segundo plano
+(
+    sleep 3
+    for i in $(seq 1 20); do
+        WID=$(xdotool search --onlyvisible --class "firefox" 2>/dev/null | head -n 1)
+        if [ -n "$WID" ]; then
+            xdotool windowactivate "$WID" 2>/dev/null
+            xdotool windowfocus "$WID" 2>/dev/null
+            break
+        fi
         sleep 1
     done
-fi
+) &
 
-if [ -n "$WID" ]; then
-    echo "Ventana encontrada: $WID. Asegurando foco..."
-    xdotool windowactivate "$WID" 2>/dev/null
-    xdotool windowfocus "$WID" 2>/dev/null
-else
-    echo "ERROR: No se encontró la ventana del navegador."
-fi
-
-echo "=== Kiosk setup finalizado a $(date) ==="
+# BUCLE INFINITO DE SUPERVISIÓN: Si Firefox se cierra o crashea, se relanza automáticamente
+while true; do
+    echo "[$(date)] Iniciando Firefox ESR en modo Kiosk..."
+    find "$HOME/.mozilla" -name ".parentlock" -delete 2>/dev/null || true
+    
+    firefox-esr --class racecontrolgrabador --kiosk "file:///opt/race-control/public/splash.html"
+    
+    EXIT_CODE=$?
+    echo "[$(date)] ⚠️ AVISO: Firefox ESR se cerró con código $EXIT_CODE. Relanzando en 1 segundo..."
+    sleep 1
+done
 KIOSK_EOF
 chmod +x "$REAL_HOME/.config/race-control/launch_kiosk.sh"
 
