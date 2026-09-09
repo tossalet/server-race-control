@@ -3102,275 +3102,286 @@ app.get('/api/time', (req, res) => {
 });
 
 /* =======================================
- *  NETWORK MANAGEMENT (NMCLI)
+ *  NETWORK MANAGEMENT (ifupdown)
  * ======================================= */
+
+// Helper: detectar la interfaz física principal (no loopback, no docker, no virtual)
+function detectPrimaryInterface() {
+    const os = require('os');
+    const interfaces = os.networkInterfaces();
+    const keys = Object.keys(interfaces).filter(n =>
+        !n.startsWith('lo') && !n.startsWith('docker') && !n.startsWith('veth') && !n.startsWith('br-')
+    ).sort((a, b) => {
+        const aIsPhys = /^(eth|eno|enp|ens|wlan|wlp)/i.test(a);
+        const bIsPhys = /^(eth|eno|enp|ens|wlan|wlp)/i.test(b);
+        if (aIsPhys && !bIsPhys) return -1;
+        if (!aIsPhys && bIsPhys) return 1;
+        return 0;
+    });
+    return keys[0] || 'eth0';
+}
+
+// Helper: parsear /etc/network/interfaces para una interfaz dada
+function parseInterfacesFile(ifaceName) {
+    const fs = require('fs');
+    const IFACES_FILE = '/etc/network/interfaces';
+    let mode = 'auto'; // default to dhcp
+    let ip = '', netmask = '', gateway = '', dns = '';
+
+    try {
+        const content = fs.readFileSync(IFACES_FILE, 'utf8');
+        // También incluir archivos de interfaces.d/
+        let fullContent = content;
+        const sourceMatch = content.match(/^source\s+(.+)/gm);
+        if (sourceMatch) {
+            for (const line of sourceMatch) {
+                const globPath = line.replace('source ', '').trim();
+                try {
+                    const { execSync } = require('child_process');
+                    const files = execSync(`ls ${globPath} 2>/dev/null`).toString().trim().split('\n').filter(Boolean);
+                    for (const f of files) {
+                        try { fullContent += '\n' + fs.readFileSync(f, 'utf8'); } catch (_) {}
+                    }
+                } catch (_) {}
+            }
+        }
+
+        const lines = fullContent.split('\n');
+        let inBlock = false;
+        for (const line of lines) {
+            const trimmed = line.trim();
+            // Detectar inicio de bloque iface para nuestra interfaz
+            if (trimmed.startsWith('iface') && trimmed.includes(ifaceName)) {
+                inBlock = true;
+                if (trimmed.includes('inet static')) {
+                    mode = 'manual';
+                } else if (trimmed.includes('inet dhcp')) {
+                    mode = 'auto';
+                }
+                continue;
+            }
+            // Si encontramos otro bloque iface o auto/allow, salimos
+            if (inBlock && (trimmed.startsWith('iface ') || trimmed.startsWith('auto ') || trimmed.startsWith('allow-'))) {
+                if (!trimmed.includes(ifaceName)) {
+                    inBlock = false;
+                    continue;
+                }
+            }
+            if (inBlock) {
+                if (trimmed.startsWith('address')) ip = trimmed.split(/\s+/)[1] || '';
+                if (trimmed.startsWith('netmask')) netmask = trimmed.split(/\s+/)[1] || '';
+                if (trimmed.startsWith('gateway')) gateway = trimmed.split(/\s+/)[1] || '';
+                if (trimmed.startsWith('dns-nameservers')) dns = trimmed.replace('dns-nameservers', '').trim();
+            }
+        }
+    } catch (e) {
+        console.error('[NETWORK] Error parsing /etc/network/interfaces:', e.message);
+    }
+
+    return { mode, ip, netmask, gateway, dns };
+}
+
+// Helper: convertir netmask a CIDR
+function netmaskToCidr(mask) {
+    if (!mask) return '24';
+    const parts = mask.split('.');
+    let count = 0;
+    for (const p of parts) {
+        const val = parseInt(p, 10);
+        if (isNaN(val)) continue;
+        count += val.toString(2).replace(/0/g, '').length;
+    }
+    return count.toString() || '24';
+}
+
 app.get('/api/network', (req, res) => {
     const { exec } = require('child_process');
     const os = require('os');
     const fs = require('fs');
 
-    // Función de fallback para obtener datos de red reales en caso de que nmcli falle o no controle la interfaz
-    const getFallbackNetworkData = (errorMsg) => {
-        const interfaces = os.networkInterfaces();
-        let ip = '';
-        let cidr = '24';
+    const ifaceName = detectPrimaryInterface();
+    const parsed = parseInterfacesFile(ifaceName);
 
-        // Priorizar nombres de interfaz físicos reales (eth, eno, enp, ens, wlan, wlp)
-        const keys = Object.keys(interfaces).sort((a, b) => {
-            const aIsPhys = /^(eth|eno|enp|ens|wlan|wlp)/i.test(a);
-            const bIsPhys = /^(eth|eno|enp|ens|wlan|wlp)/i.test(b);
-            if (aIsPhys && !bIsPhys) return -1;
-            if (!aIsPhys && bIsPhys) return 1;
-            return 0;
-        });
-
-        for (const name of keys) {
-            // Ignorar explícitamente loopback, docker y puentes virtuales
-            if (name.startsWith('lo') || name.startsWith('docker') || name.startsWith('veth') || name.startsWith('br-')) {
-                continue;
+    // Obtener datos en vivo del sistema (IP real, gateway real, DNS real)
+    exec(`ip -4 addr show ${ifaceName} 2>/dev/null`, (errIp, stdoutIp) => {
+        let liveIp = '', liveCidr = '24';
+        if (!errIp && stdoutIp) {
+            const match = stdoutIp.match(/inet\s+(\d+\.\d+\.\d+\.\d+)\/(\d+)/);
+            if (match) {
+                liveIp = match[1];
+                liveCidr = match[2];
             }
-            for (const iface of interfaces[name]) {
-                if (iface.family === 'IPv4' && !iface.internal) {
-                    ip = iface.address;
-                    if (iface.cidr && iface.cidr.includes('/')) {
-                        cidr = iface.cidr.split('/')[1];
-                    } else if (iface.netmask) {
-                        const maskParts = iface.netmask.split('.');
-                        let count = 0;
-                        for (let p of maskParts) {
-                            const val = parseInt(p, 10);
-                            count += val.toString(2).replace(/0/g, '').length;
-                        }
-                        cidr = count.toString();
-                    }
-                    break;
-                }
-            }
-            if (ip) break;
         }
 
-        let gateway = '';
-        let dns = '';
+        exec(`ip route show default 2>/dev/null`, (errGw, stdoutGw) => {
+            let liveGateway = '';
+            if (!errGw && stdoutGw) {
+                const gwMatch = stdoutGw.match(/via\s+(\d+\.\d+\.\d+\.\d+)/);
+                if (gwMatch) liveGateway = gwMatch[1];
+            }
 
-        if (process.platform === 'linux') {
-            try {
-                if (fs.existsSync('/proc/net/route')) {
-                    const routeContent = fs.readFileSync('/proc/net/route', 'utf8');
-                    const lines = routeContent.split('\n');
-                    for (let line of lines) {
-                        const parts = line.split('\t');
-                        if (parts.length > 2 && parts[1] === '00000000') {
-                            const gwHex = parts[2];
-                            const gwParts = [
-                                parseInt(gwHex.substring(6, 8), 16),
-                                parseInt(gwHex.substring(4, 6), 16),
-                                parseInt(gwHex.substring(2, 4), 16),
-                                parseInt(gwHex.substring(0, 2), 16)
-                            ];
-                            gateway = gwParts.join('.');
-                            break;
-                        }
-                    }
-                }
-            } catch (e) { }
-
+            let liveDns = '';
             try {
                 if (fs.existsSync('/etc/resolv.conf')) {
                     const resolv = fs.readFileSync('/etc/resolv.conf', 'utf8');
                     const matches = resolv.match(/^nameserver\s+([^\s]+)/gm);
                     if (matches) {
-                        dns = matches.map(m => m.replace('nameserver', '').trim()).join(', ');
+                        liveDns = matches.map(m => m.replace('nameserver', '').trim()).join(', ');
                     }
                 }
-            } catch (e) { }
-        }
+            } catch (_) {}
 
-        // Obtener el nombre del dispositivo activo para el fallback
-        let activeDevName = 'eth0';
-        try {
-            const interfaces = os.networkInterfaces();
-            const keys = Object.keys(interfaces).filter(n => !n.startsWith('lo') && !n.startsWith('docker') && !n.startsWith('veth') && !n.startsWith('br-'));
-            if (keys.length > 0) activeDevName = keys[0];
-        } catch (_) { }
-
-        return {
-            ok: true,
-            connectionName: activeDevName,
-            mode: 'auto',
-            ip: ip || '127.0.0.1',
-            cidr: cidr,
-            gateway: gateway || '',
-            dns: dns || '',
-            isFallback: false, // Engañamos al frontend para que deje configurar
-            reason: errorMsg
-        };
-    };
-
-    // 1. Detectar dispositivo físico activo con salida a internet usando la tabla de rutas del Kernel
-    const getActiveDevice = () => new Promise((resolve) => {
-        exec("ip route show | grep default | awk '{print $5}'", (errRoute, stdoutRoute) => {
-            let dev = stdoutRoute ? stdoutRoute.trim().split('\n')[0] : null;
-            if (dev && dev !== 'lo') {
-                return resolve(dev);
-            }
-            // Fallback: listar interfaces ethernet físicas activas en nmcli
-            exec("nmcli -t -f DEVICE,TYPE,STATE dev | grep -E ':ethernet|:wifi' | grep ':connected' | cut -d: -f1", (errDev, stdoutDev) => {
-                dev = stdoutDev ? stdoutDev.trim().split('\n')[0] : null;
-                resolve(dev || 'eth0'); // eth0 como último recurso
+            // En modo DHCP usar datos en vivo; en modo manual usar los del archivo
+            const isManual = parsed.mode === 'manual';
+            res.json({
+                ok: true,
+                connectionName: ifaceName,
+                mode: parsed.mode,
+                ip: isManual ? (parsed.ip || liveIp) : liveIp,
+                cidr: isManual ? (parsed.netmask ? netmaskToCidr(parsed.netmask) : liveCidr) : liveCidr,
+                gateway: isManual ? (parsed.gateway || liveGateway) : liveGateway,
+                dns: isManual ? (parsed.dns || liveDns) : liveDns,
+                isFallback: false
             });
-        });
-    });
-
-    getActiveDevice().then((activeDev) => {
-        // Encontrar el nombre de la conexión activa de NetworkManager asociada al dispositivo
-        exec(`nmcli -t -f NAME,DEVICE con show --active | grep -E ':${activeDev}$' | cut -d: -f1`, (errConn, stdoutConn) => {
-            let activeConn = stdoutConn ? stdoutConn.trim().split('\n')[0] : null;
-
-            const proceedWithDetails = (connName) => {
-                // 1. Obtener la configuración del método (auto o manual) desde el perfil de conexión
-                exec(`nmcli -t -f ipv4.method con show "${connName}"`, (err2, stdout2) => {
-                    let mode = 'auto';
-                    if (!err2 && stdout2) {
-                        const lines2 = stdout2.trim().split('\n');
-                        for (let l of lines2) {
-                            if (l.startsWith('ipv4.method:')) {
-                                const m = l.replace('ipv4.method:', '').trim();
-                                if (m === 'manual') mode = 'manual';
-                            }
-                        }
-                    }
-
-                    // 2. Obtener la IP, gateway y DNS activos reales del dispositivo en ejecución
-                    exec(`nmcli -t dev show "${activeDev}"`, (err3, stdout3) => {
-                        if (err3 || !stdout3) {
-                            return res.json(getFallbackNetworkData('Error leyendo detalles del dispositivo con nmcli'));
-                        }
-
-                        const details = stdout3.trim().split('\n').reduce((acc, line) => {
-                            const parts = line.split(':');
-                            if (parts.length >= 2) {
-                                const key = parts[0].trim().toUpperCase();
-                                const val = parts.slice(1).join(':').replace(/\\/g, '').trim();
-                                acc[key] = val;
-                            }
-                            return acc;
-                        }, {});
-
-                        let addressRaw = '';
-                        for (let k of Object.keys(details)) {
-                            if (k.startsWith('IP4.ADDRESS')) {
-                                addressRaw = details[k];
-                                break;
-                            }
-                        }
-
-                        const [ip, cidr] = addressRaw.split('/');
-
-                        let gateway = '';
-                        for (let k of Object.keys(details)) {
-                            if (k.startsWith('IP4.GATEWAY')) {
-                                gateway = details[k];
-                                break;
-                            }
-                        }
-
-                        const dnsList = [];
-                        for (let k of Object.keys(details)) {
-                            if (k.startsWith('IP4.DNS')) {
-                                dnsList.push(details[k]);
-                            }
-                        }
-                        const dns = dnsList.join(', ');
-
-                        res.json({
-                            ok: true,
-                            connectionName: connName,
-                            mode: mode,
-                            ip: ip || '',
-                            cidr: cidr || '24',
-                            gateway: gateway || '',
-                            dns: dns || '',
-                            isFallback: false
-                        });
-                    });
-                });
-            };
-
-            if (!activeConn) {
-                activeConn = "Conexion Cableada Auto";
-                console.log(`[NETWORK] Creando perfil auto para el dispositivo ${activeDev}...`);
-                exec(`nmcli con add type ethernet con-name "${activeConn}" ifname "${activeDev}"`, (errAdd) => {
-                    // Una vez creada, la levantamos y leemos sus detalles de forma secuencial
-                    exec(`nmcli con up "${activeConn}" 2>/dev/null || true`, () => {
-                        proceedWithDetails(activeConn);
-                    });
-                });
-            } else {
-                proceedWithDetails(activeConn);
-            }
         });
     });
 });
 
 app.post('/api/network', (req, res) => {
     const { exec } = require('child_process');
+    const fs = require('fs');
     const { connectionName, mode, ip, cidr, gateway, dns } = req.body;
 
-    if (!connectionName) return res.status(400).json({ ok: false, error: 'Falta connectionName' });
+    const ifaceName = connectionName || detectPrimaryInterface();
 
-    // 1. Detectar dispositivo físico activo con salida a internet usando la tabla de rutas del Kernel
-    const getActiveDevice = () => new Promise((resolve) => {
-        exec("ip route show | grep default | awk '{print $5}'", (errRoute, stdoutRoute) => {
-            let dev = stdoutRoute ? stdoutRoute.trim().split('\n')[0] : null;
-            if (dev && dev !== 'lo') {
-                return resolve(dev);
-            }
-            // Fallback: listar interfaces ethernet físicas activas en nmcli
-            exec("nmcli -t -f DEVICE,TYPE,STATE dev | grep -E ':ethernet|:wifi' | grep ':connected' | cut -d: -f1", (errDev, stdoutDev) => {
-                dev = stdoutDev ? stdoutDev.trim().split('\n')[0] : null;
-                resolve(dev || 'eth0'); // eth0 como último recurso
-            });
-        });
-    });
+    // Validar campos requeridos en modo manual
+    if (mode === 'manual') {
+        if (!ip) return res.status(400).json({ ok: false, error: 'La dirección IP es obligatoria en modo manual' });
+        if (!cidr) return res.status(400).json({ ok: false, error: 'La máscara de red es obligatoria en modo manual' });
+    }
 
-    getActiveDevice().then((physicalDev) => {
-        let cmd = '';
+    // Convertir CIDR a netmask si es necesario
+    function cidrToNetmask(bits) {
+        const b = parseInt(bits, 10) || 24;
+        const mask = [];
+        for (let i = 0; i < 4; i++) {
+            const n = Math.min(b - i * 8, 8);
+            mask.push(n > 0 ? 256 - Math.pow(2, 8 - n) : 0);
+        }
+        return mask.join('.');
+    }
+
+    const IFACES_FILE = '/etc/network/interfaces';
+
+    try {
+        // Leer el archivo actual
+        let content = fs.readFileSync(IFACES_FILE, 'utf8');
+
+        // Construir el nuevo bloque para la interfaz
+        let newBlock = '';
         if (mode === 'auto') {
-            cmd = `nmcli con mod "${connectionName}" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ; ` +
-                `nmcli con down "${connectionName}" ; ` +
-                `nmcli con up "${connectionName}" ; ` +
-                `sudo dhclient -r ${physicalDev} ; sudo dhclient -v ${physicalDev}`;
+            newBlock = `allow-hotplug ${ifaceName}\niface ${ifaceName} inet dhcp\n`;
         } else {
-            const dnsCmd = dns ? `ipv4.dns "${dns}"` : `ipv4.dns ""`;
-            cmd = `nmcli con mod "${connectionName}" ipv4.method manual ipv4.addresses "${ip}/${cidr}" ipv4.gateway "${gateway}" ${dnsCmd} ; ` +
-                `nmcli con down "${connectionName}" ; ` +
-                `nmcli con up "${connectionName}" ; ` +
-                `sudo ip addr flush dev ${physicalDev} ; sudo ip addr add ${ip}/${cidr} dev ${physicalDev} ; sudo ip link set ${physicalDev} up ; sudo ip route add default via ${gateway} dev ${physicalDev}`;
+            const netmask = cidrToNetmask(cidr);
+            newBlock = `allow-hotplug ${ifaceName}\niface ${ifaceName} inet static\n`;
+            newBlock += `    address ${ip}\n`;
+            newBlock += `    netmask ${netmask}\n`;
+            if (gateway) newBlock += `    gateway ${gateway}\n`;
+            if (dns) newBlock += `    dns-nameservers ${dns}\n`;
         }
 
-        // Redirigir la salida a un archivo para poder debugear si falla en el sistema del usuario
-        cmd = `(${cmd}) > /tmp/net_debug.log 2>&1`;
+        // Reemplazar el bloque existente de la interfaz
+        // Buscar desde "allow-hotplug ifaceName" o "auto ifaceName" o "iface ifaceName"
+        // hasta el siguiente bloque o fin del archivo
+        const lines = content.split('\n');
+        const newLines = [];
+        let inBlock = false;
+        let blockReplaced = false;
 
-        console.log(`[NETWORK] Aplicando red sobre conexión="${connectionName}" e interfaz físico="${physicalDev}"...`);
-        res.json({ ok: true, message: 'Aplicando configuración...' });
+        for (let i = 0; i < lines.length; i++) {
+            const trimmed = lines[i].trim();
 
+            // Detectar inicio del bloque de nuestra interfaz
+            if (!inBlock && (
+                (trimmed.startsWith('allow-hotplug') && trimmed.includes(ifaceName)) ||
+                (trimmed.startsWith('auto') && trimmed.includes(ifaceName) && !trimmed.includes('lo')) ||
+                (trimmed.startsWith('iface') && trimmed.includes(ifaceName))
+            )) {
+                inBlock = true;
+                if (!blockReplaced) {
+                    newLines.push(newBlock.trimEnd());
+                    blockReplaced = true;
+                }
+                continue;
+            }
+
+            if (inBlock) {
+                // Si encontramos otro bloque, dejamos de ignorar
+                if (trimmed.startsWith('allow-hotplug') || trimmed.startsWith('auto ') || trimmed.startsWith('iface ') || trimmed.startsWith('source')) {
+                    if (!trimmed.includes(ifaceName)) {
+                        inBlock = false;
+                        newLines.push(lines[i]);
+                    }
+                }
+                // Las líneas del bloque viejo se omiten (ya reemplazadas)
+                continue;
+            }
+
+            newLines.push(lines[i]);
+        }
+
+        // Si no se encontró ningún bloque, añadir al final
+        if (!blockReplaced) {
+            newLines.push('');
+            newLines.push(newBlock.trimEnd());
+        }
+
+        const finalContent = newLines.join('\n');
+
+        // Hacer backup y escribir
+        fs.copyFileSync(IFACES_FILE, IFACES_FILE + '.bak');
+        fs.writeFileSync(IFACES_FILE, finalContent, 'utf8');
+
+        console.log(`[NETWORK] Archivo ${IFACES_FILE} actualizado (modo=${mode}, interfaz=${ifaceName}).`);
+        console.log(`[NETWORK] Contenido nuevo:\n${finalContent}`);
+
+        // Responder antes de reiniciar red (ya que perderemos conexión)
+        res.json({ ok: true, message: `Configuración guardada. Reiniciando red en ${ifaceName}...` });
+
+        // Reiniciar la interfaz con un pequeño delay
         setTimeout(() => {
-            exec(cmd, (err) => {
+            const restartCmd = `ifdown ${ifaceName} 2>/dev/null; sleep 1; ifup ${ifaceName} 2>&1`;
+            console.log(`[NETWORK] Ejecutando: ${restartCmd}`);
+
+            exec(restartCmd, { timeout: 30000 }, (err, stdout, stderr) => {
                 if (err) {
-                    console.error('[NETWORK] Error applying config via nmcli/native:', err.message);
-                    // Si ambos fallaron, intentar forzar dhclient genérico como último recurso
-                    if (mode === 'auto') {
-                        exec(`sudo dhclient -v >> /tmp/net_debug.log 2>&1`, (dhcpErr) => {
-                            if (dhcpErr) console.error('[NETWORK] Fallback dhclient general error:', dhcpErr.message);
-                            else console.log('[NETWORK] DHCP general renovado.');
+                    console.error(`[NETWORK] Error reiniciando interfaz: ${err.message}`);
+                    console.error(`[NETWORK] stderr: ${stderr}`);
+                    // Intentar forzar con ip directamente como fallback
+                    if (mode === 'manual') {
+                        const fallbackCmd = `ip addr flush dev ${ifaceName}; ip addr add ${ip}/${cidr} dev ${ifaceName}; ip link set ${ifaceName} up` +
+                            (gateway ? `; ip route add default via ${gateway} dev ${ifaceName}` : '');
+                        exec(fallbackCmd, (err2) => {
+                            if (err2) console.error('[NETWORK] Fallback ip también falló:', err2.message);
+                            else console.log('[NETWORK] Aplicado con ip nativo como fallback.');
+                        });
+                    } else {
+                        exec(`dhclient -r ${ifaceName}; dhclient -v ${ifaceName}`, (err2) => {
+                            if (err2) console.error('[NETWORK] Fallback dhclient falló:', err2.message);
+                            else console.log('[NETWORK] DHCP renovado con dhclient como fallback.');
                         });
                     }
                 } else {
-                    console.log(`[NETWORK] Aplicado con éxito en ${connectionName} (${physicalDev}).`);
+                    console.log(`[NETWORK] Interfaz ${ifaceName} reiniciada correctamente.`);
+                    if (stdout) console.log(`[NETWORK] stdout: ${stdout}`);
                 }
             });
-        }, 1000);
-    });
+        }, 500);
+
+    } catch (e) {
+        console.error('[NETWORK] Error escribiendo configuración:', e.message);
+        return res.status(500).json({ ok: false, error: `Error escribiendo configuración: ${e.message}` });
+    }
 });
 
 app.post('/api/terminal/run', (req, res) => {
