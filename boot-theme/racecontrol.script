@@ -55,3 +55,21 @@ fun progress_callback (duration, progress) {
 }
 
 Plymouth.SetBootProgressFunction(progress_callback);
+
+# Mostrar el mismo tema con barra de progreso durante el apagado
+fun shutdown_callback () {
+    # Mostrar todas las cajas llenas brevemente, luego ir vaciando
+    # Mantener el fondo visible durante el apagado
+}
+
+Plymouth.SetShutdownFunction(shutdown_callback);
+
+# Reutilizar la misma barra de progreso para actualizaciones del sistema
+Plymouth.SetSystemUpdateFunction(progress_callback);
+
+# Ocultar mensajes de texto del sistema para mantener el tema limpio
+fun message_callback (text) {
+    # No mostrar mensajes del sistema — mantener pantalla limpia
+}
+
+Plymouth.SetMessageFunction(message_callback);
