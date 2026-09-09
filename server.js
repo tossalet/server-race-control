@@ -3350,27 +3350,31 @@ app.post('/api/network', (req, res) => {
 
         // Reiniciar la interfaz con un pequeño delay
         setTimeout(() => {
-            const restartCmd = `ifdown ${ifaceName} 2>/dev/null; sleep 1; ifup ${ifaceName} 2>&1`;
+            const restartCmd = `/usr/sbin/ifdown ${ifaceName} 2>/dev/null; sleep 1; /usr/sbin/ifup ${ifaceName} 2>&1`;
             console.log(`[NETWORK] Ejecutando: ${restartCmd}`);
 
-            exec(restartCmd, { timeout: 30000 }, (err, stdout, stderr) => {
+            exec(restartCmd, { timeout: 30000, env: { ...process.env, PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' } }, (err, stdout, stderr) => {
                 if (err) {
-                    console.error(`[NETWORK] Error reiniciando interfaz: ${err.message}`);
+                    console.error(`[NETWORK] Error con ifdown/ifup: ${err.message}`);
                     console.error(`[NETWORK] stderr: ${stderr}`);
-                    // Intentar forzar con ip directamente como fallback
-                    if (mode === 'manual') {
-                        const fallbackCmd = `ip addr flush dev ${ifaceName}; ip addr add ${ip}/${cidr} dev ${ifaceName}; ip link set ${ifaceName} up` +
-                            (gateway ? `; ip route add default via ${gateway} dev ${ifaceName}` : '');
-                        exec(fallbackCmd, (err2) => {
-                            if (err2) console.error('[NETWORK] Fallback ip también falló:', err2.message);
-                            else console.log('[NETWORK] Aplicado con ip nativo como fallback.');
-                        });
-                    } else {
-                        exec(`dhclient -r ${ifaceName}; dhclient -v ${ifaceName}`, (err2) => {
-                            if (err2) console.error('[NETWORK] Fallback dhclient falló:', err2.message);
-                            else console.log('[NETWORK] DHCP renovado con dhclient como fallback.');
-                        });
-                    }
+                    // Fallback: reiniciar el servicio de networking completo
+                    console.log('[NETWORK] Intentando fallback con systemctl restart networking...');
+                    exec('systemctl restart networking', { timeout: 30000 }, (err2, stdout2, stderr2) => {
+                        if (err2) {
+                            console.error('[NETWORK] Fallback systemctl también falló:', err2.message);
+                            // Último recurso: ip nativo
+                            if (mode === 'manual') {
+                                const nativeCmd = `/usr/sbin/ip addr flush dev ${ifaceName}; /usr/sbin/ip addr add ${ip}/${cidr} dev ${ifaceName}; /usr/sbin/ip link set ${ifaceName} up` +
+                                    (gateway ? `; /usr/sbin/ip route add default via ${gateway} dev ${ifaceName}` : '');
+                                exec(nativeCmd, (err3) => {
+                                    if (err3) console.error('[NETWORK] Fallback ip nativo falló:', err3.message);
+                                    else console.log('[NETWORK] Aplicado con ip nativo como último recurso.');
+                                });
+                            }
+                        } else {
+                            console.log('[NETWORK] Interfaz reiniciada con systemctl restart networking.');
+                        }
+                    });
                 } else {
                     console.log(`[NETWORK] Interfaz ${ifaceName} reiniciada correctamente.`);
                     if (stdout) console.log(`[NETWORK] stdout: ${stdout}`);
