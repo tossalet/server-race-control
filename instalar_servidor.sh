@@ -498,6 +498,33 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
     systemctl stop plymouth-quit-active.service 2>/dev/null || true
     systemctl disable plymouth-quit-active.service 2>/dev/null || true
     systemctl mask plymouth-quit-active.service 2>/dev/null || true
+
+    # Habilitar Plymouth durante el apagado y reinicio
+    systemctl unmask plymouth-reboot.service 2>/dev/null || true
+    systemctl unmask plymouth-poweroff.service 2>/dev/null || true
+    systemctl unmask plymouth-halt.service 2>/dev/null || true
+    systemctl enable plymouth-reboot.service 2>/dev/null || true
+    systemctl enable plymouth-poweroff.service 2>/dev/null || true
+    systemctl enable plymouth-halt.service 2>/dev/null || true
+
+    # Crear un servicio que lance Plymouth con el splash de apagado
+    cat > /etc/systemd/system/plymouth-shutdown-splash.service << 'PLYSVC'
+[Unit]
+Description=Show Plymouth splash during shutdown
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target
+After=final.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/plymouth --show-splash
+RemainAfterExit=yes
+
+[Install]
+WantedBy=shutdown.target reboot.target halt.target
+PLYSVC
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable plymouth-shutdown-splash.service 2>/dev/null || true
     
     # Sobreescribir las directivas de conflictos de systemd para que LightDM no dependa de quit-plymouth
     mkdir -p /etc/systemd/system/lightdm.service.d
@@ -563,6 +590,17 @@ unclutter -idle 3 &
 xset s noblank
 xset s off
 xset -dpms
+
+# Calibrar pantalla táctil: mapear el controlador táctil al monitor correcto
+# Busca dinámicamente el dispositivo táctil SiS por nombre
+TOUCH_ID=$(xinput list --id-only "SiS HID Touch Controller" 2>/dev/null || \
+           xinput list | grep -i "touch" | grep -oP 'id=\K[0-9]+' | head -1)
+if [ -n "$TOUCH_ID" ]; then
+    echo "[$(date)] Calibrando pantalla táctil (id=$TOUCH_ID) → HDMI-0"
+    xinput map-to-output "$TOUCH_ID" HDMI-0 2>/dev/null || true
+else
+    echo "[$(date)] No se detectó pantalla táctil, omitiendo calibración."
+fi
 
 # Fondo de pantalla (detrás de las ventanas)
 if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then
