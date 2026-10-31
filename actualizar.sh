@@ -52,6 +52,12 @@ awk '
 mv "$tmpfile" "$XML_FILE"
 chown $RC_USER:$RC_USER "$XML_FILE"
 
+# Decodificación de vídeo por GPU NVIDIA en el navegador (H.265)
+if lspci 2>/dev/null | grep -qi nvidia && ! dpkg -l nvidia-vaapi-driver 2>/dev/null | grep -q '^ii'; then
+    echo "🎮 Instalando nvidia-vaapi-driver (decodificación H.265 por GPU en Firefox)..."
+    apt-get install -y nvidia-vaapi-driver vainfo 2>/dev/null || echo "   ⚠️  No se pudo instalar nvidia-vaapi-driver"
+fi
+
 # Actualizar el script de autoarranque local con supervisión continua y autorestart anti-cuelgues
 KIOSK_SCRIPT="$RC_HOME/.config/race-control/launch_kiosk.sh"
 echo "🖥️  Actualizando script supervisor de Kiosko ($KIOSK_SCRIPT)..."
@@ -68,6 +74,27 @@ xset s noblank
 xset s off
 xset -dpms
 
+# Pantalla táctil: con dos monitores X reparte el táctil por todo el escritorio y los toques
+# caen desplazados. Hay que mapearlo a su monitor. (instalar_servidor.sh lo hacía, pero este
+# script sobrescribía launch_kiosk.sh sin esta parte.)
+# Salida: TOUCH_OUTPUT en /opt/race-control/.env, si no la principal de xrandr, si no HDMI-0.
+TOUCH_OUTPUT=$(grep '^TOUCH_OUTPUT=' /opt/race-control/.env 2>/dev/null | cut -d'=' -f2)
+[ -z "$TOUCH_OUTPUT" ] && TOUCH_OUTPUT=$(xrandr 2>/dev/null | awk '/ connected primary/{print $1; exit}')
+[ -z "$TOUCH_OUTPUT" ] && TOUCH_OUTPUT=HDMI-0
+for i in $(seq 1 10); do   # el USB táctil puede tardar en aparecer tras el arranque
+    TOUCH_IDS=$(xinput list 2>/dev/null | grep -i "touch" | grep -i "pointer" | grep -oP 'id=\K[0-9]+')
+    [ -n "$TOUCH_IDS" ] && break
+    sleep 1
+done
+if [ -n "$TOUCH_IDS" ]; then
+    for tid in $TOUCH_IDS; do
+        echo "[$(date)] Pantalla táctil id=$tid → $TOUCH_OUTPUT"
+        xinput map-to-output "$tid" "$TOUCH_OUTPUT" || echo "[$(date)] ⚠️ No se pudo mapear el táctil a $TOUCH_OUTPUT"
+    done
+else
+    echo "[$(date)] No se detectó pantalla táctil."
+fi
+
 # Fondo de pantalla
 if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then
     feh --bg-scale /usr/share/plymouth/themes/racecontrol/bg.png &
@@ -82,8 +109,17 @@ echo "window.KIOSK_CONFIG = { port: '$PORT' };" > /opt/race-control/public/confi
 command -v plymouth &>/dev/null && sudo plymouth quit 2>/dev/null || true
 
 # Configurar preferencias en los perfiles de Firefox para evitar cuelgues, diálogos de bloqueo y desbordamiento de caché
-mkdir -p "$HOME/.mozilla/firefox"
-for pdir in $(find "$HOME/.mozilla/firefox" -maxdepth 1 -type d); do
+# ── Decodificación de vídeo por GPU NVIDIA (H.265/H.264 vía VA-API) ─────────
+# Sin esto Firefox decodifica por CPU (o no reproduce H.265). Requiere nvidia-vaapi-driver.
+if [ -e /proc/driver/nvidia/version ]; then
+    export LIBVA_DRIVER_NAME=nvidia
+    export NVD_BACKEND=direct
+    export MOZ_DISABLE_RDD_SANDBOX=1
+    echo "[$(date)] GPU NVIDIA detectada: decodificación de vídeo por hardware (VA-API) activada"
+fi
+
+mkdir -p "$HOME/.mozilla/firefox" "$HOME/.config/firefox_monitor"
+for pdir in $(find "$HOME/.mozilla/firefox" -maxdepth 1 -type d) "$HOME/.config/firefox_monitor"; do
     if [ -d "$pdir" ] && [ "$pdir" != "$HOME/.mozilla/firefox" ]; then
         cat > "$pdir/user.js" << 'USERJS_EOF'
 user_pref("browser.sessionstore.resume_from_crash", false);
@@ -95,6 +131,12 @@ user_pref("browser.cache.memory.capacity", 65536);
 user_pref("dom.ipc.processHangMonitor", false);
 user_pref("media.autoplay.default", 0);
 user_pref("media.autoplay.enabled.user-gestures-needed", false);
+// Decodificación de vídeo por GPU (VA-API): imprescindible para H.265 en Linux
+user_pref("media.ffmpeg.vaapi.enabled", true);
+user_pref("media.hardware-video-decoding.force-enabled", true);
+user_pref("media.rdd-ffmpeg.enabled", true);
+user_pref("gfx.x11-egl.force-enabled", true);
+user_pref("widget.dmabuf.force-enabled", true);
 USERJS_EOF
     fi
 done

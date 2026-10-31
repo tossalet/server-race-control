@@ -179,6 +179,8 @@ if [ "$ARCH" = "x86_64" ]; then
         apt-get install -y linux-headers-$(uname -r) 2>/dev/null || true
         if apt-get install -y nvidia-driver firmware-misc-nonfree 2>/dev/null; then
             echo "   ✔ Driver NVIDIA instalado. NVENC disponible para FFmpeg."
+            # Capa VA-API sobre NVDEC: permite a Firefox decodificar H.265/H.264 con la GPU
+            apt-get install -y nvidia-vaapi-driver vainfo 2>/dev/null &&                 echo "   ✔ nvidia-vaapi-driver instalado (decodificación de vídeo por GPU en el navegador)." ||                 echo "   ⚠️  No se pudo instalar nvidia-vaapi-driver: el navegador decodificará por CPU."
             
             # ── DESBLOQUEAR LÍMITE DE STREAMS (nvidia-patch) ──
             echo "   🔓 Aplicando parche nvidia-patch para eliminar el límite de streams simultáneos de la GPU..."
@@ -633,8 +635,17 @@ SCREEN_W=$(echo "$SCREEN_RES" | cut -d'x' -f1)
 SCREEN_H=$(echo "$SCREEN_RES" | cut -d'x' -f2)
 
 # Configurar preferencias en los perfiles de Firefox para evitar cuelgues, diálogos de bloqueo y desbordamiento de caché
-mkdir -p "$HOME/.mozilla/firefox"
-for pdir in $(find "$HOME/.mozilla/firefox" -maxdepth 1 -type d); do
+# ── Decodificación de vídeo por GPU NVIDIA (H.265/H.264 vía VA-API) ─────────
+# Sin esto Firefox decodifica por CPU (o no reproduce H.265). Requiere nvidia-vaapi-driver.
+if [ -e /proc/driver/nvidia/version ]; then
+    export LIBVA_DRIVER_NAME=nvidia
+    export NVD_BACKEND=direct
+    export MOZ_DISABLE_RDD_SANDBOX=1
+    echo "[$(date)] GPU NVIDIA detectada: decodificación de vídeo por hardware (VA-API) activada"
+fi
+
+mkdir -p "$HOME/.mozilla/firefox" "$HOME/.config/firefox_monitor"
+for pdir in $(find "$HOME/.mozilla/firefox" -maxdepth 1 -type d) "$HOME/.config/firefox_monitor"; do
     if [ -d "$pdir" ] && [ "$pdir" != "$HOME/.mozilla/firefox" ]; then
         cat > "$pdir/user.js" << 'USERJS_EOF'
 user_pref("browser.sessionstore.resume_from_crash", false);
@@ -646,6 +657,12 @@ user_pref("browser.cache.memory.capacity", 65536);
 user_pref("dom.ipc.processHangMonitor", false);
 user_pref("media.autoplay.default", 0);
 user_pref("media.autoplay.enabled.user-gestures-needed", false);
+// Decodificación de vídeo por GPU (VA-API): imprescindible para H.265 en Linux
+user_pref("media.ffmpeg.vaapi.enabled", true);
+user_pref("media.hardware-video-decoding.force-enabled", true);
+user_pref("media.rdd-ffmpeg.enabled", true);
+user_pref("gfx.x11-egl.force-enabled", true);
+user_pref("widget.dmabuf.force-enabled", true);
 USERJS_EOF
     fi
 done

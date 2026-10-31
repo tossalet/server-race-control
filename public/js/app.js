@@ -559,7 +559,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Thumbnail auto-refresh
+    // Thumbnail auto-refresh (cada 20 segundos — bajo consumo, thumbnails se generan a 0.5fps en backend)
     setInterval(() => {
         const thumbs = document.querySelectorAll('.thumb-container img');
         thumbs.forEach(img => {
@@ -572,7 +572,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 tempImg.src = `${baseSrc}?t=${Date.now()}`;
             }
         });
-    }, 4000);
+    }, 20000);
 });
 
 async function fetchData() {

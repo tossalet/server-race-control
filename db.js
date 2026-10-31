@@ -21,6 +21,11 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function initDB() {
     db.serialize(() => {
+        // WAL: lecturas (polling de la UI) sin bloquear escrituras y menos fsync por INSERT
+        db.run("PRAGMA journal_mode = WAL", () => {});
+        db.run("PRAGMA synchronous = NORMAL", () => {});
+        db.run("PRAGMA busy_timeout = 5000", () => {});
+
         // Table inputs
         db.run(`CREATE TABLE IF NOT EXISTS inputs (
             channel INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +52,6 @@ function initDB() {
         db.run("ALTER TABLE inputs ADD COLUMN ptz_user TEXT NOT NULL DEFAULT ''", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN ptz_pass TEXT NOT NULL DEFAULT ''", () => {});
         db.run("ALTER TABLE inputs ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0", () => {});
-        db.run("ALTER TABLE outputs ADD COLUMN was_enabled INTEGER NOT NULL DEFAULT 0", () => {});
 
         // Table outputs
         db.run(`CREATE TABLE IF NOT EXISTS outputs (
@@ -64,6 +68,8 @@ function initDB() {
 
         // Migration for existing databases
         db.run("ALTER TABLE outputs ADD COLUMN vcodec TEXT NOT NULL DEFAULT 'copy'", () => {});
+        // Debe ir DESPUÉS del CREATE: antes se ejecutaba primero y en una BD nueva la columna no existía
+        db.run("ALTER TABLE outputs ADD COLUMN was_enabled INTEGER NOT NULL DEFAULT 0", () => {});
 
         // Table ports
         db.run(`CREATE TABLE IF NOT EXISTS ports (
@@ -137,6 +143,10 @@ function initDB() {
             mp4_path TEXT,
             UNIQUE(session_id, channel)
         )`);
+
+        // Índices para las consultas que la UI repite cada 3-4 s (marcas, clips, sesiones)
+        db.run("CREATE INDEX IF NOT EXISTS idx_markers_session ON markers(session_id)", () => {});
+        db.run("CREATE INDEX IF NOT EXISTS idx_clips_session ON clips(session_id)", () => {});
 
         // Insert initial configuration defaults if empty
         db.get('SELECT COUNT(*) AS count FROM users', (err, row) => {

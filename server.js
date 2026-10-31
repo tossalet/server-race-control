@@ -18,7 +18,9 @@ const fs = require('fs');
 const db = require('./db');
 const streamManager = require('./streamManager');
 const sysMonitor = require('./sysMonitor');
-const si = require('systeminformation');
+const { spawn, execFile } = require('child_process');
+const util = require('util');
+const execFileAsync = util.promisify(execFile);
 
 const app = express();
 const server = http.createServer(app);
@@ -36,53 +38,59 @@ wss.on('connection', (ws, req) => {
 
     const channel = match[1];
 
+    // Subscriber directo — misma técnica que el HTTP passthrough,
+    // sin crear conexiones TCP intermedias innecesarias.
+    // pending() = bytes en cola del socket: si el navegador no consume (pestaña en segundo
+    // plano, WiFi saturada) el router lo desconecta en lugar de acumular RAM sin límite.
+    const subObj = {
+        kind: 'viewer',
+        write(chunk) {
+            if (ws.readyState === ws.OPEN) ws.send(chunk);
+        },
+        pending() { return ws.bufferedAmount; },
+        destroy() {
+            try { ws.terminate(); } catch (e) { }
+        }
+    };
+
     let attempts = 0;
-    const checkInterval = setInterval(() => {
-        const inputState = streamManager.activeInputs[channel];
-        if (inputState && inputState.router && inputState.router.subscribers) {
-            clearInterval(checkInterval);
-
-            // Subscriber directo — misma técnica que el HTTP passthrough,
-            // sin crear conexiones TCP intermedias innecesarias.
-            const subObj = {
-                writableLength: 0,
-                write(chunk) {
-                    if (ws.readyState === ws.OPEN) {
-                        try { ws.send(chunk); } catch (e) { }
-                    }
-                },
-                destroy() {
-                    try { ws.close(); } catch (e) { }
-                }
-            };
-
-            inputState.router.subscribers.add(subObj);
+    let checkInterval = null;
+    let subscribed = false;
+    const trySubscribe = () => {
+        if (ws.readyState !== ws.OPEN) return true; // el cliente ya se fue: dejar de esperar
+        if (streamManager.addSubscriber(channel, subObj)) {
+            subscribed = true;
             console.log(`[WS] Client subscribed to LIVE channel ${channel} (direct subscriber)`);
+            return true;
+        }
+        return false;
+    };
 
-            ws.on('close', () => {
-                if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
-                    streamManager.activeInputs[channel].router.subscribers.delete(subObj);
-                }
-                console.log(`[WS] Client unsubscribed from LIVE channel ${channel}`);
-            });
+    const cleanup = () => {
+        if (checkInterval) clearInterval(checkInterval);
+        if (subscribed) {
+            streamManager.removeSubscriber(channel, subObj);
+            subscribed = false;
+            console.log(`[WS] Client unsubscribed from LIVE channel ${channel}`);
+        }
+    };
+    ws.on('close', cleanup);
+    ws.on('error', cleanup);
 
-            ws.on('error', () => {
-                if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
-                    streamManager.activeInputs[channel].router.subscribers.delete(subObj);
-                }
-            });
-        } else {
-            attempts++;
-            if (attempts > 20) { // 10 seconds max wait
+    if (!trySubscribe()) {
+        checkInterval = setInterval(() => {
+            if (trySubscribe()) {
                 clearInterval(checkInterval);
+                checkInterval = null;
+            } else if (++attempts > 20) { // 10 seconds max wait
+                clearInterval(checkInterval);
+                checkInterval = null;
                 console.log(`[WS] Rejecting connection to /live/${channel}: Router not active after 10s.`);
                 ws.close();
             }
-        }
-    }, 500);
+        }, 500);
+    }
 });
-
-const util = require('util');
 
 // Custom System Logger
 const logsDir = path.join(__dirname, 'logs');
@@ -90,6 +98,27 @@ if (!fs.existsSync(logsDir)) {
     try { fs.mkdirSync(logsDir, { recursive: true }); } catch (e) { }
 }
 const logFile = path.join(logsDir, 'server.log');
+
+// Un único stream de escritura (antes: fs.appendFile abría/cerraba el fichero en cada línea)
+// y rotación simple a server.log.1 al superar 20 MB para que no llene el disco del sistema.
+const LOG_MAX_BYTES = 20 * 1024 * 1024;
+let logStream = null;
+let logBytes = 0;
+function openLogStream() {
+    try { logBytes = fs.statSync(logFile).size; } catch (e) { logBytes = 0; }
+    logStream = fs.createWriteStream(logFile, { flags: 'a' });
+    logStream.on('error', () => { });
+}
+openLogStream();
+function writeLogLine(line) {
+    if (logBytes > LOG_MAX_BYTES) {
+        logStream.end();
+        try { fs.renameSync(logFile, logFile + '.1'); } catch (e) { }
+        openLogStream();
+    }
+    logBytes += Buffer.byteLength(line);
+    logStream.write(line);
+}
 
 const logHistory = [];
 function getTimestamp() {
@@ -101,7 +130,7 @@ function broadCastLog(level, message) {
     if (io) io.emit('server_log', logEntry);
     logHistory.push(logEntry);
     if (logHistory.length > 500) logHistory.shift(); // Keep last 500 lines in memory
-    fs.appendFile(logFile, `[${logEntry.timestamp}] [${level}] ${message}\n`, () => { });
+    writeLogLine(`[${logEntry.timestamp}] [${level}] ${message}\n`);
 }
 
 // Intercept Console
@@ -170,17 +199,27 @@ function detectExternalDisk() {
 let mediaRoot = null;
 let recordingDisabled = false;
 
-// Helper para registrar el middleware de disco de grabaciones en Express
-function registerMediaStatic(rootPath) {
-    app.use('/media', express.static(rootPath, {
-        setHeaders: (res, fp) => {
-            if (fp.endsWith('.m3u8')) {
-                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                res.setHeader('Pragma', 'no-cache');
-                res.setHeader('Expires', '0');
+// /media sirve SIEMPRE desde el mediaRoot actual. Antes cada cambio de disco apilaba un
+// express.static nuevo (el disco antiguo seguía teniendo prioridad) y la detección en
+// caliente de /api/storage/status no registraba ninguno (replays con 404).
+const mediaStaticCache = new Map();
+function getMediaStatic(rootPath) {
+    if (!mediaStaticCache.has(rootPath)) {
+        mediaStaticCache.set(rootPath, express.static(rootPath, {
+            setHeaders: (res, fp) => {
+                if (fp.endsWith('.m3u8')) {
+                    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                    res.setHeader('Pragma', 'no-cache');
+                    res.setHeader('Expires', '0');
+                } else if (fp.endsWith('.ts')) {
+                    // Los segmentos HLS son inmutables una vez listados (nombre único por sesión):
+                    // cachearlos evita releerlos del disco de grabación al hacer scrubbing en replay.
+                    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+                }
             }
-        }
-    }));
+        }));
+    }
+    return mediaStaticCache.get(rootPath);
 }
 
 // Inicializar disco: 1) Disco guardado en DB  2) Auto-detect  3) null
@@ -193,7 +232,6 @@ function initMediaRoot() {
         } else if (row && row.value && fs.existsSync(row.value)) {
             mediaRoot = row.value;
             recordingDisabled = false;
-            registerMediaStatic(mediaRoot);
             console.log(`[STORAGE] Disco cargado desde DB: ${mediaRoot}`);
         } else {
             // Fallback a auto-detect
@@ -203,7 +241,6 @@ function initMediaRoot() {
                 try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) { }
                 mediaRoot = recDir;
                 recordingDisabled = false;
-                registerMediaStatic(mediaRoot);
                 console.log(`[STORAGE] Disco detectado: ${mediaRoot}`);
             } else {
                 console.log('[STORAGE] AVISO: No hay disco externo. Grabacion bloqueada hasta conectar uno.');
@@ -230,8 +267,7 @@ app.get('/api/thumbs/:filename', (req, res, next) => {
     const filePath = path.join(__dirname, 'public', 'thumbs', filename);
 
     // Comprobar si el canal está realmente online y activo (criterio idéntico al panel de control)
-    const routerState = streamManager.activeInputs[channel];
-    const isOnline = !!(routerState && !routerState.isStopping);
+    const isOnline = streamManager.isInputOnline(channel);
 
     const serveFallback = () => {
         const fallbackPath = path.join(__dirname, 'public', 'images', 'bars.svg');
@@ -295,7 +331,6 @@ app.get('/api/thumbs/:filename', (req, res, next) => {
             thumbCacheTs[channel] = Date.now();
             res.setHeader('Content-Type', 'image/jpeg');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-            console.log(`[HTTP] Sirviendo thumbnail válido para CH-${channel}`);
             return res.send(data);
         } else {
             // Si está incompleto o a medio escribir por FFmpeg, servimos el último válido de la caché
@@ -304,15 +339,12 @@ app.get('/api/thumbs/:filename', (req, res, next) => {
                 if (cacheAge > 30000) {
                     delete thumbCache[channel];
                     delete thumbCacheTs[channel];
-                    console.log(`[HTTP] Caché expirada, sirviendo barras para CH-${channel}`);
                     return serveFallback();
                 }
                 res.setHeader('Content-Type', 'image/jpeg');
                 res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                console.log(`[HTTP] Sirviendo thumbnail de caché para CH-${channel}`);
                 return res.send(thumbCache[channel]);
             }
-            console.log(`[HTTP] No hay caché válida, sirviendo barras para CH-${channel}`);
             return serveFallback();
         }
     });
@@ -331,8 +363,11 @@ app.use(express.static(path.join(__dirname, 'public'), {
     }
 }));
 
-// NOTA: /media se registra dinámicamente desde registerMediaStatic() al inicializar
-// o al seleccionar un disco en /api/storage/select. No hay bloque estático aquí.
+// /media resuelve en cada petición el disco de grabación actual (mediaRoot)
+app.use('/media', (req, res, next) => {
+    if (!mediaRoot) return res.status(404).send('No hay disco de grabación configurado');
+    return getMediaStatic(mediaRoot)(req, res, next);
+});
 app.use('/preview', express.static(previewRoot, {
     setHeaders: (res, filePath) => {
         if (filePath.endsWith('.m3u8')) {
@@ -475,7 +510,6 @@ app.post('/api/storage/select', (req, res) => {
 
         mediaRoot = recDir;
         recordingDisabled = false;
-        registerMediaStatic(mediaRoot);
 
         db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('recording_disk', ?)", [recDir], (err) => {
             if (err) console.error('[STORAGE] Error guardando disco en DB:', err.message);
@@ -492,6 +526,10 @@ app.post('/api/storage/select', (req, res) => {
 
     // Si la partición no está montada, montarla primero en /mnt/recordings
     if (!targetMount && device) {
+        // device se interpola en un comando de shell ejecutado como root: solo /dev/xxx
+        if (!/^\/dev\/[a-zA-Z0-9_-]+$/.test(device)) {
+            return res.status(400).json({ error: 'Dispositivo no válido' });
+        }
         const { execSync } = require('child_process');
         const mntPoint = '/mnt/recordings';
         try {
@@ -530,7 +568,6 @@ app.post('/api/storage/select', (req, res) => {
         // Actualizar en caliente
         mediaRoot = finalPath;
         recordingDisabled = false;
-        registerMediaStatic(mediaRoot);
         console.log(`[STORAGE] Disco de grabación seleccionado: ${mediaRoot}`);
 
         let freeGB = null;
@@ -688,7 +725,9 @@ app.post('/api/monitor/open', (req, res) => {
                     }
 
                     const cmdArgs = args.map(arg => `"${arg}"`).join(' ');
-                    const runCmd = `sudo -u racecontrol DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority ${bin} ${cmdArgs}`;
+                    // Con GPU NVIDIA, decodificación de vídeo por hardware (VA-API) también en el monitor 2
+                    const gpuEnv = fs.existsSync('/proc/driver/nvidia/version') ? 'LIBVA_DRIVER_NAME=nvidia NVD_BACKEND=direct MOZ_DISABLE_RDD_SANDBOX=1 ' : '';
+                    const runCmd = `sudo -u racecontrol ${gpuEnv}DISPLAY=:0 XAUTHORITY=/home/racecontrol/.Xauthority ${bin} ${cmdArgs}`;
                     console.log(`[MONITOR] Ejecutando comando de lanzamiento nativo: ${runCmd}`);
 
                     exec(`${runCmd} &`, (err) => {
@@ -771,7 +810,7 @@ app.get('/api/inputs', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         const decorated = rows.map(row => {
             const state = streamManager.activeInputs[row.channel];
-            const isRunning = state && !state.isStopping;
+            const isRunning = streamManager.isInputOnline(row.channel);
             return {
                 ...row,
                 online: !!isRunning,
@@ -898,10 +937,11 @@ app.put('/api/inputs/:channel', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         const changes = this.changes;
 
-        // Restart the process if it was running with new data
-        streamManager.stopInput(channelId);
+        // Reiniciar solo la ingesta con los datos nuevos: el router del canal se mantiene
+        // y una grabación en curso no se corta ni se sobrescribe
         db.get('SELECT * FROM inputs WHERE channel = ?', [channelId], (err, row) => {
-            if (row && row.enabled) streamManager.startInput(row);
+            if (row && row.enabled) streamManager.restartInput(row);
+            else streamManager.stopInput(channelId);
             io.emit('db_update', { event: 'inputs_changed' });
             res.json({ updated: changes });
         });
@@ -1049,7 +1089,8 @@ app.get('/api/ptz/:channel/stream', (req, res) => {
             'pipe:1'
         ];
 
-        const child = spawn(ffmpegCmd, args);
+        const child = spawn(ffmpegCmd, args, { windowsHide: true });
+        streamManager.lowerPriority(child);
 
         child.stdout.pipe(res);
 
@@ -1156,54 +1197,159 @@ app.delete('/api/outputs/:id', (req, res) => {
  *  REST API: RECORDING SESSIONS & MARKERS
  * ======================================= */
 
-// In-memory map of active recording FFmpeg processes { sessionId -> [childProcess, ...] }
-const activeRecordingProcs = {};
+// Sesiones de grabación activas en memoria:
+// { [sessionId]: { mediaRoot, channels: Map<channel, { child, sub, hlsPath }>, lateJoinWatcher } }
+//
+// Cada cámara graba con un FFmpeg que lee del router del canal por stdin (copy, sin
+// recodificar). El router sobrevive a las caídas de la cámara, así que el mismo proceso
+// sigue grabando cuando la señal vuelve. Si el propio FFmpeg de grabación muere, el
+// watcher lo relanza en modo append_list: la playlist continúa y NO se sobrescribe lo
+// grabado (antes se relanzaba con los mismos nombres y "-y", perdiendo todo lo anterior).
+const activeRecordings = {};
 
-// Endpoint para comprobar si hay una sesión grabando activamente (procesos FFmpeg en memoria)
+// Endpoint para comprobar si hay una sesión grabando activamente (procesos FFmpeg en memoria).
+// Devuelve también la fila de la sesión para que la UI no tenga que pedir /api/recordings cada 3 s.
 app.get('/api/recordings/active', (req, res) => {
-    const activeSessions = Object.keys(activeRecordingProcs);
+    const activeSessions = Object.keys(activeRecordings);
     if (activeSessions.length === 0) {
         return res.json({ active: false, session_id: null });
     }
-    // Devolver la sesión más reciente que tenga procesos vivos
     const sessionId = activeSessions[activeSessions.length - 1];
-    const procs = activeRecordingProcs[sessionId] || [];
-    const aliveCount = procs.filter(p => p.exitCode === null).length;
-    if (aliveCount === 0) {
-        // Todos los procesos terminaron — limpiar
-        delete activeRecordingProcs[sessionId];
-        return res.json({ active: false, session_id: null });
-    }
-    res.json({ active: true, session_id: sessionId, alive_processes: aliveCount });
+    const rec = activeRecordings[sessionId];
+    const aliveCount = [...rec.channels.values()].filter(r => r.child && r.child.exitCode === null).length;
+    db.get(`SELECT s.*, (SELECT COUNT(*) FROM clips WHERE session_id = s.id) AS clips_count
+            FROM recording_sessions s WHERE s.id = ?`, [sessionId], (err, session) => {
+        res.json({ active: true, session_id: sessionId, alive_processes: aliveCount, session: session || null });
+    });
 });
 
-// Helper: kill ALL active recording processes (used before starting a new session)
-function stopAllRecordings() {
-    const activeSessions = Object.keys(activeRecordingProcs);
-    activeSessions.forEach(sid => {
-        const procs = activeRecordingProcs[sid] || [];
-        procs.forEach(child => {
-            try { child.stdin.write('q'); } catch (e) { }
-            try { child.kill('SIGTERM'); } catch (e) { }
-        });
+function startChannelRecorder(sessionId, rec, channel) {
+    channel = Number(channel);
+    const current = rec.channels.get(channel);
+    if (current && current.child) return false;           // ya grabando
+    if (!streamManager.hasSignal(channel)) return false;  // esperar a que la cámara entregue datos
 
-        if (activeRecordingProcs[sid].lateJoinWatcher) {
-            clearInterval(activeRecordingProcs[sid].lateJoinWatcher);
+    const hlsPath = path.join(rec.mediaRoot, `CAM_${channel}_${sessionId}.m3u8`);
+    const mp4Path = path.join(rec.mediaRoot, `CAM_${channel}_${sessionId}.mp4`);
+    // Reanudación dentro de la misma sesión: continuar la playlist existente y no tocar el MP4
+    const isResume = fs.existsSync(hlsPath);
+
+    // Passthrough puro para TODAS las cámaras — sin transcodificación.
+    // Audio también en copy: la ingesta ya lo entrega en AAC (antes se recodificaba
+    // dos veces por cámara, una para HLS y otra para MP4).
+    // probesize/analyzeduration amplios: con 0,5 MB un H.265 que arranca a mitad de GOP
+    // no llegaba a ver SPS/PPS y el MP4 fallaba con "dimensions not set".
+    const args = [
+        '-hide_banner', '-y',
+        '-fflags', '+genpts',
+        '-err_detect', 'ignore_err',
+        '-probesize', '10000000',
+        '-analyzeduration', '5000000',
+        '-f', 'mpegts',
+        '-i', 'pipe:0',
+        '-map', '0:v?', '-map', '0:a?',
+        '-c:v', 'copy', '-c:a', 'copy',
+        '-hls_time', '2',
+        '-hls_list_size', '0',
+        '-hls_segment_type', 'mpegts'
+    ];
+    if (isResume) args.push('-hls_flags', 'append_list');
+    args.push('-f', 'hls', hlsPath);
+    if (!isResume) {
+        args.push(
+            '-map', '0:v?', '-map', '0:a?',
+            '-c:v', 'copy', '-c:a', 'copy',
+            // Obligatorio con audio copiado desde MPEG-TS (ADTS): con empty_moov FFmpeg no lo
+            // inserta solo y el MP4 se corta en el primer paquete de audio
+            '-bsf:a', 'aac_adtstoasc',
+            '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+            '-f', 'mp4', mp4Path
+        );
+    }
+
+    console.log(`[REC-START] Session ${sessionId} ch${channel} via stdin${isResume ? ' (reanudación, append_list)' : ''}`);
+    const child = spawn(streamManager.getFFmpegPath(), args, { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+
+    const sub = {
+        kind: 'recorder',
+        write(chunk) {
+            if (child.stdin.writable) child.stdin.write(chunk);
+        },
+        pending() { return child.stdin.writableLength; },
+        // EOF en stdin → FFmpeg vacía buffers y cierra playlist/MP4 correctamente
+        destroy() { try { child.stdin.end(); } catch (e) { } }
+    };
+    child.stdin.on('error', () => { });
+
+    child.stderr.on('data', d => {
+        const text = d.toString();
+        const isKnownNoise = /PPS id out of range|Skipping invalid undecodable NALU|aac_adtstoasc|Last message repeated|Malformed AAC|Error parsing NAL unit|hevc|Non-monoton/i.test(text);
+        if (isKnownNoise) return;
+        if (/error|fail|unable|operation not permitted|no space/i.test(text)) {
+            const line = text.split('\n')[0].trim();
+            if (line) broadCastLog('WARN', `[REC-${sessionId}|ch${channel}] ${line}`);
         }
-
-        if (activeRecordingProcs[sid].sockets) {
-            activeRecordingProcs[sid].sockets.forEach(({ sock, channel, isDirectObj }) => {
-                const routerState = streamManager.activeInputs[channel];
-                if (routerState && routerState.router) {
-                    routerState.router.subscribers.delete(sock);
-                }
-                if (!isDirectObj && sock.destroy) sock.destroy();
-            });
-        }
-
-        delete activeRecordingProcs[sid];
-        console.log(`[REC] Stopped previous session ${sid} (${procs.length} processes)`);
     });
+
+    child.on('error', (err) => {
+        broadCastLog('ERROR', `[REC-${sessionId}] ch${channel} no se pudo lanzar FFmpeg: ${err.message}`);
+    });
+
+    child.on('close', code => {
+        streamManager.removeSubscriber(channel, sub);
+        const r = rec.channels.get(channel);
+        if (r && r.child === child) r.child = null; // el watcher lo reanudará si la sesión sigue activa
+        broadCastLog('INFO', `[REC-${sessionId}] ch${channel} FFmpeg exited ${code}`);
+    });
+
+    streamManager.addSubscriber(channel, sub);
+    rec.channels.set(channel, { child, sub, hlsPath });
+
+    if (isResume) {
+        // El MP4 ya no cubre toda la sesión: la exportación usará la playlist HLS (continua)
+        db.run('UPDATE session_files SET mp4_path = NULL WHERE session_id = ? AND channel = ?', [sessionId, channel]);
+    } else {
+        db.run(`INSERT OR REPLACE INTO session_files
+                (session_id, channel, hls_path, mp4_path) VALUES (?,?,?,?)`,
+            [sessionId, channel, hlsPath, mp4Path]);
+    }
+    return true;
+}
+
+function gracefulStopRecorder(child) {
+    if (!child || child.exitCode !== null) return;
+    try { child.stdin.end(); } catch (e) { }
+    const t1 = setTimeout(() => { try { child.kill('SIGTERM'); } catch (e) { } }, 5000);
+    const t2 = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) { } }, 15000);
+    child.once('close', () => { clearTimeout(t1); clearTimeout(t2); });
+}
+
+function stopRecordingSession(sessionId, setEndTime = true) {
+    const rec = activeRecordings[sessionId];
+    if (!rec) return 0;
+    delete activeRecordings[sessionId];
+    clearInterval(rec.lateJoinWatcher);
+
+    let stopped = 0;
+    for (const [channel, r] of rec.channels) {
+        streamManager.removeSubscriber(channel, r.sub);
+        if (r.child && r.child.exitCode === null) {
+            stopped++;
+            gracefulStopRecorder(r.child);
+        }
+    }
+    if (setEndTime) {
+        // Antes la sesión anterior se quedaba sin end_time al empezar otra (duración infinita en la UI)
+        db.run('UPDATE recording_sessions SET end_time = ? WHERE id = ? AND end_time IS NULL', [new Date().toISOString(), sessionId]);
+    }
+    console.log(`[REC] Stopped session ${sessionId} (${stopped} processes)`);
+    return stopped;
+}
+
+// Helper: parar TODAS las grabaciones activas (usado antes de iniciar una nueva sesión)
+function stopAllRecordings() {
+    const activeSessions = Object.keys(activeRecordings);
+    activeSessions.forEach(sid => stopRecordingSession(sid));
     return activeSessions.length;
 }
 
@@ -1216,255 +1362,96 @@ app.post('/api/recordings/start', (req, res) => {
             const recDir = path.join(detected, 'recordings');
             try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) { }
             mediaRoot = recDir;
-            // Registrar la ruta de media en express (hot-add)
-            app.use('/media', express.static(mediaRoot, {
-                setHeaders: (res, fp) => {
-                    if (fp.endsWith('.m3u8')) {
-                        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                    }
-                }
-            }));
             console.log(`[STORAGE] Disco detectado al grabar: ${mediaRoot}`);
         } else {
             return res.status(503).json({ error: 'No hay disco externo disponible para grabar. Conecta un USB.' });
         }
     }
 
-    // Parar grabaciones anteriores ANTES de iniciar una nueva
-    const stopped = stopAllRecordings();
-    if (stopped > 0) {
-        console.log(`[REC] Parando ${stopped} sesión(es) activa(s) antes de nueva grabación`);
-    }
+    db.all('SELECT * FROM inputs WHERE enabled = 1', [], (err, inputs) => {
+        if (err || !inputs || inputs.length === 0)
+            return res.status(400).json({ error: 'No active inputs found' });
 
-    const sessionId = Date.now().toString();
-    const startTime = new Date().toISOString();
+        // Parar grabaciones anteriores ANTES de iniciar una nueva
+        const stopped = stopAllRecordings();
+        if (stopped > 0) {
+            console.log(`[REC] Parando ${stopped} sesión(es) activa(s) antes de nueva grabación`);
+        }
 
-    db.run('INSERT INTO recording_sessions (id, start_time, name) VALUES (?, ?, ?)',
-        [sessionId, startTime, req.body.name || 'Global Session'], function (err) {
-            if (err) return res.status(500).json({ error: err.message });
+        const sessionId = Date.now().toString();
+        const startTime = new Date().toISOString();
 
-            db.all('SELECT * FROM inputs WHERE enabled = 1', [], (err, inputs) => {
-                if (err || !inputs || inputs.length === 0)
-                    return res.status(400).json({ error: 'No active inputs found' });
+        db.run('INSERT INTO recording_sessions (id, start_time, name) VALUES (?, ?, ?)',
+            [sessionId, startTime, req.body.name || 'Global Session'], function (err) {
+                if (err) return res.status(500).json({ error: err.message });
 
-                const { spawn } = require('child_process');
-                const ffmpegCmd = streamManager.getFFmpegPath();
+                const rec = { mediaRoot, channels: new Map(), lateJoinWatcher: null };
+                activeRecordings[sessionId] = rec;
 
-                activeRecordingProcs[sessionId] = [];
-                activeRecordingProcs[sessionId].sockets = []; // cleanup sockets on stop
-                activeRecordingProcs[sessionId].recordingChannels = new Set(); // canales ya en grabación
-
-                // ── Función reutilizable: iniciar grabación de un canal individual ──
-                function startRecordingChannel(input) {
-                    const inputState = streamManager.activeInputs[input.channel];
-                    if (!inputState || !inputState.router) return false;
-                    if (!activeRecordingProcs[sessionId]) return false;
-                    if (activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) return false;
-
-                    const hlsPath = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.m3u8`);
-                    const mp4Path = path.join(mediaRoot, `CAM_${input.channel}_${sessionId}.mp4`);
-
-                    const codec = inputState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[input.channel]) || '';
-                    // Passthrough puro para TODAS las cámaras — sin transcodificación.
-                    // H.265 en HLS funciona en navegadores modernos y evita crash de FFmpeg por GPU/CPU.
-                    const hlsCodecArgs = ['-c:v', 'copy'];
-
-                    const args = [
-                        '-hide_banner', '-y',
-                        '-fflags', '+genpts',
-                        '-err_detect', 'ignore_err',
-                        '-probesize', '500000',
-                        '-analyzeduration', '500000',
-                        '-thread_queue_size', '4096',
-                        '-f', 'mpegts',
-                        '-i', '-'
-                    ];
-
-                    const hlsOutArgs = [
-                        '-map', '0:v?', '-map', '0:a?',
-                        ...hlsCodecArgs,
-                        '-c:a', 'aac', '-b:a', '128k',
-                        '-hls_time', '2',
-                        '-hls_list_size', '0',
-                        '-hls_segment_type', 'mpegts',
-                        '-f', 'hls', hlsPath
-                    ];
-
-                    const mp4OutArgs = [
-                        '-map', '0:v?', '-map', '0:a?',
-                        '-c:v', 'copy',
-                        '-c:a', 'aac', '-b:a', '128k',
-                        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-                        '-f', 'mp4', mp4Path
-                    ];
-
-                    args.push(...hlsOutArgs, ...mp4OutArgs);
-
-                    console.log(`[REC-START] Session ${sessionId} ch${input.channel} via stdin`);
-                    const child = spawn(ffmpegCmd, args);
-
-                    let lastRecLog = 0;
-                    child.stderr.on('data', d => {
-                        const text = d.toString();
-                        const isKnownNoise = /PPS id out of range|Skipping invalid undecodable NALU|aac_adtstoasc|Last message repeated|Malformed AAC|Error parsing NAL unit|hevc/i.test(text);
-                        if (isKnownNoise) return;
-                        const isImportant = /error|fail|unable|operation not permitted/i.test(text);
-                        const now = Date.now();
-                        if (isImportant) {
-                            const line = text.split('\n')[0].trim();
-                            if (line) broadCastLog('WARN', `[REC-${sessionId}|ch${input.channel}] ${line}`);
-                        } else if (now - lastRecLog > 8000) {
-                            lastRecLog = now;
-                        }
-                    });
-                    const recStartTime = Date.now();
-                    let didFallback = false;
-
-                    child.on('exit', code => {
-                        broadCastLog('INFO', `[REC-${sessionId}] ch${input.channel} FFmpeg exited ${code}`);
-
-                        const elapsed = Date.now() - recStartTime;
-                        if (code !== 0 && code !== null && elapsed < 4000 && streamManager.nvencAvailable && !didFallback) {
-                            broadCastLog('WARN', `⚠️ [REC-${sessionId}] Fallo de decodificador GPU en grabación para canal ${input.channel}. Reintentando con CPU de forma segura...`);
-                            didFallback = true;
-
-                            const cleanArgs = args.filter(arg => !['-hwaccel', 'cuda', '-hwaccel_output_format', '-c:v', 'hevc_cuvid'].includes(arg));
-                            const fallbackChild = spawn(ffmpegCmd, cleanArgs);
-
-                            if (activeRecordingProcs[sessionId]) {
-                                const pIdx = activeRecordingProcs[sessionId].indexOf(child);
-                                if (pIdx !== -1) {
-                                    activeRecordingProcs[sessionId][pIdx] = fallbackChild;
-                                } else {
-                                    activeRecordingProcs[sessionId].push(fallbackChild);
-                                }
-
-                                fallbackChild.on('exit', fCode => {
-                                    broadCastLog('INFO', `[REC-${sessionId}-FALLBACK] ch${input.channel} FFmpeg exited ${fCode}`);
-                                    if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
-                                        activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
-                                    }
-                                });
-
-                                fallbackChild.stdin.on('error', () => { });
-                                const fallbackSub = {
-                                    write(chunk) {
-                                        try {
-                                            if (!fallbackChild.killed && fallbackChild.stdin && fallbackChild.stdin.writable) {
-                                                fallbackChild.stdin.write(chunk);
-                                            }
-                                        } catch (e) { }
-                                    }
-                                };
-                                const routerState2 = streamManager.activeInputs[input.channel];
-                                if (routerState2 && routerState2.router) {
-                                    routerState2.router.subscribers.add(fallbackSub);
-                                }
-                                activeRecordingProcs[sessionId].sockets.push({ sock: fallbackSub, channel: input.channel, isDirectObj: true });
-                            }
-                        } else {
-                            // Limpiar el canal para que el watcher pueda intentar reiniciarlo si la cámara vuelve
-                            if (activeRecordingProcs[sessionId] && activeRecordingProcs[sessionId].recordingChannels) {
-                                activeRecordingProcs[sessionId].recordingChannels.delete(input.channel);
-                            }
-                        }
-                    });
-
-                    activeRecordingProcs[sessionId].push(child);
-
-                    child.stdin.on('error', () => { });
-                    const subObj = {
-                        write(chunk) {
-                            try {
-                                if (!child.killed && child.stdin && child.stdin.writable) {
-                                    child.stdin.write(chunk);
-                                }
-                            } catch (e) { }
-                        }
-                    };
-                    const routerState = streamManager.activeInputs[input.channel];
-                    if (routerState && routerState.router) {
-                        routerState.router.subscribers.add(subObj);
-                    }
-                    activeRecordingProcs[sessionId].sockets.push({ sock: subObj, channel: input.channel, isDirectObj: true });
-
-                    db.run(`INSERT OR REPLACE INTO session_files
-                    (session_id, channel, hls_path, mp4_path) VALUES (?,?,?,?)`,
-                        [sessionId, input.channel, hlsPath, mp4Path]);
-
-                    activeRecordingProcs[sessionId].recordingChannels.add(input.channel);
-                    return true;
-                }
-
-                // ── Iniciar grabación de todos los canales disponibles ahora ──
+                // ── Iniciar grabación de todos los canales con señal ahora ──
                 let startedCount = 0;
                 inputs.forEach(input => {
-                    const ok = startRecordingChannel(input);
-                    if (ok) startedCount++;
-                    else console.log(`[REC] Ch${input.channel} router not active — will retry later`);
+                    if (startChannelRecorder(sessionId, rec, input.channel)) startedCount++;
+                    else console.log(`[REC] Ch${input.channel} sin señal todavía — se unirá en cuanto llegue`);
                 });
 
-                // ── Watcher: comprobar cada 10s si hay canales que se reconectaron y añadirlos ──
-                const lateJoinWatcher = setInterval(() => {
-                    if (!activeRecordingProcs[sessionId]) {
-                        clearInterval(lateJoinWatcher);
-                        return;
-                    }
-                    inputs.forEach(input => {
-                        if (!activeRecordingProcs[sessionId].recordingChannels.has(input.channel)) {
-                            const inputState = streamManager.activeInputs[input.channel];
-                            if (inputState && inputState.router) {
-                                console.log(`[REC-LATE-JOIN] Ch${input.channel} reconectada — iniciando grabación tardía`);
-                                broadCastLog('INFO', `📹 Canal ${input.channel} reconectado, grabación iniciada tardíamente`);
-                                startRecordingChannel(input);
-                            }
+                // ── Watcher: cada 3 s, unir cámaras que (re)conectan y reanudar grabadores caídos ──
+                rec.lateJoinWatcher = setInterval(() => {
+                    if (activeRecordings[sessionId] !== rec) return clearInterval(rec.lateJoinWatcher);
+                    for (const ch of Object.keys(streamManager.activeInputs)) {
+                        const channel = Number(ch);
+                        const r = rec.channels.get(channel);
+                        if (r && r.child) continue;
+                        const resumed = !!r;
+                        if (startChannelRecorder(sessionId, rec, channel)) {
+                            broadCastLog('INFO', resumed
+                                ? `📹 Canal ${channel}: grabación reanudada (continúa en la misma playlist)`
+                                : `📹 Canal ${channel} conectado, grabación iniciada tardíamente`);
                         }
-                    });
-                }, 10000);
-                // Guardar referencia al watcher para limpiarlo al parar
-                activeRecordingProcs[sessionId].lateJoinWatcher = lateJoinWatcher;
+                    }
+                }, 3000);
 
                 io.emit('db_update', { event: 'recordings_started', session_id: sessionId });
                 res.json({ session_id: sessionId, start_time: startTime, message: `Started ${startedCount}/${inputs.length} recordings.` });
             });
-        });
+    });
 });
 
 app.post('/api/recordings/stop/:sessionId', (req, res) => {
     const sessionId = req.params.sessionId;
-    const session = activeRecordingProcs[sessionId] || [];
-    const procs = Array.isArray(session) ? session : [];
-    const sockets = session.sockets || [];
-
-    // Parar watcher de reconexión tardía
-    if (session.lateJoinWatcher) {
-        clearInterval(session.lateJoinWatcher);
-    }
-
-    // Desconectar sockets del router
-    sockets.forEach(({ sock, channel }) => {
-        try { sock.destroy(); } catch (e) { }
-        if (streamManager.activeInputs[channel] && streamManager.activeInputs[channel].router) {
-            streamManager.activeInputs[channel].router.subscribers.delete(sock);
-        }
-    });
-
-    // Matar procesos FFmpeg
-    procs.forEach(child => {
-        try { child.stdin.write('q'); } catch (e) { }
-        try { child.kill('SIGTERM'); } catch (e) { }
-    });
-    delete activeRecordingProcs[sessionId];
+    const stopped = stopRecordingSession(sessionId, false);
 
     // Update end_time
     const endTime = new Date().toISOString();
     db.run('UPDATE recording_sessions SET end_time = ? WHERE id = ?',
         [endTime, sessionId], function (err) {
             io.emit('db_update', { event: 'outputs_changed' });
-            res.json({ stopped: procs.length, session_id: sessionId, end_time: endTime });
+            res.json({ stopped, session_id: sessionId, end_time: endTime });
         });
 });
 
+// Al arrancar: sesiones que quedaron abiertas por un reinicio/corte de luz se cierran con
+// la hora del último fichero escrito (si no, su duración crecía indefinidamente en la UI).
+function closeDanglingSessions() {
+    db.all('SELECT id, start_time FROM recording_sessions WHERE end_time IS NULL', [], (err, sessions) => {
+        if (err || !sessions) return;
+        sessions.forEach(s => {
+            if (activeRecordings[s.id]) return;
+            db.all('SELECT hls_path, mp4_path FROM session_files WHERE session_id = ?', [s.id], async (e, files) => {
+                let last = 0;
+                for (const f of files || []) {
+                    for (const p of [f.hls_path, f.mp4_path]) {
+                        if (!p) continue;
+                        try { last = Math.max(last, (await fs.promises.stat(p)).mtimeMs); } catch (_) { }
+                    }
+                }
+                const end = last ? new Date(last).toISOString() : s.start_time;
+                db.run('UPDATE recording_sessions SET end_time = ? WHERE id = ? AND end_time IS NULL', [end, s.id]);
+                console.log(`[REC] Sesión ${s.id} había quedado abierta; cerrada en ${end}`);
+            });
+        });
+    });
+}
 
 // ── EventSource SSE para el progreso de exportación en tiempo real ─────────────
 let exportProgressClients = [];
@@ -1557,6 +1544,24 @@ app.post('/api/recordings/export', (req, res) => {
                     console.error(`[EXPORT] Archivo fuente no encontrado. ${detail}`);
                     return res.status(404).json({ error: 'Archivo de grabación no encontrado en disco', detail });
                 }
+
+                // Playlist HLS aún en grabación (sin #EXT-X-ENDLIST): FFmpeg la trataría como un
+                // directo (empieza por los últimos segmentos y no admite -ss). Se exporta desde una
+                // copia cerrada como VOD, en la misma carpeta para que resuelva los segmentos.
+                let tempPlaylist = null;
+                if (sourcePath.endsWith('.m3u8')) {
+                    try {
+                        const playlistText = fs.readFileSync(sourcePath, 'utf8');
+                        if (!playlistText.includes('#EXT-X-ENDLIST')) {
+                            tempPlaylist = sourcePath.replace(/\.m3u8$/, `.export_${Date.now()}.m3u8`);
+                            fs.writeFileSync(tempPlaylist, playlistText.trimEnd() + '\n#EXT-X-ENDLIST\n');
+                            sourcePath = tempPlaylist;
+                        }
+                    } catch (e) {
+                        console.error(`[EXPORT] No se pudo preparar la playlist HLS: ${e.message}`);
+                    }
+                }
+                const removeTempPlaylist = () => { if (tempPlaylist) fs.unlink(tempPlaylist, () => { }); };
 
                 console.log(`[EXPORT] Fuente: ${sourcePath}`);
 
@@ -1674,7 +1679,9 @@ app.post('/api/recordings/export', (req, res) => {
                 let stderrLines = [];
                 let child;
                 try {
-                    child = spawn(ffmpegBin, args);
+                    child = spawn(ffmpegBin, args, { windowsHide: true });
+                    // Prioridad baja: la recodificación a H.264 no debe quitar CPU a ingesta/grabación
+                    streamManager.lowerPriority(child);
                 } catch (spawnErr) {
                     console.error(`[EXPORT] Error al lanzar FFmpeg: ${spawnErr.message}`);
                     broadcastExportProgress({
@@ -1731,6 +1738,7 @@ app.post('/api/recordings/export', (req, res) => {
                 });
 
                 child.on('error', (err) => {
+                    removeTempPlaylist();
                     console.error(`[EXPORT] FFmpeg spawn error: ${err.message}`);
                     broadcastExportProgress({
                         clip_id: clip_id || null, channel, session_id, progress: 0,
@@ -1740,6 +1748,8 @@ app.post('/api/recordings/export', (req, res) => {
                 });
 
                 child.on('close', code => {
+                    clearTimeout(exportTimer);
+                    removeTempPlaylist();
                     try {
                         const lastErr = stderrLines.slice(-3).join(' | ');
                         if (code === 0) {
@@ -1782,21 +1792,23 @@ app.post('/api/recordings/export', (req, res) => {
                     }
                 });
 
-                // Timeout de seguridad: si FFmpeg no responde en 120s, matar y devolver error
-                setTimeout(() => {
+                // Timeout de seguridad proporcional a la duración del clip (antes 120 s fijos:
+                // un clip largo se mataba a medias aunque la exportación progresara bien)
+                const exportTimeoutMs = Math.max(120000, Math.round(clipDuration * 4000) + 60000);
+                const exportTimer = setTimeout(() => {
                     if (!responded) {
-                        console.error(`[EXPORT] Timeout 120s — matando FFmpeg`);
+                        console.error(`[EXPORT] Timeout ${exportTimeoutMs / 1000}s — matando FFmpeg`);
                         try { child.kill('SIGKILL'); } catch (_) { }
                         broadcastExportProgress({
                             clip_id: clip_id || null, channel, session_id, progress: 0,
-                            status: 'error', error: 'Tiempo de espera agotado (120s)'
+                            status: 'error', error: `Tiempo de espera agotado (${exportTimeoutMs / 1000}s)`
                         });
                         safeRespond(() => res.status(504).json({
-                            error: 'Tiempo de espera agotado (120s). El clip puede ser demasiado largo o el disco demasiado lento.',
+                            error: `Tiempo de espera agotado (${exportTimeoutMs / 1000}s). El disco puede ser demasiado lento.`,
                             detail: stderrLines.slice(-3).join(' | ')
                         }));
                     }
-                }, 120000);
+                }, exportTimeoutMs);
 
             } catch (asyncErr) {
                 console.error(`[EXPORT] Error inesperado en callback: ${asyncErr.stack || asyncErr.message}`);
@@ -1939,8 +1951,73 @@ app.delete('/api/recordings/:id/clips', (req, res) => {
     });
 });
 
+// Borra del disco todos los ficheros de las sesiones (playlist, segmentos .ts, MP4 y copias
+// temporales de exportación) de forma ASÍNCRONA. Antes se hacía con readdirSync/unlinkSync
+// sobre una carpeta con decenas de miles de segmentos, bloqueando el event loop (y con él la
+// grabación en curso) durante segundos.
+async function deleteSessionFiles(sessionIds) {
+    const placeholders = sessionIds.map(() => '?').join(',');
+    const rows = await new Promise(resolve => {
+        db.all(`SELECT hls_path, mp4_path FROM session_files WHERE session_id IN (${placeholders})`, sessionIds,
+            (err, r) => resolve(err ? [] : (r || [])));
+    });
+    const prefixesByDir = new Map();
+    for (const f of rows) {
+        for (const p of [f.hls_path, f.mp4_path]) {
+            if (!p) continue;
+            const dir = path.dirname(p);
+            if (!prefixesByDir.has(dir)) prefixesByDir.set(dir, new Set());
+            prefixesByDir.get(dir).add(path.basename(p).replace(/\.(m3u8|mp4)$/i, ''));
+        }
+    }
+    let removed = 0;
+    for (const [dir, prefixes] of prefixesByDir) {
+        let names;
+        try { names = await fs.promises.readdir(dir); } catch (_) { continue; }
+        const targets = names.filter(n => /\.(ts|m3u8|mp4)$/i.test(n) && [...prefixes].some(pre => n.startsWith(pre)));
+        for (let i = 0; i < targets.length; i += 64) {
+            await Promise.all(targets.slice(i, i + 64).map(n =>
+                fs.promises.unlink(path.join(dir, n)).then(() => { removed++; }, () => { })));
+        }
+    }
+    return removed;
+}
+
+// Borrado en cascada de sesiones completas (grabadores, ficheros y DB)
+async function deleteSessions(sessionIds) {
+    // Nunca borrar ficheros bajo un FFmpeg que sigue escribiendo: parar y esperar su cierre
+    const exiting = [];
+    for (const id of sessionIds) {
+        const rec = activeRecordings[String(id)];
+        if (rec) {
+            for (const r of rec.channels.values()) {
+                if (r.child && r.child.exitCode === null) {
+                    exiting.push(new Promise(ok => { r.child.once('close', ok); setTimeout(ok, 8000); }));
+                }
+            }
+        }
+        stopRecordingSession(String(id));
+    }
+    await Promise.all(exiting);
+
+    const removedFiles = await deleteSessionFiles(sessionIds);
+    const placeholders = sessionIds.map(() => '?').join(',');
+    return new Promise((resolve, reject) => {
+        // Borrado en cascada manual de las tablas asociadas para evitar conflictos de Foreign Key
+        db.serialize(() => {
+            db.run(`DELETE FROM markers WHERE session_id IN (${placeholders})`, sessionIds);
+            db.run(`DELETE FROM clips WHERE session_id IN (${placeholders})`, sessionIds);
+            db.run(`DELETE FROM session_files WHERE session_id IN (${placeholders})`, sessionIds);
+            db.run(`DELETE FROM recording_sessions WHERE id IN (${placeholders})`, sessionIds, function (err) {
+                if (err) return reject(err);
+                resolve({ deletedSessions: this.changes, removedFiles });
+            });
+        });
+    });
+}
+
 // Borrado múltiple / por lotes (seleccionar clips o todo)
-app.post('/api/recordings/batch-delete', (req, res) => {
+app.post('/api/recordings/batch-delete', async (req, res) => {
     const { sessionIds, onlyClips } = req.body;
     if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
         return res.status(400).json({ success: false, error: 'Lista de sesiones vacía' });
@@ -1956,44 +2033,16 @@ app.post('/api/recordings/batch-delete', (req, res) => {
             console.log(`[DB] Borrado múltiple: ${this.changes} clips eliminados de ${sessionIds.length} sesiones.`);
             return res.json({ success: true, deletedClips: this.changes });
         });
-    } else {
-        // Intentar limpiar del disco los archivos mp4 y hls/ts asociados
-        db.all(`SELECT hls_path, mp4_path FROM session_files WHERE session_id IN (${placeholders})`, sessionIds, (errFiles, files) => {
-            if (!errFiles && Array.isArray(files)) {
-                files.forEach(f => {
-                    try {
-                        if (f.mp4_path && fs.existsSync(f.mp4_path)) fs.unlinkSync(f.mp4_path);
-                    } catch (e) { }
-                    try {
-                        if (f.hls_path && fs.existsSync(f.hls_path)) {
-                            fs.unlinkSync(f.hls_path);
-                            const hlsDir = path.dirname(f.hls_path);
-                            const baseName = path.basename(f.hls_path, '.m3u8');
-                            if (fs.existsSync(hlsDir)) {
-                                const dirFiles = fs.readdirSync(hlsDir);
-                                dirFiles.filter(name => name.startsWith(baseName) && name.endsWith('.ts')).forEach(tsFile => {
-                                    try { fs.unlinkSync(path.join(hlsDir, tsFile)); } catch (e) { }
-                                });
-                            }
-                        }
-                    } catch (e) { }
-                });
-            }
+        return;
+    }
 
-            db.serialize(() => {
-                db.run(`DELETE FROM markers WHERE session_id IN (${placeholders})`, sessionIds);
-                db.run(`DELETE FROM clips WHERE session_id IN (${placeholders})`, sessionIds);
-                db.run(`DELETE FROM session_files WHERE session_id IN (${placeholders})`, sessionIds);
-                db.run(`DELETE FROM recording_sessions WHERE id IN (${placeholders})`, sessionIds, function (err) {
-                    if (err) {
-                        console.error('[DB] Error en borrado múltiple de sesiones:', err.message);
-                        return res.status(500).json({ success: false, error: err.message });
-                    }
-                    console.log(`[DB] Borrado múltiple: ${this.changes} sesiones eliminadas por completo.`);
-                    return res.json({ success: true, deletedSessions: this.changes });
-                });
-            });
-        });
+    try {
+        const { deletedSessions, removedFiles } = await deleteSessions(sessionIds);
+        console.log(`[DB] Borrado múltiple: ${deletedSessions} sesiones eliminadas por completo (${removedFiles} ficheros).`);
+        res.json({ success: true, deletedSessions });
+    } catch (err) {
+        console.error('[DB] Error en borrado múltiple de sesiones:', err.message);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -2014,47 +2063,16 @@ app.post('/api/clips/batch-delete', (req, res) => {
     });
 });
 
-app.delete('/api/recordings/:id', (req, res) => {
+app.delete('/api/recordings/:id', async (req, res) => {
     const sessionId = req.params.id;
-
-    // Intentar limpiar ficheros en disco
-    db.all('SELECT hls_path, mp4_path FROM session_files WHERE session_id = ?', [sessionId], (errFiles, files) => {
-        if (!errFiles && Array.isArray(files)) {
-            files.forEach(f => {
-                try {
-                    if (f.mp4_path && fs.existsSync(f.mp4_path)) fs.unlinkSync(f.mp4_path);
-                } catch (e) { }
-                try {
-                    if (f.hls_path && fs.existsSync(f.hls_path)) {
-                        fs.unlinkSync(f.hls_path);
-                        const hlsDir = path.dirname(f.hls_path);
-                        const baseName = path.basename(f.hls_path, '.m3u8');
-                        if (fs.existsSync(hlsDir)) {
-                            const dirFiles = fs.readdirSync(hlsDir);
-                            dirFiles.filter(name => name.startsWith(baseName) && name.endsWith('.ts')).forEach(tsFile => {
-                                try { fs.unlinkSync(path.join(hlsDir, tsFile)); } catch (e) { }
-                            });
-                        }
-                    }
-                } catch (e) { }
-            });
-        }
-
-        // Borrado en cascada manual de las tablas asociadas para evitar conflictos de Foreign Key
-        db.serialize(() => {
-            db.run('DELETE FROM markers WHERE session_id = ?', [sessionId]);
-            db.run('DELETE FROM clips WHERE session_id = ?', [sessionId]);
-            db.run('DELETE FROM session_files WHERE session_id = ?', [sessionId]);
-            db.run('DELETE FROM recording_sessions WHERE id = ?', [sessionId], function (err) {
-                if (err) {
-                    console.error(`[DB] Error al eliminar sesión ${sessionId}:`, err.message);
-                    return res.status(500).json({ success: false, error: err.message });
-                }
-                console.log(`[DB] Sesión ${sessionId} eliminada con éxito en cascada.`);
-                res.json({ success: true, message: `Sesión ${sessionId} eliminada con éxito.` });
-            });
-        });
-    });
+    try {
+        const { removedFiles } = await deleteSessions([sessionId]);
+        console.log(`[DB] Sesión ${sessionId} eliminada con éxito en cascada (${removedFiles} ficheros).`);
+        res.json({ success: true, message: `Sesión ${sessionId} eliminada con éxito.` });
+    } catch (err) {
+        console.error(`[DB] Error al eliminar sesión ${sessionId}:`, err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // ── Markers ─────────────────────────────────────────
@@ -2285,10 +2303,11 @@ app.get('/api/disks', async (req, res) => {
                         }
 
                         try {
+                            // (antes estas tres variables no se declaraban y se creaban como globales implícitas)
                             const stat = fs.statfsSync(subPath);
-                            totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
-                            freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
-                            usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
+                            const totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(1);
+                            const freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
+                            const usedPct = Math.round(((stat.blocks - stat.bfree) / stat.blocks) * 100);
                             if (stat.blocks > 0) {
                                 seenPaths.add(resolvedSub);
                                 drives.push({
@@ -2309,25 +2328,40 @@ app.get('/api/disks', async (req, res) => {
         }
 
         // C) Detección de particiones USB mediante lsblk y auto-montaje de las que no estén montadas
+        // Asíncrono: antes eran execSync (hasta 2,5 s + 3 s por partición) que congelaban el
+        // event loop y con él la grabación y los visores en directo.
+        const mountPartition = async (device, targetDir) => {
+            for (const extra of [[], ['-t', 'ntfs-3g'], ['-t', 'vfat'], ['-t', 'exfat']]) {
+                try {
+                    await execFileAsync('mount', [...extra, device, targetDir], { timeout: 3000 });
+                    return true;
+                } catch (_) { }
+            }
+            return false;
+        };
+        const isSystemMount = (mnt) => SKIP_PFX.some(p => mnt === p || mnt.startsWith(p + '/'));
         try {
-            const { execSync } = require('child_process');
-            const lsblkOut = execSync('lsblk -J -b -o NAME,PATH,LABEL,MOUNTPOINT,FSTYPE,SIZE,TRAN,RM,TYPE 2>/dev/null', { timeout: 2500 }).toString();
+            const { stdout: lsblkOut } = await execFileAsync('lsblk', ['-J', '-b', '-o', 'NAME,PATH,LABEL,MOUNTPOINT,FSTYPE,SIZE,TRAN,RM,TYPE'], { timeout: 2500 });
             const lsblkData = JSON.parse(lsblkOut);
             if (lsblkData && Array.isArray(lsblkData.blockdevices)) {
                 for (const dev of lsblkData.blockdevices) {
-                    const isUsb = dev.tran === 'usb' || dev.rm === true || dev.rm === '1' || (dev.name && dev.name.startsWith('sd') && !dev.mountpoint?.startsWith('/boot'));
+                    const isRemovable = dev.tran === 'usb' || dev.rm === true || dev.rm === '1';
+                    const isUsb = isRemovable || (dev.name && dev.name.startsWith('sd'));
                     if (!isUsb) continue;
 
                     const parts = Array.isArray(dev.children) && dev.children.length > 0 ? dev.children : [dev];
                     for (const p of parts) {
-                        if (p.fstype && !SKIP_FS.has(p.fstype)) {
+                        if (p.fstype && p.fstype !== 'swap' && !SKIP_FS.has(p.fstype)) {
+                            // Nunca ofrecer particiones del sistema (/, /boot/efi...) como disco USB:
+                            // en un equipo con disco SATA (sda) el disco del sistema salía en la lista
+                            if (p.mountpoint && isSystemMount(p.mountpoint)) continue;
                             let mountTarget = p.mountpoint;
-                            if (!mountTarget && p.path) {
+                            // Auto-montar solo dispositivos extraíbles, no particiones internas sin montar
+                            if (!mountTarget && p.path && isRemovable) {
                                 const targetDir = `/media/usb_${p.name}`;
                                 try {
                                     fs.mkdirSync(targetDir, { recursive: true });
-                                    execSync(`mount ${p.path} "${targetDir}" 2>/dev/null || mount -t ntfs-3g ${p.path} "${targetDir}" 2>/dev/null || mount -t vfat ${p.path} "${targetDir}" 2>/dev/null || mount -t exfat ${p.path} "${targetDir}" 2>/dev/null`, { timeout: 3000 });
-                                    mountTarget = targetDir;
+                                    if (await mountPartition(p.path, targetDir)) mountTarget = targetDir;
                                 } catch (_) { }
                             }
 
@@ -2478,15 +2512,39 @@ app.post('/api/storage/mkdir', async (req, res) => {
     }
 });
 
-// Explorador de archivos dinámico y seguro (100% async, sin cuelgues)
+// ── Rutas accesibles desde el gestor de archivos ──
+// Antes se validaba con filepath.includes('/media'): pasaban rutas como "/media/../etc/shadow"
+// (el servidor corre como root) o cualquier ruta que contuviera la palabra "media" o "/mnt".
+// Ahora la ruta se resuelve y debe quedar DENTRO de una raíz permitida.
+function getAllowedFileRoots() {
+    const roots = ['/media', '/mnt', '/run/media'];
+    if (mediaRoot) roots.push(mediaRoot);
+    return roots.map(r => path.resolve(r));
+}
+
+function isInsideRoot(target, root) {
+    return target === root || target.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+}
+
+// allowRoot=false: impide operar sobre la propia raíz (p. ej. borrar /mnt entero)
+function resolveAllowedPath(p, { allowRoot = true } = {}) {
+    if (!p || typeof p !== 'string') return null;
+    const resolved = path.resolve(p);
+    const ok = getAllowedFileRoots().some(root => isInsideRoot(resolved, root) && (allowRoot || resolved !== root));
+    return ok ? resolved : null;
+}
+
+// Explorador de archivos dinámico y seguro (100% async, sin cuelgues).
+// ?disk= (panel de administración) limita la navegación hacia arriba a ese disco.
 app.get('/api/files', async (req, res) => {
-    if (!mediaRoot) {
+    const diskRoot = req.query.disk ? resolveAllowedPath(req.query.disk) : null;
+    const baseRoot = diskRoot || (mediaRoot ? path.resolve(mediaRoot) : null);
+    if (!baseRoot) {
         return res.json({ currentPath: '', parentPath: null, items: [] });
     }
 
-    const reqPath = req.query.path || mediaRoot;
-    // Evitar Path Traversal: asegurar que no salimos de mediaRoot ni de rutas autorizadas
-    if (!reqPath.includes(mediaRoot) && !reqPath.includes('/media') && !reqPath.includes('/mnt')) {
+    const reqPath = req.query.path ? resolveAllowedPath(req.query.path) : baseRoot;
+    if (!reqPath) {
         return res.status(403).json({ error: 'Acceso denegado a esa ruta' });
     }
 
@@ -2513,32 +2571,28 @@ app.get('/api/files', async (req, res) => {
         const filesToProcess = files.slice(0, maxFiles);
         const items = [];
 
-        for (const file of filesToProcess) {
-            const fp = path.join(reqPath, file);
-            let isDir = false;
-            let size = 0;
-            let mtime = new Date();
-            try {
-                const stat = await fs.promises.stat(fp);
-                isDir = stat.isDirectory();
-                size = stat.size;
-                mtime = stat.mtime;
-            } catch (e) { continue; } // Saltar archivos inaccesibles
-
-            items.push({
-                name: file,
-                path: fp,
-                isDir,
-                sizeBytes: size,
-                sizeMB: (size / 1e6).toFixed(1),
-                modified: mtime.toISOString()
-            });
+        // stat en lotes paralelos: en un disco USB mecánico 500 stats secuenciales tardaban segundos
+        for (let i = 0; i < filesToProcess.length; i += 32) {
+            await Promise.all(filesToProcess.slice(i, i + 32).map(async (file) => {
+                const fp = path.join(reqPath, file);
+                try {
+                    const stat = await fs.promises.stat(fp);
+                    items.push({
+                        name: file,
+                        path: fp,
+                        isDir: stat.isDirectory(),
+                        sizeBytes: stat.size,
+                        sizeMB: (stat.size / 1e6).toFixed(1),
+                        modified: stat.mtime.toISOString()
+                    });
+                } catch (e) { } // Saltar archivos inaccesibles
+            }));
         }
 
         // Ordenar: carpetas primero, luego por fecha modificación descendente
         items.sort((a, b) => b.isDir - a.isDir || new Date(b.modified) - new Date(a.modified));
 
-        const parentPath = reqPath === mediaRoot ? null : path.dirname(reqPath);
+        const parentPath = reqPath === baseRoot ? null : resolveAllowedPath(path.dirname(reqPath));
         const truncated = files.length > maxFiles;
         res.json({ currentPath: reqPath, parentPath, items, totalFiles: files.length, truncated });
     } catch (e) {
@@ -2546,86 +2600,80 @@ app.get('/api/files', async (req, res) => {
     }
 });
 
-// Borrar archivo individual
-app.post('/api/files/delete', (req, res) => {
-    const { filepath } = req.body;
-    if (!filepath || !fs.existsSync(filepath)) {
+// Borrar archivo o carpeta individual
+app.post('/api/files/delete', async (req, res) => {
+    let { filepath } = req.body || {};
+    // filepath puede venir como /api/media/play?path=...
+    if (filepath && filepath.includes('?path=')) {
+        filepath = decodeURIComponent(filepath.split('?path=')[1]);
+    }
+    if (!filepath) {
         return res.status(400).json({ error: 'Ruta no existe o es inválida' });
     }
-    if (!filepath.includes(mediaRoot) && !filepath.includes('/media') && !filepath.includes('/mnt')) {
+    const target = resolveAllowedPath(filepath, { allowRoot: false });
+    if (!target) {
         return res.status(403).json({ error: 'Acceso denegado' });
     }
 
     try {
-        const stat = fs.statSync(filepath);
-        if (stat.isDirectory()) {
-            fs.rmSync(filepath, { recursive: true, force: true });
-        } else {
-            fs.unlinkSync(filepath);
-        }
+        await fs.promises.rm(target, { recursive: true });
         res.json({ success: true });
     } catch (e) {
+        if (e.code === 'ENOENT') return res.status(400).json({ error: 'Ruta no existe o es inválida' });
         res.status(500).json({ error: e.message });
     }
 });
 
 // Borrado masivo (Seleccionados)
-app.post('/api/files/bulk-delete', (req, res) => {
-    const { filepaths } = req.body;
+app.post('/api/files/bulk-delete', async (req, res) => {
+    const { filepaths } = req.body || {};
     if (!Array.isArray(filepaths)) {
         return res.status(400).json({ error: 'Formato incorrecto. Se requiere array filepaths.' });
     }
 
     let deletedCount = 0;
-    let errors = [];
+    const errors = [];
 
-    filepaths.forEach(filepath => {
-        if (!filepath) return;
-        if (!filepath.includes(mediaRoot) && !filepath.includes('/media') && !filepath.includes('/mnt')) {
-            return errors.push(`Acceso denegado para: ${filepath}`);
+    for (const filepath of filepaths) {
+        if (!filepath) continue;
+        const target = resolveAllowedPath(filepath, { allowRoot: false });
+        if (!target) {
+            errors.push(`Acceso denegado para: ${filepath}`);
+            continue;
         }
         try {
-            if (fs.existsSync(filepath)) {
-                const stat = fs.statSync(filepath);
-                if (stat.isDirectory()) {
-                    fs.rmSync(filepath, { recursive: true, force: true });
-                } else {
-                    fs.unlinkSync(filepath);
-                }
-                deletedCount++;
-            }
+            await fs.promises.rm(target, { recursive: true });
+            deletedCount++;
         } catch (e) {
-            errors.push(`${filepath}: ${e.message}`);
+            if (e.code !== 'ENOENT') errors.push(`${filepath}: ${e.message}`);
         }
-    });
+    }
 
     res.json({ success: true, deleted: deletedCount, errors: errors.length > 0 ? errors : undefined });
 });
 
 // Vaciar disco de grabación (Borrar Todo)
-app.post('/api/files/clean', (req, res) => {
+app.post('/api/files/clean', async (req, res) => {
     if (!mediaRoot || !fs.existsSync(mediaRoot)) {
         return res.status(400).json({ error: 'No hay disco de grabación seleccionado o no está montado' });
     }
+    if (Object.keys(activeRecordings).length > 0) {
+        return res.status(409).json({ error: 'Hay una grabación en curso. Detén la grabación antes de vaciar el disco.' });
+    }
 
     try {
-        const files = fs.readdirSync(mediaRoot);
+        const files = await fs.promises.readdir(mediaRoot);
         let deletedCount = 0;
-        files.forEach(file => {
-            const fp = path.join(mediaRoot, file);
-            // Evitar borrar el propio directorio recordings
-            if (fp !== mediaRoot) {
-                fs.rmSync(fp, { recursive: true, force: true });
-                deletedCount++;
-            }
-        });
+        for (let i = 0; i < files.length; i += 64) {
+            await Promise.all(files.slice(i, i + 64).map(file =>
+                fs.promises.rm(path.join(mediaRoot, file), { recursive: true, force: true })
+                    .then(() => { deletedCount++; }, () => { })));
+        }
         res.json({ success: true, message: `Se han eliminado todos los archivos (${deletedCount} elementos).` });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
-
-
 
 /* =======================================
  *  REST API: LIVE HLS PREVIEW (sin grabar)
@@ -2658,57 +2706,33 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         'Access-Control-Allow-Methods': 'GET, OPTIONS'
     });
 
-    const { spawn } = require('child_process');
-    const ffmpegCmd = streamManager.getFFmpegPath();
-
     const codec = routerState.codec || (streamManager.persistentCodecs && streamManager.persistentCodecs[channel]) || '';
-    const transcodeRequested = req.query.transcode === '1' || req.query.transcode === 'true';
 
     // Decisión de transcodificación:
     // SOLO transcodificar a H.264 si el cliente lo solicita explícitamente con ?transcode=true.
     // Por defecto: Passthrough directo 100% puro en H.265/H.264 sin usar CPU ni lanzar procesos FFmpeg.
-    const mustTranscode = transcodeRequested;
+    const mustTranscode = req.query.transcode === '1' || req.query.transcode === 'true';
 
     if (!mustTranscode) {
         originalLog(`[HTTP-TS-DIRECT] Ch${channel} streaming passthrough directo 0% CPU (codec: ${codec || 'passthrough'})`);
+        // pending() = bytes aún no enviados al cliente: si no consume, el router lo desconecta
         const subObj = {
-            writableLength: 0,
-            write(chunk) {
-                try {
-                    res.write(chunk);
-                } catch (e) { }
-            },
-            destroy() {
-                try { res.end(); } catch (e) { }
-            }
+            kind: 'viewer',
+            write(chunk) { res.write(chunk); },
+            pending() { return res.writableLength; },
+            destroy() { try { res.destroy(); } catch (e) { } }
         };
-
-        routerState.router.subscribers.add(subObj);
-
-        const cleanup = () => {
-            if (routerState && routerState.router) {
-                routerState.router.subscribers.delete(subObj);
-            }
-            try { res.end(); } catch (e) { }
-        };
-
-        req.on('close', cleanup);
+        streamManager.addSubscriber(channel, subObj);
+        req.on('close', () => streamManager.removeSubscriber(channel, subObj));
         return;
     }
 
     // Si se solicitó transcodificación explícita (?transcode=true)
     const isHevc = codec === 'H.265' || codec === 'HEVC' || codec.includes('265');
     const useGpu = streamManager.nvencAvailable && isHevc;
-    const encoderType = useGpu ? 'GPU NVENC' : 'CPU libx264';
-    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando -> H.264 (${encoderType}, codec fuente: ${codec || 'desconocido'})`);
+    originalLog(`[HTTP-TS-TRANSCODE] Ch${channel} transcodificando -> H.264 (${useGpu ? 'GPU NVENC' : 'CPU libx264'}, codec fuente: ${codec || 'desconocido'})`);
 
-    const encoderArgs = streamManager.getH264EncoderArgs({
-        scale: '-2:720',
-        cq: 28,
-        hwaccel: useGpu ? 'cuda' : undefined
-    });
-
-    const args = [
+    const buildArgs = (gpu) => [
         '-hide_banner',
         '-y',
         '-fflags', '+genpts+discardcorrupt',
@@ -2718,7 +2742,7 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         '-f', 'mpegts',
         '-i', '-',
         '-map', '0:v?', '-map', '0:a?',
-        ...encoderArgs,
+        ...streamManager.getH264EncoderArgs({ scale: '-2:720', cq: 28, hwaccel: gpu ? 'cuda' : undefined }),
         '-g', '15',
         '-keyint_min', '15',
         '-sc_threshold', '0',
@@ -2729,108 +2753,47 @@ app.get('/api/preview/ts/:channel', (req, res) => {
         '-'
     ];
 
-    const tsStartTime = Date.now();
-    let child = spawn(ffmpegCmd, args);
-    let didTsFallback = false;
-
-    if (child.stdin) {
-        child.stdin.on('error', (err) => {
-            // Silenciar tuberías rotas
+    let clientGone = false;
+    let current = null;
+    const launch = (gpu) => {
+        const startedAt = Date.now();
+        const child = spawn(streamManager.getFFmpegPath(), buildArgs(gpu), { windowsHide: true });
+        streamManager.lowerPriority(child);
+        child.stdin.on('error', () => { }); // Silenciar tuberías rotas
+        child.on('error', (err) => {
+            originalLog(`[HTTP-TS] Ch${channel} error de proceso FFmpeg: ${err.message}`);
         });
-    }
-    child.on('error', (err) => {
-        originalLog(`[HTTP-TS] Ch${channel} error de proceso FFmpeg: ${err.message}`);
-    });
 
-    let subObj = {
-        writableLength: 0,
-        write(chunk) {
-            if (child.killed || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
-            this.writableLength = child.stdin.writableLength;
-            try {
-                child.stdin.write(chunk);
-            } catch (e) { }
-        },
-        destroy() {
-            try { child.kill('SIGKILL'); } catch (e) { }
-        }
-    };
+        const sub = {
+            kind: 'viewer',
+            write(chunk) { if (child.stdin.writable) child.stdin.write(chunk); },
+            pending() { return child.stdin.writableLength; },
+            destroy() { try { child.kill('SIGKILL'); } catch (e) { } }
+        };
+        streamManager.addSubscriber(channel, sub);
+        // pipe() aplica backpressure: si el cliente es lento, FFmpeg se frena y el router lo corta
+        child.stdout.pipe(res, { end: false });
+        current = { child, sub };
 
-    routerState.router.subscribers.add(subObj);
-    child.stdout.pipe(res);
-
-    const cleanup = () => {
-        if (routerState && routerState.router) {
-            routerState.router.subscribers.delete(subObj);
-        }
-        try { child.kill('SIGKILL'); } catch (e) { }
-        originalLog(`[HTTP-TS] Ch${channel} finalizado`);
-    };
-
-    req.on('close', cleanup);
-
-    child.on('close', (code) => {
-        const elapsed = Date.now() - tsStartTime;
-        if (code !== 0 && code !== null && elapsed < 2000 && mustTranscode && streamManager.nvencAvailable && !didTsFallback) {
-            originalLog(`⚠️ [HTTP-TS] Fallo de GPU en transcodificación en vivo para Ch${channel}. Relanzando usando CPU...`);
-            didTsFallback = true;
-
-            // Generar argumentos H.264 limpios para CPU desde cero
-            const finalArgs = [
-                '-hide_banner',
-                '-y',
-                '-fflags', '+genpts+discardcorrupt',
-                '-err_detect', 'ignore_err',
-                '-probesize', '500000',
-                '-analyzeduration', '500000',
-                '-f', 'mpegts',
-                '-i', '-',
-                '-map', '0:v?', '-map', '0:a?',
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p',
-                '-g', '15',
-                '-keyint_min', '15',
-                '-sc_threshold', '0',
-                '-r', '30',
-                '-c:a', 'aac',
-                '-b:a', '128k',
-                '-f', 'mpegts',
-                '-'
-            ];
-
-            // Eliminar al suscriptor antiguo de la lista
-            if (routerState && routerState.router) {
-                routerState.router.subscribers.delete(subObj);
+        child.on('close', (code) => {
+            streamManager.removeSubscriber(channel, sub);
+            if (clientGone) return;
+            if (gpu && code !== 0 && code !== null && Date.now() - startedAt < 2000) {
+                originalLog(`⚠️ [HTTP-TS] Fallo de GPU en transcodificación en vivo para Ch${channel}. Relanzando usando CPU...`);
+                return launch(false);
             }
-
-            // Iniciar nuevo proceso transcodificador seguro en CPU
-            const fallbackChild = spawn(ffmpegCmd, finalArgs);
-            child = fallbackChild;
-
-            subObj = {
-                writableLength: 0,
-                write(chunk) {
-                    if (fallbackChild.killed || !fallbackChild.stdin || fallbackChild.stdin.destroyed || !fallbackChild.stdin.writable) return;
-                    this.writableLength = fallbackChild.stdin.writableLength;
-                    try {
-                        fallbackChild.stdin.write(chunk);
-                    } catch (e) { }
-                },
-                destroy() {
-                    try { fallbackChild.kill('SIGKILL'); } catch (e) { }
-                }
-            };
-
-            if (routerState && routerState.router) {
-                routerState.router.subscribers.add(subObj);
-            }
-            fallbackChild.stdout.pipe(res);
-
-            fallbackChild.on('close', () => {
-                if (!res.writableEnded) res.end();
-            });
-        } else {
             if (!res.writableEnded) res.end();
+        });
+    };
+    launch(useGpu);
+
+    req.on('close', () => {
+        clientGone = true;
+        if (current) {
+            streamManager.removeSubscriber(channel, current.sub);
+            try { current.child.kill('SIGKILL'); } catch (e) { }
         }
+        originalLog(`[HTTP-TS] Ch${channel} finalizado`);
     });
 });
 
@@ -2859,10 +2822,11 @@ app.post('/api/disks/wipe', (req, res) => {
     const { disk_path } = req.body;
     if (!disk_path) return res.status(400).json({ error: 'Missing disk_path' });
 
-    // Protección: nunca borrar el disco del sistema operativo
-    const forbidden = ['/', 'C:\\', 'C:', '/usr', '/etc', '/home', '/root', '/var', '/boot', '/sys', '/proc'];
-    const isForbidden = forbidden.some(f => disk_path === f || disk_path.toLowerCase() === f.toLowerCase());
-    if (isForbidden) return res.status(403).json({ error: 'Ruta del sistema protegida. Operación cancelada.' });
+    // Protección: solo discos montados en /media, /mnt, /run/media o el de grabación.
+    // La lista negra anterior dejaba vaciar /opt (la propia aplicación), /srv, /home/usuario...
+    if (!resolveAllowedPath(disk_path, { allowRoot: false })) {
+        return res.status(403).json({ error: 'Ruta del sistema protegida. Operación cancelada.' });
+    }
 
     // Es seguro: borrar contenido del disco
     try {
@@ -2884,76 +2848,6 @@ app.post('/api/disks/wipe', (req, res) => {
     }
 });
 
-
-app.get('/api/files', (req, res) => {
-    const scanPath = req.query.disk;
-    if (!scanPath) return res.json({ currentPath: null, parentPath: null, items: [] });
-
-    let targetPath = req.query.path ? path.resolve(req.query.path) : path.resolve(scanPath);
-
-    // Seguridad: asegurar que targetPath empieza con scanPath o está dentro de las rutas permitidas
-    const resolvedScan = path.resolve(scanPath);
-    const allowedRoots = ['/media', '/mnt', '/run/media'];
-
-    const isAllowed = targetPath === resolvedScan || targetPath.startsWith(resolvedScan + path.sep) ||
-        allowedRoots.some(root => {
-            const resolvedRoot = path.resolve(root);
-            return targetPath === resolvedRoot || targetPath.startsWith(resolvedRoot + path.sep);
-        });
-
-    if (!isAllowed) {
-        return res.status(403).json({ error: 'Acceso denegado a la ruta especificada' });
-    }
-
-    if (!fs.existsSync(targetPath)) {
-        return res.json({ currentPath: targetPath, parentPath: null, items: [] });
-    }
-
-    try {
-        const items = fs.readdirSync(targetPath, { withFileTypes: true });
-        const results = [];
-
-        for (const item of items) {
-            const absolutePath = path.join(targetPath, item.name);
-            try {
-                if (item.isDirectory()) {
-                    if (item.name.startsWith('.')) continue;
-                    results.push({
-                        name: item.name,
-                        isDir: true,
-                        path: absolutePath
-                    });
-                } else if (item.isFile() && item.name.match(/\.(mp4|mkv|ts|flv|m3u8)$/i)) {
-                    const stat = fs.statSync(absolutePath);
-                    results.push({
-                        name: item.name,
-                        isDir: false,
-                        size: stat.size,
-                        date: stat.mtime,
-                        url: `/api/media/play?path=${encodeURIComponent(absolutePath)}`,
-                        absolutePath: absolutePath
-                    });
-                }
-            } catch (statErr) {
-                // Ignorar archivos inaccesibles
-            }
-        }
-
-        const dirs = results.filter(r => r.isDir).sort((a, b) => a.name.localeCompare(b.name));
-        const files = results.filter(r => !r.isDir).sort((a, b) => b.date - a.date);
-
-        const isAtDiskRoot = targetPath === resolvedScan;
-        const parentPath = isAtDiskRoot ? null : path.dirname(targetPath);
-
-        res.json({
-            currentPath: targetPath,
-            parentPath: parentPath,
-            items: [...dirs, ...files]
-        });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
 
 // Nuevo endpoint de copia asíncrona de archivos
 app.post('/api/files/copy', (req, res) => {
@@ -3009,8 +2903,9 @@ app.post('/api/files/copy', (req, res) => {
         let copiedBytes = 0;
         let lastPercent = -1;
 
-        const readStream = fs.createReadStream(resolvedSource);
-        const writeStream = fs.createWriteStream(finalDestPath);
+        // Bloques de 1 MB (por defecto 64 KB): bastante más rápido copiando a pendrives/discos USB
+        const readStream = fs.createReadStream(resolvedSource, { highWaterMark: 1024 * 1024 });
+        const writeStream = fs.createWriteStream(finalDestPath, { highWaterMark: 1024 * 1024 });
 
         io.emit('copy_progress', { filename, progress: 0, status: 'copiando', sourcePath: resolvedSource });
 
@@ -3045,34 +2940,10 @@ app.post('/api/files/copy', (req, res) => {
 
 // Play endpoint para bypasear la restriccion del static de /media a carpetas absolutas del OS como /mnt/usb
 app.get('/api/media/play', (req, res) => {
-    const fpath = req.query.path;
-    if (!fpath || !fs.existsSync(fpath)) return res.status(404).send('Not found');
-    if (!fpath.includes(mediaRoot) && !fpath.includes('/media') && !fpath.includes('/mnt') && !fpath.includes('\\media')) return res.status(403).send('Forbidden area');
-    res.sendFile(fpath);
-});
-
-app.post('/api/files/delete', (req, res) => {
-    const { filepath } = req.body;
-
-    // filepath podria venir como /api/media/play?path=...
-    let absolutePath = filepath;
-    if (filepath && filepath.includes('?path=')) {
-        absolutePath = decodeURIComponent(filepath.split('?path=')[1]);
-    }
-
-    if (!absolutePath || !fs.existsSync(absolutePath)) return res.status(400).json({ error: 'Ruta invalida o no existe' });
-
-    // Evita Path Traversal para proteger sistema
-    if (!absolutePath.includes(mediaRoot) && !absolutePath.includes('/media') && !absolutePath.includes('/mnt') && !absolutePath.includes('\\media')) {
-        return res.status(403).json({ error: 'Acceso denegado a esa ruta' });
-    }
-
-    try {
-        fs.unlinkSync(absolutePath);
-        res.json({ success: true });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
+    const target = resolveAllowedPath(req.query.path);
+    if (!target) return res.status(403).send('Forbidden area');
+    if (!fs.existsSync(target)) return res.status(404).send('Not found');
+    res.sendFile(target);
 });
 
 app.get('/api/ports', (req, res) => {
@@ -3419,6 +3290,7 @@ app.post('/api/terminal/run', (req, res) => {
 function bootActiveStreams() {
     console.log("[BOOT] Iniciando secuencia de encendido escalonado de Streams...");
     setTimeout(() => {
+        closeDanglingSessions();
         db.all('SELECT * FROM inputs WHERE enabled = 1', [], (err, rows) => {
             if (rows && rows.length > 0) {
                 let delayAccumulator = 0;
