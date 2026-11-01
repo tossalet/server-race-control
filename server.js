@@ -157,9 +157,27 @@ if (!fs.existsSync(previewRoot)) {
 }
 
 // ── Media Root: grabaciones en disco externo / NVMe ──────────────────────────
+// /proc/mounts escapa espacios y otros caracteres en octal: "Disco USB" llega como "Disco\040USB".
+// Sin decodificarlo, la app creaba una carpeta literal "Disco\040USB" en el disco del sistema y
+// grababa ahí hasta llenarlo (el equipo dejaba de arrancar el escritorio).
+function decodeMountPath(p) {
+    return p.replace(/\\([0-7]{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+// true si la ruta cae en la partición de "/" (disco del sistema). Una carpeta de /media o /mnt
+// sin un disco montado encima es del sistema: nunca se debe grabar ahí.
+function isOnSystemDisk(p) {
+    if (process.platform !== 'linux') return false;
+    try {
+        let dir = path.resolve(p);
+        while (!fs.existsSync(dir)) dir = path.dirname(dir);
+        return fs.statSync(dir).dev === fs.statSync('/').dev;
+    } catch { return false; }
+}
+
 // Prioridad: 1) MEDIA_ROOT del .env  2) Auto-detect por /proc/mounts  3) null (bloqueado)
 function detectExternalDisk() {
-    if (process.env.MEDIA_ROOT) return process.env.MEDIA_ROOT;
+    if (process.env.MEDIA_ROOT) return isOnSystemDisk(process.env.MEDIA_ROOT) ? null : process.env.MEDIA_ROOT;
     if (process.platform === 'win32') return path.join(__dirname, 'media');
 
     const SKIP_FS = new Set(['tmpfs', 'devtmpfs', 'sysfs', 'proc', 'devpts', 'cgroup',
@@ -177,7 +195,7 @@ function detectExternalDisk() {
                 const parts = line.split(' ');
                 if (parts.length < 3) continue;
                 const device = parts[0];
-                const mountPoint = parts[1];
+                const mountPoint = decodeMountPath(parts[1]);
                 const fsType = parts[2];
 
                 if (!device || !mountPoint || !fsType) continue;
@@ -229,11 +247,14 @@ function initMediaRoot() {
             mediaRoot = null;
             recordingDisabled = true;
             console.log(`[STORAGE] Disco de grabación desactivado por el usuario.`);
-        } else if (row && row.value && fs.existsSync(row.value)) {
+        } else if (row && row.value && fs.existsSync(row.value) && !isOnSystemDisk(row.value)) {
             mediaRoot = row.value;
             recordingDisabled = false;
             console.log(`[STORAGE] Disco cargado desde DB: ${mediaRoot}`);
         } else {
+            if (row && row.value && fs.existsSync(row.value)) {
+                console.log(`[STORAGE] AVISO: ${row.value} está en el disco del sistema (¿disco no montado?). No se usará para grabar.`);
+            }
             // Fallback a auto-detect
             const detected = detectExternalDisk();
             if (detected) {
@@ -403,6 +424,9 @@ app.get('/api/storage/status', async (req, res) => {
             console.log(`[STORAGE] Disco detectado en caliente: ${mediaRoot}`);
         }
     }
+    if (mediaRoot && isOnSystemDisk(mediaRoot)) {
+        return res.json({ available: false, path: mediaRoot, message: 'El disco de grabación no está montado. Conéctalo o elige otro disco.' });
+    }
     if (!mediaRoot) {
         return res.json({ available: false, path: null, message: recordingDisabled ? 'Grabación en disco desactivada por el usuario.' : 'No hay disco externo conectado. Conecta un USB o configura MEDIA_ROOT en .env' });
     }
@@ -445,7 +469,7 @@ app.get('/api/storage/list', (req, res) => {
             const parts = line.split(' ');
             if (parts.length < 3) continue;
             const device = parts[0];
-            const mountPoint = parts[1];
+            const mountPoint = decodeMountPath(parts[1]);
             const fsType = parts[2];
 
             if (!device || !mountPoint || !fsType) continue;
@@ -503,6 +527,10 @@ app.post('/api/storage/select', (req, res) => {
             return res.status(403).json({ error: 'Disco del sistema — no permitido' });
         }
 
+        if (isOnSystemDisk(disk_path)) {
+            return res.status(400).json({ error: 'No hay ningún disco montado en esa carpeta' });
+        }
+
         const recDir = path.join(disk_path, 'recordings');
         try { fs.mkdirSync(recDir, { recursive: true }); } catch (e) {
             return res.status(500).json({ error: 'No se puede escribir en el disco: ' + e.message });
@@ -553,6 +581,9 @@ app.post('/api/storage/select', (req, res) => {
 
     if (!targetMount) {
         return res.status(400).json({ error: `Ruta no proporcionada` });
+    }
+    if (isOnSystemDisk(targetMount)) {
+        return res.status(400).json({ error: 'No hay ningún disco montado en esa carpeta' });
     }
 
     // Crear subdirectorio recordings dentro del punto de montaje si no existe
@@ -1355,6 +1386,9 @@ function stopAllRecordings() {
 
 app.post('/api/recordings/start', (req, res) => {
     // ── Verificar disco de grabacion disponible ──
+    if (mediaRoot && isOnSystemDisk(mediaRoot)) {
+        return res.status(503).json({ error: 'El disco de grabación no está montado. Conéctalo o elige otro disco.' });
+    }
     if (!mediaRoot) {
         // Intentar detectar en caliente
         const detected = detectExternalDisk();
@@ -2213,7 +2247,7 @@ app.get('/api/disks', async (req, res) => {
                     const parts = line.split(' ');
                     if (parts.length < 3) continue;
                     const dev = parts[0];
-                    const mnt = parts[1];
+                    const mnt = decodeMountPath(parts[1]);
                     const fst = parts[2];
 
                     if (!dev || !mnt || !fst) continue;
@@ -2277,6 +2311,7 @@ app.get('/api/disks', async (req, res) => {
                                     const resolvedU = path.resolve(uPath);
                                     if (seenPaths.has(resolvedU)) continue;
                                     if (mediaRoot && (resolvedU === path.resolve(mediaRoot) || mediaRoot.startsWith(resolvedU))) continue;
+                                    if (isOnSystemDisk(uPath)) continue; // carpeta vacía sin disco montado
 
                                     seenPaths.add(resolvedU);
                                     let freeGB = null, totalGB = null, usedPct = null;
@@ -2302,6 +2337,7 @@ app.get('/api/disks', async (req, res) => {
                             continue;
                         }
 
+                        if (isOnSystemDisk(subPath)) continue; // carpeta vacía sin disco montado
                         try {
                             // (antes estas tres variables no se declaraban y se creaban como globales implícitas)
                             const stat = fs.statfsSync(subPath);
