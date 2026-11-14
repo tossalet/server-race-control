@@ -560,6 +560,10 @@ function startPreview(channel, singleFrame = true) {
         '-err_detect', 'ignore_err',
         '-probesize', '5000000',
         '-analyzeduration', '5000000',
+        // Solo decodificar fotogramas clave: sin esto se decodificaba cada P/B (en H.265
+        // 1080p/4K es caro) hasta que el filtro "select" encontraba el I-frame
+        '-skip_frame', 'nokey',
+        '-threads', '1',
         '-f', 'mpegts',
         '-i', 'pipe:0',
         '-map', '0:v:0',
