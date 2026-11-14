@@ -16,7 +16,10 @@
     --font-heading: 'Outfit', sans-serif;
     --font-body: 'Inter', sans-serif;
     
-    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    /* Propiedades concretas (no "all") y rápido: es un panel de trabajo, no una web de marketing */
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease,
+                  box-shadow 150ms ease, opacity 150ms ease, transform 160ms var(--ease-out);
 }
 
 * {
@@ -130,6 +133,8 @@ h1, h2, h3 { font-family: var(--font-heading); }
 
 .page-title h1 {
     font-size: 2rem;
+    line-height: 1.1;
+    letter-spacing: -0.02em;   /* los títulos grandes piden tracking negativo */
     margin-bottom: 0.5rem;
 }
 .page-title p { color: var(--text-muted); }
@@ -148,10 +153,7 @@ button { cursor: pointer; border: none; font-family: var(--font-body); transitio
     gap: 8px;
     box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
 }
-.btn-primary:hover {
-    background: var(--accent-blue-hover);
-    transform: translateY(-2px);
-}
+.btn-primary:hover { background: var(--accent-blue-hover); }
 .btn-secondary {
     background: rgba(255, 255, 255, 0.05);
     color: var(--text-main);
@@ -221,7 +223,7 @@ button { cursor: pointer; border: none; font-family: var(--font-body); transitio
 .stream-name { font-weight: 600; font-size: 1.05rem; }
 
 .mid-section { display: flex; align-items: center; gap: 20px; width: 38%; }
-.stat-item { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 0.9rem;}
+.stat-item { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 0.9rem; font-variant-numeric: tabular-nums; /* las cifras no bailan al cambiar */ }
 .stat-item i { color: var(--accent-blue); opacity: 0.7; }
 .stat-item.disabled { opacity: 0.3; }
 
@@ -260,9 +262,9 @@ button { cursor: pointer; border: none; font-family: var(--font-body); transitio
 .analytics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 15px; margin-top: 1.5rem; }
 .analytics-card {
     background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 15px;
-    cursor: pointer; transition: all 0.2s ease; text-align: center;
+    cursor: pointer; transition: var(--transition); text-align: center;
 }
-.analytics-card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); transform: translateY(-2px); }
+.analytics-card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); }
 .analytics-card.selected { background: rgba(96, 165, 250, 0.15); border-color: var(--accent-blue); box-shadow: 0 0 15px rgba(96,165,250,0.3); }
 .acard-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 5px; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acard-badge { font-size: 0.7rem; color: var(--text-muted); background: rgba(255,255,255,0.05); padding: 3px 8px; border-radius: 4px; display: inline-block; }
@@ -384,6 +386,74 @@ input:checked + .slider:before { transform: translateX(18px); }
 
 /* PTZ Buttons */
 .ptz-btn { background: var(--panel-bg); color: var(--text-main); border: 1px solid var(--panel-border); border-radius: 50%; font-size: 1.5rem; transition: var(--transition); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index: 10; cursor: pointer; }
-.ptz-btn:hover { background: var(--accent-blue); color: #fff; transform: scale(1.1); }
+.ptz-btn:hover { background: var(--accent-blue); color: #fff; }
 .ptz-btn:active { transform: scale(0.95); background: var(--accent-blue-hover); }
 
+
+/* ─── Acciones de la cabecera y selector lista / mosaico ───────────────── */
+.topbar-actions { display: flex; align-items: center; gap: 12px; }
+.view-toggle {
+    display: flex; padding: 3px; gap: 2px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+}
+.view-toggle button {
+    width: 36px; height: 32px; border-radius: 6px;
+    background: transparent; color: var(--text-muted); font-size: 0.9rem;
+}
+.view-toggle button[aria-pressed="true"] { background: rgba(255, 255, 255, 0.1); color: var(--text-main); }
+
+/* ─── Vista mosaico: tarjetas con miniatura ────────────────────────────── */
+.streams-container.view-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.25rem;
+    align-items: start;
+}
+.view-grid .stream-card { margin-bottom: 0; display: flex; flex-direction: column; }
+.view-grid .stream-outputs { display: block; order: -1; }          /* miniatura arriba */
+.view-grid .thumb-container { padding: 0 !important; border-bottom: 1px solid var(--panel-border) !important; }
+.view-grid .thumb-box { width: 100% !important; height: auto !important; aspect-ratio: 16 / 9; border: none !important; border-radius: 0 !important; box-shadow: none !important; }
+.view-grid .thumb-url, .view-grid .btn-expand { display: none !important; }
+.view-grid .stream-header { flex-direction: column; align-items: stretch; gap: 12px; padding: 1rem 1.1rem; cursor: default !important; }
+.view-grid.streams-container .stream-header { border-bottom: none; background: none; }
+.view-grid .left-section { width: 100%; flex-wrap: wrap; gap: 8px; }
+.view-grid .stream-name { flex-basis: 100%; min-width: 0; }
+.view-grid .stream-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.view-grid .mid-section { width: 100%; justify-content: space-between; gap: 12px; }
+.view-grid .right-section { width: 100%; justify-content: flex-end; }
+
+/* ─── Explorador de grabaciones: botones y ruta fijos bajo la cabecera ── */
+.explorer-bar {
+    position: sticky;
+    top: calc(var(--topbar-h, 110px) - 2rem);
+    z-index: 40;
+    background: rgba(14, 19, 32, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    margin: -0.5rem -0.75rem 0.5rem;
+    padding: 0.5rem 0.75rem 0.1rem;
+    border-radius: 8px;
+}
+
+/* ─── Respuesta al pulsar y hover solo con ratón ───────────────────────── */
+.btn-primary:active, .btn-secondary:active, .action-btn:active,
+.view-toggle button:active, .nav-item:active, .analytics-card:active { transform: scale(0.97); }
+.ptz-btn:active { transform: scale(0.95); }
+
+@media (hover: hover) and (pointer: fine) {
+    .analytics-card:hover:not(:active) { transform: translateY(-2px); }
+    .ptz-btn:hover:not(:active) { transform: scale(1.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+    .btn-primary:active, .btn-secondary:active, .action-btn:active, .view-toggle button:active,
+    .nav-item:active, .analytics-card:active, .ptz-btn:active { transform: none; }
+}
+
+@media (max-width: 768px) {
+    .topbar-actions { width: 100%; justify-content: space-between; }
+    .explorer-bar { top: calc(var(--topbar-h, 150px) - 1rem); }
+}

@@ -116,7 +116,7 @@ function switchTab(tabId) {
     });
 
     if (tabId === 'streams') {
-        document.getElementById('streamsContainer').style.display = 'block';
+        document.getElementById('streamsContainer').style.display = ''; // '' y no 'block': el CSS decide lista o mosaico
         document.getElementById('topbar-title').innerText = 'Streams Manager';
         document.getElementById('topbar-subtitle').innerText = 'Live endpoints control panel';
         document.getElementById('btn-add-input').style.display = 'inline-block';
@@ -156,6 +156,8 @@ function switchTab(tabId) {
         document.getElementById('btn-add-input').style.display = 'none';
     }
     
+    document.getElementById('streams-view-toggle').style.display = tabId === 'streams' ? '' : 'none';
+
     // Stop MJPEG stream if leaving PTZ tab
     if (tabId !== 'ptz') {
         const videoImg = document.getElementById('ptzVideoPlayer');
@@ -291,6 +293,15 @@ function toggleAnalyticsChannel(channelId) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Altura real de la cabecera fija, para que la barra del explorador se pegue justo debajo
+    const topbar = document.querySelector('.topbar');
+    if (topbar && window.ResizeObserver) {
+        new ResizeObserver(() => document.documentElement.style.setProperty('--topbar-h', topbar.offsetHeight + 'px')).observe(topbar);
+    }
+
+    let savedView = 'list';
+    try { savedView = localStorage.getItem('streamsView') || 'list'; } catch (e) { }
+    setStreamsView(savedView);
     switchTab('system'); // Iniciar en el Dashboard
     fetchData();
     initChart();
@@ -675,13 +686,13 @@ function renderStreams() {
                 
                 <div class="stream-outputs" id="outputs-container-${input.channel}">
                     <div class="thumb-container" style="padding: 1rem 1.5rem; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; gap: 20px; align-items: center;">
-                        <div style="position:relative; width:160px; height:90px; flex-shrink:0; border-radius:6px; overflow:hidden; border:1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 10px rgba(0,0,0,0.5);">
+                        <div class="thumb-box" style="position:relative; width:160px; height:90px; flex-shrink:0; border-radius:6px; overflow:hidden; border:1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 10px rgba(0,0,0,0.5);">
                             <img id="thumb-img-${input.channel}" class="${input.preview_enabled && input.enabled ? 'preview-active' : ''}" data-src="/thumbs/thumb_${input.channel}.jpg" src="${input.enabled ? '/thumbs/thumb_' + input.channel + '.jpg' + (input.preview_enabled ? '?t=' + Date.now() : '') : '/images/bars.svg'}" onerror="if(!this.src.includes('bars.svg')){this.src='/images/bars.svg';}" style="width:100%; height:100%; object-fit:cover; filter: ${input.preview_enabled && input.enabled ? 'none' : 'grayscale(100%) opacity(40%) blur(1px)'}; transition: filter 0.3s;" />
                             <button onclick="togglePreview(${input.channel})" class="action-btn" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:rgba(0,0,0,0.6); padding:8px 12px; border:none; color:${input.preview_enabled ? 'var(--color-green)' : '#fff'}; border-radius:4px; font-size:1.2rem; cursor:pointer; opacity: 0.8; transition:0.2s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.8" title="${input.preview_enabled ? 'Desactivar Previsualización (Ahorro CPU)' : 'Activar Previsualización'}">
                                 <i class="fa-solid ${input.preview_enabled ? 'fa-eye' : 'fa-eye-slash'}"></i>
                             </button>
                         </div>
-                        <div style="font-size:0.85rem; color:var(--text-muted); line-height: 1.4; display:flex; flex-direction:column; gap:5px; min-width:0;">
+                        <div class="thumb-url" style="font-size:0.85rem; color:var(--text-muted); line-height: 1.4; display:flex; flex-direction:column; gap:5px; min-width:0;">
                             <p><strong>URL Origen:</strong></p>
                             <span style="color:#fff; font-weight:600; font-family:monospace; word-break: break-all;">${input.url}</span>
                         </div>
@@ -692,6 +703,15 @@ function renderStreams() {
         `;
         container.innerHTML += inputHTML;
     });
+}
+
+// Vista de streams: lista (filas) o mosaico (tarjetas con miniatura). Se recuerda en este navegador.
+function setStreamsView(view) {
+    if (view !== 'grid') view = 'list';
+    document.getElementById('streamsContainer').classList.toggle('view-grid', view === 'grid');
+    document.querySelectorAll('#streams-view-toggle button').forEach(b =>
+        b.setAttribute('aria-pressed', b.dataset.view === view ? 'true' : 'false'));
+    try { localStorage.setItem('streamsView', view); } catch (e) { }
 }
 
 function toggleExpand(channel) {

@@ -43,9 +43,15 @@
                     <h1 id="topbar-title">Streams Manager</h1>
                     <p id="topbar-subtitle">Live endpoints control panel</p>
                 </div>
-                <button class="btn-primary" id="btn-add-input" onclick="openModal('inputModal')">
-                    <i class="fa-solid fa-plus"></i> Add Input
-                </button>
+                <div class="topbar-actions">
+                    <div class="view-toggle" id="streams-view-toggle" role="group" aria-label="Vista de streams">
+                        <button type="button" data-view="list" onclick="setStreamsView('list')" title="Lista" aria-label="Lista"><i class="fa-solid fa-list"></i></button>
+                        <button type="button" data-view="grid" onclick="setStreamsView('grid')" title="Mosaico" aria-label="Mosaico"><i class="fa-solid fa-table-cells-large"></i></button>
+                    </div>
+                    <button class="btn-primary" id="btn-add-input" onclick="openModal('inputModal')">
+                        <i class="fa-solid fa-plus"></i> Add Input
+                    </button>
+                </div>
             </header>
 
             <section class="streams-container" id="streamsContainer">
@@ -65,6 +71,7 @@
                 </div>
 
                 <div class="storage-files" style="padding: 1.5rem; background: rgba(0,0,0,0.2); border-radius: 12px;">
+                    <div class="explorer-bar">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 10px;">
                         <h3 style="font-size: 1.1rem; font-weight: 600; margin:0;"><i class="fa-regular fa-folder-open"></i> Explorador de Grabaciones</h3>
                         <div style="display: flex; gap: 10px; align-items: center;">
@@ -88,6 +95,7 @@
                         <div id="fileManagerBreadcrumbs" style="font-family: monospace; font-size: 0.82rem; color: var(--accent-blue); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; flex: 1;">
                             /
                         </div>
+                    </div>
                     </div>
                     
                     <div style="overflow-x: auto;">
