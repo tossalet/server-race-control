@@ -111,11 +111,21 @@ h1, h2, h3 { font-family: var(--font-heading); }
     padding: 2rem 3rem;
 }
 
+/* Cabecera fija: con muchos streams el botón "Add Input" quedaba arriba del todo.
+   Los márgenes negativos anulan el padding de .main-content para que llegue al borde. */
 .topbar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 3rem;
+    position: sticky;
+    top: -2rem; /* el sticky respeta el padding de .main-content: se compensa */
+    z-index: 50;
+    margin: -2rem -3rem 2rem;
+    padding: 1.5rem 3rem 1.25rem;
+    background: rgba(11, 15, 25, 0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--panel-border);
 }
 
 .page-title h1 {
@@ -368,7 +378,7 @@ input:checked + .slider:before { transform: translateX(18px); }
     .logo-container h2 { display: none; }
     .status-badge { display: none; }
     .main-content { padding: 1rem; }
-    .topbar { flex-direction: column; align-items: flex-start; gap: 15px; }
+    .topbar { flex-direction: column; align-items: flex-start; gap: 15px; top: -1rem; margin: -1rem -1rem 1.5rem; padding: 1rem; }
     .form-group.row { flex-direction: column; }
 }
 
