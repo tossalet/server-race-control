@@ -160,6 +160,7 @@ function switchTab(tabId) {
 
     // Stop MJPEG stream if leaving PTZ tab
     if (tabId !== 'ptz') {
+        ptzPressEnd();
         const videoImg = document.getElementById('ptzVideoPlayer');
         if (videoImg) videoImg.src = '';
     }
@@ -1577,21 +1578,80 @@ function loadPtzCamera(channel) {
     };
 }
 
-function ptzMove(command) {
-    if (!currentPtzChannel) return;
-    
-    // Obtenemos el estado directo de la base de datos a través de inputs
-    const input = inputs.find(i => i.channel == currentPtzChannel);
-    if (!input || !input.ptz_enabled) {
-        if (command !== 'Stop') alert('PTZ no está habilitado para esta cámara. Configúralo en Editar Input.');
-        return;
-    }
-    fetch(`/api/ptz/${currentPtzChannel}/move`, {
+// Un clic mueve un paso corto; mantener pulsado mueve hasta soltar.
+const PTZ_HOLD_DELAY_MS = 300;   // pulsación más larga que esto = movimiento continuo
+const PTZ_KEEPALIVE_MS = 1000;   // reenvío mientras se mantiene (el servidor para si deja de llegar)
+let ptzQueue = Promise.resolve();
+let ptzPress = null;             // { btn, command, channel, holdTimer, keepalive, holding }
+
+// Las órdenes salen de una en una y en orden: un "parar" nunca adelanta a su "mover"
+function ptzSend(channel, command, mode) {
+    ptzQueue = ptzQueue.then(() => fetch(`/api/ptz/${channel}/move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command })
-    }).catch(console.error);
+        body: JSON.stringify({ command, mode })
+    })).catch(console.error);
+    return ptzQueue;
 }
+
+function ptzPressStart(btn, command, pointerId) {
+    ptzPressEnd();
+    if (!currentPtzChannel) return;
+    const input = inputs.find(i => i.channel == currentPtzChannel);
+    if (!input || !input.ptz_enabled) {
+        alert('PTZ no está habilitado para esta cámara. Configúralo en Editar Input.');
+        return;
+    }
+    // Capturar el puntero: el "soltar" llega al botón aunque el dedo o el ratón se salgan de él
+    try { btn.setPointerCapture(pointerId); } catch (e) {}
+    const press = { btn, command, channel: currentPtzChannel, holding: false, keepalive: null };
+    ptzPress = press;
+    btn.classList.add('ptz-pressed');
+    ptzSend(press.channel, command, 'step');
+    press.holdTimer = setTimeout(() => {
+        press.holding = true;
+        let busy = false;
+        const send = () => {
+            if (busy) return; // no acumular reenvíos si la cámara responde lenta
+            busy = true;
+            ptzSend(press.channel, command, 'hold').then(() => { busy = false; });
+        };
+        send();
+        press.keepalive = setInterval(send, PTZ_KEEPALIVE_MS);
+    }, PTZ_HOLD_DELAY_MS);
+}
+
+function ptzPressEnd() {
+    const press = ptzPress;
+    if (!press) return;
+    ptzPress = null;
+    clearTimeout(press.holdTimer);
+    clearInterval(press.keepalive);
+    press.btn.classList.remove('ptz-pressed');
+    if (press.holding) ptzSend(press.channel, 'Stop'); // el paso de un clic se para solo
+}
+
+function initPtzControls() {
+    document.querySelectorAll('[data-ptz]').forEach(btn => {
+        btn.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            ptzPressStart(btn, btn.dataset.ptz, e.pointerId);
+        });
+        ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(ev => btn.addEventListener(ev, ptzPressEnd));
+        btn.addEventListener('contextmenu', (e) => e.preventDefault()); // pulsación larga en táctil
+    });
+    // Cualquier pérdida de foco suelta el botón: la cámara no se queda moviéndose sola
+    window.addEventListener('blur', ptzPressEnd);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) ptzPressEnd(); });
+    window.addEventListener('pagehide', () => {
+        if (ptzPress && ptzPress.holding) {
+            navigator.sendBeacon(`/api/ptz/${ptzPress.channel}/move`,
+                new Blob([JSON.stringify({ command: 'Stop' })], { type: 'application/json' }));
+        }
+    });
+}
+document.addEventListener('DOMContentLoaded', initPtzControls);
 
 // ===================================
 // FILE MANAGER NAVIGATION & COPY HELPERS

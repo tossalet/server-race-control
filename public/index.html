@@ -145,21 +145,21 @@
                         <!-- Joystick -->
                         <div style="background: rgba(0,0,0,0.2); border-radius: 50%; width: 220px; height: 220px; margin: 0 auto 2rem; position: relative; display: flex; align-items: center; justify-content: center; border: 2px solid rgba(255,255,255,0.05);">
                             <!-- UP -->
-                            <button class="ptz-btn" onmousedown="ptzMove('Up')" onmouseup="ptzMove('Stop')" style="position:absolute; top: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-up"></i></button>
+                            <button class="ptz-btn" data-ptz="Up" style="position:absolute; top: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-up"></i></button>
                             <!-- DOWN -->
-                            <button class="ptz-btn" onmousedown="ptzMove('Down')" onmouseup="ptzMove('Stop')" style="position:absolute; bottom: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-down"></i></button>
+                            <button class="ptz-btn" data-ptz="Down" style="position:absolute; bottom: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-down"></i></button>
                             <!-- LEFT -->
-                            <button class="ptz-btn" onmousedown="ptzMove('Left')" onmouseup="ptzMove('Stop')" style="position:absolute; left: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-left"></i></button>
+                            <button class="ptz-btn" data-ptz="Left" style="position:absolute; left: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-left"></i></button>
                             <!-- RIGHT -->
-                            <button class="ptz-btn" onmousedown="ptzMove('Right')" onmouseup="ptzMove('Stop')" style="position:absolute; right: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-right"></i></button>
+                            <button class="ptz-btn" data-ptz="Right" style="position:absolute; right: 10px; width:60px; height:60px;"><i class="fa-solid fa-chevron-right"></i></button>
                             <!-- CENTER (Stop) -->
                             <div style="width: 40px; height: 40px; border-radius: 50%; background: var(--border); box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);"></div>
                         </div>
                         
                         <!-- Zoom -->
                         <div style="display: flex; gap: 10px; margin-bottom: 2rem;">
-                            <button class="btn-secondary" style="flex:1; padding: 15px;" onmousedown="ptzMove('ZoomWide')" onmouseup="ptzMove('Stop')"><i class="fa-solid fa-magnifying-glass-minus"></i> Zoom -</button>
-                            <button class="btn-secondary" style="flex:1; padding: 15px;" onmousedown="ptzMove('ZoomTele')" onmouseup="ptzMove('Stop')"><i class="fa-solid fa-magnifying-glass-plus"></i> Zoom +</button>
+                            <button class="btn-secondary" style="flex:1; padding: 15px;" data-ptz="ZoomWide"><i class="fa-solid fa-magnifying-glass-minus"></i> Zoom -</button>
+                            <button class="btn-secondary" style="flex:1; padding: 15px;" data-ptz="ZoomTele"><i class="fa-solid fa-magnifying-glass-plus"></i> Zoom +</button>
                         </div>
                     </div>
                 </div>

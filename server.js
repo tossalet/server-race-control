@@ -1031,7 +1031,9 @@ const onvif = require('onvif');
 
 app.post('/api/ptz/:channel/move', (req, res) => {
     const channelId = req.params.channel;
-    const { command } = req.body; // 'Up', 'Down', 'Left', 'Right', 'ZoomTele', 'ZoomWide', 'Stop'
+    // command: 'Up', 'Down', 'Left', 'Right', 'ZoomTele', 'ZoomWide', 'Stop'
+    // mode: 'step' (un clic, pulso corto que se para solo) o 'hold' (hasta recibir 'Stop')
+    const { command, mode } = req.body || {};
 
     db.get('SELECT ptz_enabled, ptz_ip, ptz_user, ptz_pass FROM inputs WHERE channel = ?', [channelId], (err, row) => {
         if (err || !row || !row.ptz_enabled || !row.ptz_ip) {
@@ -1042,38 +1044,111 @@ app.post('/api/ptz/:channel/move', (req, res) => {
         const host = ipParts[0];
         const port = ipParts.length > 1 ? parseInt(ipParts[1]) : 80;
 
-        const cam = new onvif.Cam({
-            hostname: host,
-            username: row.ptz_user,
-            password: row.ptz_pass,
-            port: port
-        }, function (err) {
-            if (err) return res.status(500).json({ error: 'No se pudo conectar a la cámara: ' + err.message });
+        const dir = PTZ_DIRS[command];
+        if (command !== 'Stop' && !dir) return res.status(400).json({ error: 'Comando PTZ desconocido' });
 
-            if (command === 'Stop') {
-                cam.stop({}, () => res.json({ success: true }));
-                return;
-            }
+        const s = ptzSession(channelId, `${host}:${port}|${row.ptz_user}|${row.ptz_pass}`);
+        const camOpts = { hostname: host, username: row.ptz_user, password: row.ptz_pass, port: port, timeout: PTZ_CAM_TIMEOUT_MS };
+        const reply = (p) => p.then(
+            () => res.json({ success: true }),
+            (e) => res.status(500).json({ error: 'Error PTZ: ' + e.message })
+        );
 
-            // Mapeo de comandos a ONVIF continuousMove
-            let x = 0, y = 0, z = 0;
-            const speed = 0.5;
+        if (command === 'Stop') {
+            clearTimeout(s.watchdog);
+            return reply(ptzStop(s, camOpts));
+        }
 
-            if (command === 'Left') x = -speed;
-            if (command === 'Right') x = speed;
-            if (command === 'Up') y = speed;
-            if (command === 'Down') y = -speed;
-            if (command === 'ZoomTele') z = speed;
-            if (command === 'ZoomWide') z = -speed;
+        if (mode === 'step') {
+            // Un clic = un pulso corto: mover, esperar y parar, todo dentro de la cola
+            // para que ninguna otra orden se cuele entre el arranque y la parada.
+            return reply(ptzEnqueue(s, async () => {
+                try {
+                    await ptzSend(s, camOpts, 'continuousMove', ptzVector(dir, PTZ_STEP_SPEED, 1000));
+                    await new Promise(r => setTimeout(r, PTZ_STEP_MS));
+                } finally {
+                    await ptzStopNow(s, camOpts);
+                }
+            }));
+        }
 
-            // Dahua/X-Security cameras often silently ignore continuousMove if timeout is not specified
-            cam.continuousMove({ x: x, y: y, zoom: z, timeout: 5000 }, function (err) {
-                if (err) return res.status(500).json({ error: 'Error enviando comando: ' + err.message });
-                res.json({ success: true });
-            });
-        });
+        // Movimiento mantenido. El cliente lo reenvía mientras siga pulsado; si deja de
+        // llegar (pestaña cerrada, red caída, se pierde el "soltar") el servidor para la cámara.
+        clearTimeout(s.watchdog);
+        s.watchdog = setTimeout(() => {
+            console.warn(`[PTZ] Canal ${channelId}: sin señal del cliente, parada de seguridad`);
+            ptzStop(s, camOpts).catch(e => console.error(`[PTZ] Parada de seguridad fallida: ${e.message}`));
+        }, PTZ_WATCHDOG_MS);
+        reply(ptzEnqueue(s, () => ptzSend(s, camOpts, 'continuousMove', ptzVector(dir, PTZ_SPEED, PTZ_ONVIF_TIMEOUT_MS))));
     });
 });
+
+const PTZ_SPEED = 0.5;             // velocidad con el botón mantenido
+const PTZ_STEP_SPEED = 0.3;        // velocidad del paso de un clic
+const PTZ_STEP_MS = 150;           // duración del paso de un clic
+const PTZ_WATCHDOG_MS = 2500;      // sin reenvío del cliente en este tiempo => parar
+const PTZ_ONVIF_TIMEOUT_MS = 3000; // la propia cámara se para si no recibe otra orden
+const PTZ_CAM_TIMEOUT_MS = 5000;
+const PTZ_DIRS = {
+    Left: [-1, 0, 0], Right: [1, 0, 0], Up: [0, 1, 0], Down: [0, -1, 0],
+    ZoomTele: [0, 0, 1], ZoomWide: [0, 0, -1]
+};
+const ptzSessions = new Map(); // canal -> { key, cam, chain, watchdog }
+
+function ptzVector(dir, speed, timeout) {
+    // Las Dahua/X-Security suelen ignorar continuousMove si no lleva timeout
+    return { x: dir[0] * speed, y: dir[1] * speed, zoom: dir[2] * speed, timeout };
+}
+
+function ptzSession(channelId, key) {
+    let s = ptzSessions.get(channelId);
+    if (!s || s.key !== key) { // cámara nueva o credenciales cambiadas: conexión nueva
+        if (s) clearTimeout(s.watchdog);
+        s = { key, cam: null, chain: Promise.resolve(), watchdog: null };
+        ptzSessions.set(channelId, s);
+    }
+    return s;
+}
+
+// La conexión ONVIF se reutiliza: abrirla cuesta varias peticiones a la cámara y,
+// hecha en cada orden, hacía que el "parar" pudiera llegar antes que el "mover".
+function ptzCam(s, camOpts) {
+    if (!s.cam) {
+        s.cam = new Promise((resolve, reject) => {
+            const cam = new onvif.Cam(camOpts, (err) => err ? reject(err) : resolve(cam));
+        });
+        s.cam.catch(() => { s.cam = null; });
+    }
+    return s.cam;
+}
+
+// Las órdenes de una cámara van en fila, de una en una y en el orden en que llegan
+function ptzEnqueue(s, fn) {
+    const p = s.chain.then(fn);
+    s.chain = p.catch(() => {});
+    return p;
+}
+
+async function ptzSend(s, camOpts, method, options) {
+    const cam = await ptzCam(s, camOpts);
+    try {
+        await new Promise((resolve, reject) => cam[method](options, (err) => err ? reject(err) : resolve()));
+    } catch (e) {
+        s.cam = null; // la próxima orden reconecta
+        throw e;
+    }
+}
+
+// Parar es la orden que no puede perderse: si falla, se reintenta con conexión nueva
+async function ptzStopNow(s, camOpts) {
+    const opts = { panTilt: true, zoom: true };
+    try { await ptzSend(s, camOpts, 'stop', opts); }
+    catch (e) { await ptzSend(s, camOpts, 'stop', opts); }
+}
+
+function ptzStop(s, camOpts) {
+    return ptzEnqueue(s, () => ptzStopNow(s, camOpts));
+}
 
 app.get('/api/ptz/:channel/stream', (req, res) => {
     const channelId = req.params.channel;
