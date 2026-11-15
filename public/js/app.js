@@ -659,7 +659,7 @@ function renderStreams() {
                         </div>
                         <div class="badge-protocol ${protocolBadge}">${protocolText}</div>
                         <span id="codec-${input.channel}" class="badge-protocol udp" style="background:#4b5563;">H.26X</span>
-                        ${input.ptz_enabled ? '<span class="badge-protocol" style="background:var(--accent-blue); padding: 3px 6px;" title="Cámara con PTZ habilitado"><i class="fa-solid fa-gamepad"></i> PTZ</span>' : ''}
+                        ${input.ptz_enabled ? '<span class="badge-protocol" role="button" tabindex="0" onclick="event.stopPropagation(); openPtzCamera(' + input.channel + ')" onkeydown="if(event.keyCode===13){this.click();}" style="background:var(--accent-blue); padding: 3px 6px; cursor:pointer;" title="Abrir PTZ Control con esta cámara"><i class="fa-solid fa-gamepad"></i> PTZ</span>' : ''}
                         <span class="stream-name" style="display:flex; flex-direction:column; line-height:1.2;">
                             ${input.name || 'Channel ' + input.channel}
                             <span style="font-size:0.70rem; color:var(--accent-blue); font-family:monospace; font-weight:normal; user-select:all;">${input.url.replace(/127\.0\.0\.1|0\.0\.0\.0/g, serverIp)}</span>
@@ -1535,6 +1535,12 @@ function populatePtzCameras() {
         // Añadimos id-channel en data-channel para buscarlo fácilmente sin depender del texto
         container.innerHTML += `<button class="btn-secondary ptz-cam-btn" data-channel="${i.channel}" onclick="loadPtzCamera('${i.channel}')" style="padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; border: 1px solid var(--border); transition: background 0.2s, color 0.2s; min-width: 80px;">${i.name}</button>`;
     });
+}
+
+// Desde la tarjeta de un stream: abrir PTZ Control con esa cámara ya seleccionada
+function openPtzCamera(channel) {
+    switchTab('ptz');
+    loadPtzCamera(String(channel));
 }
 
 let currentPtzChannel = null;
