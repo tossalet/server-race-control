@@ -492,6 +492,7 @@ function startInput(inputObj) {
         autoPreviewTimer: null,
         thumbRetries: 0,
         thumbTs: 0,
+        previewLive: !!inputObj.preview_enabled, // "ojo" de la tarjeta: miniatura en vivo
         codec: inputObj.codec || persistentCodecs[channel] || ''
     };
     activeInputs[channel] = state;
@@ -514,6 +515,7 @@ function restartInput(inputObj) {
         return startInput(inputObj);
     }
     state.inputObj = inputObj;
+    state.previewLive = !!inputObj.preview_enabled;
     state.restartAttempts = 0;
     if (state.process) {
         state.pendingRestart = true;
@@ -543,10 +545,27 @@ function scheduleThumbnail(channel) {
     }, previewQueueDelay);
 }
 
-function startPreview(channel, singleFrame = true) {
+// Activar/desactivar la miniatura en vivo de un canal (el "ojo" de la tarjeta)
+function setPreviewLive(channel, live) {
+    const state = activeInputs[channel];
+    if (!state) return false;
+    state.previewLive = !!live;
+    stopPreview(channel);
+    if (state.process) startPreview(channel); // en vivo, o un único fotograma si se apaga
+    return true;
+}
+
+// Dos modos según state.previewLive:
+//  - en vivo: un FFmpeg permanente reescribe la miniatura ~1 vez por segundo.
+//  - apagado: se extrae un único fotograma y el proceso termina (ahorro de CPU).
+function startPreview(channel) {
     const state = activeInputs[channel];
     if (!state || !state.router) return false;
-    if (state.prevProcess) stopPreview(channel);
+    const live = !!state.previewLive;
+    if (state.prevProcess) {
+        if (live && state.prevLive) return true; // ya hay una miniatura en vivo en marcha
+        stopPreview(channel);
+    }
 
     const outPath = path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`);
     const ffmpegCmd = getFFmpegPath();
@@ -567,18 +586,23 @@ function startPreview(channel, singleFrame = true) {
         '-f', 'mpegts',
         '-i', 'pipe:0',
         '-map', '0:v:0',
-        '-vf', "select='eq(pict_type,I)',scale=240:-1", // Seleccionar solo el I-Frame completo, sin crashear el demuxer
-        '-q:v', '5',
-        '-frames:v', '1',
+        ...(live
+            // En vivo: como mucho 1 imagen/s (solo se decodifican fotogramas clave, así que
+            // el ritmo real lo marca el GOP de la cámara). Escritura atómica para que el
+            // navegador nunca lea un JPEG a medias.
+            ? ['-vf', 'fps=1,scale=240:-1', '-q:v', '5', '-atomic_writing', '1']
+            : ['-vf', "select='eq(pict_type,I)',scale=240:-1", // Seleccionar solo el I-Frame completo, sin crashear el demuxer
+                '-q:v', '5', '-frames:v', '1']),
         '-f', 'image2',
         '-update', '1',
         outPath
     ];
 
-    console.log(`[PREVIEW CH-${channel}] Extrayendo thumbnail via pipe directa del router...`);
+    console.log(`[PREVIEW CH-${channel}] ${live ? 'Miniatura en vivo' : 'Extrayendo thumbnail'} via pipe directa del router...`);
     const child = spawn(ffmpegCmd, args, { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
     lowerPriority(child);
     state.prevProcess = child;
+    state.prevLive = live;
 
     // Suscribir al router para recibir datos MPEG-TS directamente
     const subscriber = {
@@ -598,12 +622,33 @@ function startPreview(channel, singleFrame = true) {
     });
 
     let stderrOutput = '';
+    let lastFrameAt = 0;
+    let lastFrameNo = 0;
     child.stderr.on('data', (d) => {
-        stderrOutput = (stderrOutput + d.toString()).slice(-4096);
+        const text = d.toString();
+        stderrOutput = (stderrOutput + text).slice(-4096);
+        if (!live) return;
+        const m = text.match(/frame=\s*(\d+)(?![\s\S]*frame=)/); // último "frame=N" del bloque
+        if (m && parseInt(m[1]) > lastFrameNo) {
+            lastFrameNo = parseInt(m[1]);
+            if (!lastFrameAt) {
+                console.log(`[PREVIEW CH-${channel}] ✓ Miniatura en vivo funcionando.`);
+                state.thumbRetries = 0;
+                state.thumbTs = Date.now();
+                if (ioInstance) ioInstance.emit('thumbnail_ready', { channel: channel });
+            }
+            lastFrameAt = Date.now();
+        }
     });
 
-    // Timeout de seguridad de 20s
-    const killTimer = setTimeout(() => {
+    // Vigilancia: un fotograma suelto tiene 20s para salir; en vivo se reinicia si la
+    // imagen lleva 30s sin renovarse aunque la cámara siga enviando.
+    const startedAt = Date.now();
+    const killTimer = live ? setInterval(() => {
+        if (Date.now() - (lastFrameAt || startedAt) < 30000) return;
+        console.log(`[PREVIEW CH-${channel}] Miniatura en vivo parada 30s, reiniciando...`);
+        try { child.kill('SIGKILL'); } catch (e) { }
+    }, 5000) : setTimeout(() => {
         console.log(`[PREVIEW CH-${channel}] Timeout 20s, matando proceso...`);
         if (stderrOutput.trim()) {
             const lastLines = stderrOutput.trim().split('\n').slice(-3).join(' | ');
@@ -613,14 +658,14 @@ function startPreview(channel, singleFrame = true) {
     }, 20000);
 
     child.on('close', (code) => {
-        clearTimeout(killTimer);
+        clearTimeout(killTimer); // vale también para el setInterval del modo en vivo
         if (state.router) state.router.subscribers.delete(subscriber);
         if (state.prevProcess !== child) return; // reemplazado por otro preview
         state.prevProcess = null;
         state.prevSubscriber = null;
         if (activeInputs[channel] !== state || state.isStopping) return;
 
-        if (code === 0) {
+        if (code === 0 && !live) {
             fs.stat(outPath, (err, stats) => {
                 if (err) {
                     console.error(`[PREVIEW CH-${channel}] ❌ FFmpeg terminó con éxito pero el archivo ${outPath} NO EXISTE.`);
@@ -645,7 +690,7 @@ function startPreview(channel, singleFrame = true) {
             state.autoPreviewTimer = setTimeout(() => {
                 state.autoPreviewTimer = null;
                 if (activeInputs[channel] === state && !state.isStopping && state.process) {
-                    startPreview(channel, true);
+                    startPreview(channel);
                 }
             }, retryDelay);
         }
@@ -1001,6 +1046,7 @@ module.exports = {
     startOutput,
     stopOutput,
     startPreview,
+    setPreviewLive,
     stopPreview,
     addSubscriber,
     removeSubscriber,

@@ -466,8 +466,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 if (isPreviewLive) {
-                    // Update live
-                    imgElem.src = `/thumbs/thumb_${data.channel}.jpg?t=${Date.now()}`;
+                    // Update live: el servidor renueva la miniatura ~1 vez/s, no hace falta pedirla más a menudo
+                    const nowMs = Date.now();
+                    if (nowMs - (parseInt(imgElem.dataset.liveAt) || 0) >= 1000) {
+                        imgElem.dataset.liveAt = nowMs;
+                        imgElem.src = `/thumbs/thumb_${data.channel}.jpg?t=${nowMs}`;
+                    }
                 } else if (!imgElem.src.includes('thumb_')) {
                     // Restaurar foto estática single-frame a prueba de fallos y sin parpadeos
                     const temp = new Image();

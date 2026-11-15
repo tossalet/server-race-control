@@ -940,14 +940,8 @@ app.post('/api/inputs/:channel/preview', (req, res) => {
             if (err) return res.status(500).json({ error: err.message });
             io.emit('db_update', { event: 'preview_changed', channel: channelId, preview_enabled: newState });
 
-            // Start or stop the actual visual ffmpeg processor independently 
-            if (newState === 1) {
-                streamManager.startPreview(channelId);
-            } else {
-                streamManager.stopPreview(channelId);
-                // Extraer un fotograma congelado al pararlo
-                setTimeout(() => streamManager.startPreview(channelId, true), 1000);
-            }
+            // Ojo activo: miniatura en vivo. Apagado: queda un único fotograma congelado.
+            streamManager.setPreviewLive(channelId, newState === 1);
             res.json({ preview_enabled: newState });
         });
     });
