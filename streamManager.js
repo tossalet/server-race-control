@@ -973,7 +973,7 @@ function stopOutput(id) {
 
 // ── COPIA LIGERA PARA EL MOSAICO DEL MONITOR 2 ───────────────────────────────
 // Un FFmpeg por cámara: decodifica en la GPU (NVDEC, reescalado dentro del propio
-// decodificador), codifica 640x360 H.264 con NVENC y reparte el MPEG-TS a sus suscriptores:
+// decodificador), codifica 640x360 H.265 con NVENC y reparte el MPEG-TS a sus suscriptores:
 // los visores del mosaico en directo y la grabación _low.m3u8 del mosaico en replay.
 // Con 8 cámaras a resolución completa el Firefox del Monitor 2 era lo que más CPU gastaba.
 // Sin GPU NVIDIA, o si la copia falla, no hay copia y el mosaico usa la señal completa.
@@ -1016,7 +1016,11 @@ function startProxy(state, decoder) {
         '-f', 'mpegts',
         '-i', 'pipe:0',
         '-map', '0:v:0', '-an',
-        '-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'll',
+        // H.265 y no H.264: el nvidia-vaapi-driver de Debian 13 (anterior a la 0.0.14) falla al
+        // decodificar H.264 por GPU tras un salto o reinicio de reproducción (su issue #343), y
+        // Firefox cerraba el recuadro con error de decodificación nada más arrancar. Las cámaras
+        // en H.265 no lo sufren.
+        '-c:v', 'hevc_nvenc', '-preset', 'p1', '-tune', 'll',
         '-rc', 'cbr', '-b:v', '1M', '-maxrate', '1M', '-bufsize', '1M',
         // GOP corto: el mosaico arranca rápido y el replay puede saltar a cualquier punto
         '-g', '25', '-bf', '0',
@@ -1027,7 +1031,7 @@ function startProxy(state, decoder) {
     lowerPriority(child);
     state.proxyChild = child;
     state.proxyStartedAt = Date.now();
-    console.log(`[PROXY CH-${channel}] Copia ligera ${PROXY_SIZE} para el mosaico (${decoder} → h264_nvenc)`);
+    console.log(`[PROXY CH-${channel}] Copia ligera ${PROXY_SIZE} para el mosaico (${decoder} → hevc_nvenc)`);
 
     const sub = {
         kind: 'proxy',
