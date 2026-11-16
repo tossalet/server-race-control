@@ -509,25 +509,13 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
     systemctl enable plymouth-poweroff.service 2>/dev/null || true
     systemctl enable plymouth-halt.service 2>/dev/null || true
 
-    # Crear un servicio que lance Plymouth con el splash de apagado
-    cat > /etc/systemd/system/plymouth-shutdown-splash.service << 'PLYSVC'
-[Unit]
-Description=Show Plymouth splash during shutdown
-DefaultDependencies=no
-Before=shutdown.target reboot.target halt.target
-After=final.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/plymouth --show-splash
-RemainAfterExit=yes
-
-[Install]
-WantedBy=shutdown.target reboot.target halt.target
-PLYSVC
+    # El splash de apagado lo lanza plymouth-poweroff.service (del sistema). Antes se creaba
+    # aquí un plymouth-shutdown-splash.service propio que formaba un ciclo de dependencias
+    # con shutdown.target: systemd lo descartaba en cada apagado y nunca llegó a ejecutarse.
+    systemctl disable plymouth-shutdown-splash.service 2>/dev/null || true
+    rm -f /etc/systemd/system/plymouth-shutdown-splash.service
     systemctl daemon-reload 2>/dev/null || true
-    systemctl enable plymouth-shutdown-splash.service 2>/dev/null || true
-    
+
     # Sobreescribir las directivas de conflictos de systemd para que LightDM no dependa de quit-plymouth
     mkdir -p /etc/systemd/system/lightdm.service.d
     cat > /etc/systemd/system/lightdm.service.d/override.conf << EOF
