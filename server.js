@@ -390,6 +390,10 @@ app.use(express.static(path.join(__dirname, 'public'), {
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             res.setHeader('Pragma', 'no-cache');
             res.setHeader('Expires', '0');
+        } else if (filePath.includes(path.join('grabador', 'assets'))) {
+            // El compilado del panel tiene nombre fijo (index.js): revalidar siempre, o tras
+            // una actualización el navegador puede seguir con el antiguo
+            res.setHeader('Cache-Control', 'no-cache');
         }
     }
 }));
