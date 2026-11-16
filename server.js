@@ -651,6 +651,14 @@ app.get('/api/monitor/events', (req, res) => {
 
 app.post('/api/monitor/command', (req, res) => {
     const cmd = req.body;
+    // Cambios de modo del Monitor 2 en el log (no los saltos/play/pausa, que son continuos)
+    if (cmd && ['SET_MULTIVIEW', 'SELECT_CAMERA', 'PLAY_CLIP'].includes(cmd.type)) {
+        const cams = Array.isArray(cmd.cameras) ? cmd.cameras : [];
+        const detail = cmd.type === 'SET_MULTIVIEW'
+            ? `${cams.length} cámaras, ${cams[0] && cams[0].isReplay ? 'replay' : 'directo'}, seekTo=${cmd.seekTo ?? '-'}`
+            : `canal ${cmd.channel}`;
+        console.log(`[MONITOR-CMD] ${cmd.type}: ${detail}`);
+    }
     monitorClients.forEach(c => c.write(`data: ${JSON.stringify(cmd)}\n\n`));
     res.sendStatus(200);
 });
