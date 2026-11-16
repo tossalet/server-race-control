@@ -37,6 +37,9 @@ wss.on('connection', (ws, req) => {
     if (!match) return ws.close();
 
     const channel = match[1];
+    // ?low=1 → copia ligera 640x360 (mosaico del Monitor 2). Si no está activa, señal completa.
+    const wantLow = /[?&]low=1\b/.test(req.url);
+    let onLow = false;
 
     // Subscriber directo — misma técnica que el HTTP passthrough,
     // sin crear conexiones TCP intermedias innecesarias.
@@ -58,6 +61,12 @@ wss.on('connection', (ws, req) => {
     let subscribed = false;
     const trySubscribe = () => {
         if (ws.readyState !== ws.OPEN) return true; // el cliente ya se fue: dejar de esperar
+        if (wantLow && streamManager.addProxySubscriber(channel, subObj)) {
+            subscribed = true;
+            onLow = true;
+            console.log(`[WS] Client subscribed to LIVE channel ${channel} (copia ligera)`);
+            return true;
+        }
         if (streamManager.addSubscriber(channel, subObj)) {
             subscribed = true;
             console.log(`[WS] Client subscribed to LIVE channel ${channel} (direct subscriber)`);
@@ -69,7 +78,8 @@ wss.on('connection', (ws, req) => {
     const cleanup = () => {
         if (checkInterval) clearInterval(checkInterval);
         if (subscribed) {
-            streamManager.removeSubscriber(channel, subObj);
+            if (onLow) streamManager.removeProxySubscriber(channel, subObj);
+            else streamManager.removeSubscriber(channel, subObj);
             subscribed = false;
             console.log(`[WS] Client unsubscribed from LIVE channel ${channel}`);
         }
@@ -387,6 +397,11 @@ app.use(express.static(path.join(__dirname, 'public'), {
 // /media resuelve en cada petición el disco de grabación actual (mediaRoot)
 app.use('/media', (req, res, next) => {
     if (!mediaRoot) return res.status(404).send('No hay disco de grabación configurado');
+    // Mosaico en replay: sin copia ligera válida para esa cámara/sesión → señal completa
+    // (hls.js resuelve los segmentos respecto a la URL final de la redirección)
+    if (/^\/CAM_\d+_[\w-]+_low\.m3u8$/.test(req.path) && !fs.existsSync(path.join(mediaRoot, req.path))) {
+        return res.redirect(302, req.baseUrl + req.path.replace(/_low\.m3u8$/, '.m3u8'));
+    }
     return getMediaStatic(mediaRoot)(req, res, next);
 });
 app.use('/preview', express.static(previewRoot, {
@@ -1403,7 +1418,16 @@ function startChannelRecorder(sessionId, rec, channel) {
     });
 
     streamManager.addSubscriber(channel, sub);
-    rec.channels.set(channel, { child, sub, hlsPath });
+    // Conservar el estado de la grabación ligera (_low) entre reanudaciones
+    const entry = Object.assign(current || {}, { child, sub, hlsPath });
+    rec.channels.set(channel, entry);
+
+    if (isResume) {
+        // La principal tiene ahora un hueco que la copia no tiene: dejaría el mosaico desfasado
+        invalidateLowRecorder(sessionId, rec, channel, entry);
+    } else {
+        startLowRecorder(sessionId, rec, channel, entry);
+    }
 
     if (isResume) {
         // El MP4 ya no cubre toda la sesión: la exportación usará la playlist HLS (continua)
@@ -1414,6 +1438,69 @@ function startChannelRecorder(sessionId, rec, channel) {
             [sessionId, channel, hlsPath, mp4Path]);
     }
     return true;
+}
+
+// Grabación de la copia ligera (CAM_N_ID_low.m3u8) para el mosaico del Monitor 2 en replay.
+// Solo es válida si arranca a la vez que la principal y sigue sin cortes; si no, se borra su
+// playlist y /media redirige a la señal completa (mejor pesado que desfasado).
+function lowRecorderPath(rec, sessionId, channel) {
+    return path.join(rec.mediaRoot, `CAM_${channel}_${sessionId}_low.m3u8`);
+}
+
+function startLowRecorder(sessionId, rec, channel, entry) {
+    if (entry.lowChild || entry.lowBroken) return;
+    if (!streamManager.isProxyActive(channel)) { entry.lowBroken = true; return; }
+
+    const lowPath = lowRecorderPath(rec, sessionId, channel);
+    const args = [
+        '-hide_banner', '-loglevel', 'error',
+        '-fflags', '+genpts',
+        '-f', 'mpegts',
+        '-i', 'pipe:0',
+        '-map', '0:v',
+        '-c', 'copy',
+        '-hls_time', '2',
+        '-hls_list_size', '0',
+        '-hls_segment_type', 'mpegts',
+        '-f', 'hls', lowPath
+    ];
+    const child = spawn(streamManager.getFFmpegPath(), args, { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+    streamManager.lowerPriority(child);
+    const sub = {
+        kind: 'recorder',
+        write(chunk) { if (child.stdin.writable) child.stdin.write(chunk); },
+        pending() { return child.stdin.writableLength; },
+        destroy() { try { child.stdin.end(); } catch (e) { } }
+    };
+    child.stdin.on('error', () => { });
+    child.on('error', (err) => broadCastLog('WARN', `[REC-${sessionId}] ch${channel} copia ligera: ${err.message}`));
+    child.on('close', () => {
+        streamManager.removeProxySubscriber(channel, sub);
+        if (entry.lowChild !== child) return;
+        entry.lowChild = null;
+        entry.lowSub = null;
+        // Cierre con la sesión aún activa = copia cortada → ya no está alineada con la principal
+        if (activeRecordings[sessionId] === rec) {
+            entry.lowBroken = true;
+            fs.unlink(lowPath, () => { });
+            console.log(`[REC-${sessionId}] ch${channel}: copia ligera interrumpida, el mosaico usará la señal completa`);
+        }
+    });
+
+    entry.lowChild = child;
+    entry.lowSub = sub;
+    if (!streamManager.addProxySubscriber(channel, sub)) {
+        try { child.kill('SIGKILL'); } catch (e) { }
+    }
+}
+
+function invalidateLowRecorder(sessionId, rec, channel, entry) {
+    entry.lowBroken = true;
+    if (entry.lowChild) {
+        try { entry.lowChild.kill('SIGKILL'); } catch (e) { } // su 'close' borra la playlist
+    } else {
+        fs.unlink(lowRecorderPath(rec, sessionId, channel), () => { });
+    }
 }
 
 function gracefulStopRecorder(child) {
@@ -1436,6 +1523,10 @@ function stopRecordingSession(sessionId, setEndTime = true) {
         if (r.child && r.child.exitCode === null) {
             stopped++;
             gracefulStopRecorder(r.child);
+        }
+        if (r.lowChild) {
+            streamManager.removeProxySubscriber(channel, r.lowSub);
+            gracefulStopRecorder(r.lowChild);
         }
     }
     if (setEndTime) {
@@ -2094,8 +2185,10 @@ async function deleteSessions(sessionIds) {
         const rec = activeRecordings[String(id)];
         if (rec) {
             for (const r of rec.channels.values()) {
-                if (r.child && r.child.exitCode === null) {
-                    exiting.push(new Promise(ok => { r.child.once('close', ok); setTimeout(ok, 8000); }));
+                for (const c of [r.child, r.lowChild]) {
+                    if (c && c.exitCode === null) {
+                        exiting.push(new Promise(ok => { c.once('close', ok); setTimeout(ok, 8000); }));
+                    }
                 }
             }
         }

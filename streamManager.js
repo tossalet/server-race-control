@@ -26,6 +26,7 @@ const OUTPUTS_ENABLED = false;
 const MAX_PENDING_BYTES = {
     viewer: 8 * 1024 * 1024,
     thumb: 16 * 1024 * 1024,
+    proxy: 16 * 1024 * 1024,
     output: 32 * 1024 * 1024,
     recorder: 64 * 1024 * 1024,
 };
@@ -253,7 +254,9 @@ function removeSubscriber(channel, sub) {
 // reconecta limpio al nuevo stream); las grabaciones se mantienen enganchadas.
 function dropTransientSubscribers(router) {
     for (const sub of router.subscribers) {
-        if (sub.kind === 'recorder' || sub.kind === 'output') continue;
+        // La copia ligera también sigue enganchada: así su grabación _low tiene los mismos
+        // huecos que la principal y el mosaico de replay no se desfasa
+        if (sub.kind === 'recorder' || sub.kind === 'output' || sub.kind === 'proxy') continue;
         router.subscribers.delete(sub);
         safeDestroy(sub);
     }
@@ -731,6 +734,7 @@ function stopInput(channel) {
     state.isStopping = true;
     if (state.restartTimer) clearTimeout(state.restartTimer);
     stopPreview(channel);
+    stopProxy(state);
 
     if (state.process) {
         try { state.process.kill('SIGKILL'); } catch (e) { }
@@ -967,6 +971,163 @@ function stopOutput(id) {
     return false;
 }
 
+// ── COPIA LIGERA PARA EL MOSAICO DEL MONITOR 2 ───────────────────────────────
+// Un FFmpeg por cámara: decodifica en la GPU (NVDEC, reescalado dentro del propio
+// decodificador), codifica 640x360 H.264 con NVENC y reparte el MPEG-TS a sus suscriptores:
+// los visores del mosaico en directo y la grabación _low.m3u8 del mosaico en replay.
+// Con 8 cámaras a resolución completa el Firefox del Monitor 2 era lo que más CPU gastaba.
+// Sin GPU NVIDIA, o si la copia falla, no hay copia y el mosaico usa la señal completa.
+// Se puede desactivar con RC_MONITOR_PROXY=0.
+const PROXY_ENABLED = process.env.RC_MONITOR_PROXY !== '0';
+const PROXY_SIZE = '640x360';
+const PROXY_MAX_FAST_FAILS = 3;          // fallos seguidos antes de rendirse un rato
+const PROXY_DISABLE_MS = 5 * 60 * 1000;  // ...y cuánto tiempo (p. ej. sin sesiones NVENC libres)
+const PROXY_STALL_MS = 15000;
+
+let cuvidDecoders = null; // decodificadores *_cuvid que trae el FFmpeg instalado
+execFile(getFFmpegPath(), ['-hide_banner', '-decoders'], { timeout: 10000, windowsHide: true }, (err, stdout) => {
+    cuvidDecoders = new Set();
+    if (!err && stdout) {
+        for (const name of ['hevc_cuvid', 'h264_cuvid']) if (stdout.includes(name)) cuvidDecoders.add(name);
+    }
+    console.log(`[PROXY] Decodificación NVDEC: ${cuvidDecoders.size ? [...cuvidDecoders].join(', ') : 'no disponible (el mosaico usará la señal completa)'}`);
+});
+
+function proxyDecoder(codec) {
+    const c = (codec || '').toUpperCase();
+    if (c.includes('265') || c.includes('HEVC')) return 'hevc_cuvid';
+    if (c.includes('264') || c.includes('AVC')) return 'h264_cuvid';
+    return null;
+}
+
+function startProxy(state, decoder) {
+    const channel = state.channel;
+    if (!state.proxyRouter) state.proxyRouter = { subscribers: new Set(), lastDataAt: 0 };
+    const pr = state.proxyRouter;
+    pr.lastDataAt = 0;
+
+    const args = [
+        '-hide_banner', '-loglevel', 'error',
+        '-fflags', '+genpts+discardcorrupt',
+        '-err_detect', 'ignore_err',
+        '-probesize', '5000000',
+        '-analyzeduration', '2000000',
+        '-c:v', decoder, '-resize', PROXY_SIZE,
+        '-f', 'mpegts',
+        '-i', 'pipe:0',
+        '-map', '0:v:0', '-an',
+        '-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'll',
+        '-rc', 'cbr', '-b:v', '1M', '-maxrate', '1M', '-bufsize', '1M',
+        // GOP corto: el mosaico arranca rápido y el replay puede saltar a cualquier punto
+        '-g', '25', '-bf', '0',
+        '-f', 'mpegts',
+        'pipe:1'
+    ];
+    const child = spawn(getFFmpegPath(), args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    lowerPriority(child);
+    state.proxyChild = child;
+    state.proxyStartedAt = Date.now();
+    console.log(`[PROXY CH-${channel}] Copia ligera ${PROXY_SIZE} para el mosaico (${decoder} → h264_nvenc)`);
+
+    const sub = {
+        kind: 'proxy',
+        write(chunk) { if (child.stdin.writable) child.stdin.write(chunk); },
+        pending() { return child.stdin.writableLength; },
+        destroy() { try { child.kill('SIGKILL'); } catch (e) { } }
+    };
+    state.proxySub = sub;
+    if (state.router) state.router.subscribers.add(sub);
+
+    child.stdin.on('error', () => { });
+    child.on('error', (err) => console.error(`[PROXY CH-${channel}] No se pudo lanzar FFmpeg: ${err.message}`));
+    child.stdout.on('data', (chunk) => {
+        pr.lastDataAt = Date.now();
+        fanOut(pr, `${channel}-low`, chunk);
+    });
+    let stderrTail = '';
+    child.stderr.on('data', (d) => { stderrTail = (stderrTail + d.toString()).slice(-600); });
+
+    child.on('close', (code) => {
+        if (state.router) state.router.subscribers.delete(sub);
+        if (state.proxyChild !== child) return;
+        state.proxyChild = null;
+        state.proxySub = null;
+        // Visores y grabación de la copia se cierran: el mosaico reconecta y la grabación
+        // _low deja de ser válida (el servidor vuelve a la señal completa para esa cámara)
+        for (const s of pr.subscribers) safeDestroy(s);
+        pr.subscribers.clear();
+        if (state.isStopping || activeInputs[channel] !== state) return;
+
+        const ranMs = Date.now() - state.proxyStartedAt;
+        if (ranMs < 10000) state.proxyFails = (state.proxyFails || 0) + 1;
+        else state.proxyFails = 0;
+        const tail = stderrTail.trim().split('\n').slice(-2).join(' | ').substring(0, 300);
+        if (state.proxyFails >= PROXY_MAX_FAST_FAILS) {
+            state.proxyFails = 0;
+            state.proxyDisabledUntil = Date.now() + PROXY_DISABLE_MS;
+            console.error(`[PROXY CH-${channel}] Falla al arrancar (${tail || 'código ' + code}). El mosaico usará la señal completa; reintento en ${PROXY_DISABLE_MS / 60000} min.`);
+        } else {
+            console.log(`[PROXY CH-${channel}] Terminó (código ${code}${tail ? ': ' + tail : ''}). Reiniciando...`);
+            state.proxyRestartAt = Date.now() + 3000;
+        }
+    });
+}
+
+function stopProxy(state) {
+    const child = state.proxyChild;
+    state.proxyChild = null;
+    if (state.proxySub && state.router) state.router.subscribers.delete(state.proxySub);
+    state.proxySub = null;
+    if (child) { try { child.kill('SIGKILL'); } catch (e) { } }
+    if (state.proxyRouter) {
+        for (const s of state.proxyRouter.subscribers) safeDestroy(s);
+        state.proxyRouter.subscribers.clear();
+    }
+}
+
+// Arranque, vigilancia y reintentos de las copias ligeras (cada 2 s)
+setInterval(() => {
+    if (!PROXY_ENABLED || !nvencAvailable || !cuvidDecoders || !cuvidDecoders.size) return;
+    const now = Date.now();
+    for (const ch in activeInputs) {
+        const state = activeInputs[ch];
+        if (state.isStopping || !state.router) continue;
+        if (state.proxyChild) {
+            // Congelada: la cámara entrega datos pero la copia no produce nada
+            const last = (state.proxyRouter && state.proxyRouter.lastDataAt) || state.proxyStartedAt;
+            if (hasSignal(state.channel) && now - last > PROXY_STALL_MS) {
+                console.log(`[PROXY CH-${state.channel}] Sin salida ${PROXY_STALL_MS / 1000}s, reiniciando...`);
+                try { state.proxyChild.kill('SIGKILL'); } catch (e) { }
+            }
+            continue;
+        }
+        if (state.proxyDisabledUntil && now < state.proxyDisabledUntil) continue;
+        if (state.proxyRestartAt && now < state.proxyRestartAt) continue;
+        if (!hasSignal(state.channel)) continue;
+        const decoder = proxyDecoder(state.codec || persistentCodecs[state.channel]);
+        if (!decoder || !cuvidDecoders.has(decoder)) continue;
+        startProxy(state, decoder);
+    }
+}, 2000);
+
+// Copia ligera produciendo imagen ahora mismo
+function isProxyActive(channel) {
+    const s = activeInputs[channel];
+    return !!(s && s.proxyChild && s.proxyRouter && s.proxyRouter.lastDataAt && Date.now() - s.proxyRouter.lastDataAt < 3000);
+}
+
+// Suscribir a la copia ligera. Devuelve false si no está activa (usar la señal completa).
+function addProxySubscriber(channel, sub) {
+    if (!isProxyActive(channel)) return false;
+    activeInputs[channel].proxyRouter.subscribers.add(sub);
+    return true;
+}
+
+function removeProxySubscriber(channel, sub) {
+    const s = activeInputs[channel];
+    if (s && s.proxyRouter) s.proxyRouter.subscribers.delete(sub);
+}
+
 // Global Heartbeat Monitor: telemetría a cero, watchdog de señal congelada y reset de backoff
 setInterval(() => {
     const now = Date.now();
@@ -1052,6 +1213,9 @@ module.exports = {
     removeSubscriber,
     isInputOnline,
     hasSignal,
+    isProxyActive,
+    addProxySubscriber,
+    removeProxySubscriber,
     lowerPriority,
     getTotalBitrates,
     activeInputs,
