@@ -655,6 +655,13 @@ app.post('/api/monitor/command', (req, res) => {
     res.sendStatus(200);
 });
 
+// Fallos de reproducción que reporta el Monitor 2 (journalctl -u race-control | grep MONITOR-2)
+app.post('/api/monitor/log', (req, res) => {
+    const message = String((req.body && req.body.message) || '').replace(/[\r\n]+/g, ' ').slice(0, 400);
+    if (message) console.log(`[MONITOR-2] ${message}`);
+    res.sendStatus(204);
+});
+
 app.post('/api/monitor/open', (req, res) => {
     const { exec } = require('child_process');
     const os = require('os');
