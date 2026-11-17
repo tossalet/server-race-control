@@ -514,6 +514,9 @@ if [ -f "$THEME_DIR/racecontrol.script" ]; then
     # con shutdown.target: systemd lo descartaba en cada apagado y nunca llegó a ejecutarse.
     systemctl disable plymouth-shutdown-splash.service 2>/dev/null || true
     rm -f /etc/systemd/system/plymouth-shutdown-splash.service
+
+    # Silenciar la consola al apagar y preparar el splash de apagado/reinicio
+    APP_DIR="$APP_DIR" bash "$APP_DIR/plymouth_apagado.sh" || true
     systemctl daemon-reload 2>/dev/null || true
 
     # Sobreescribir las directivas de conflictos de systemd para que LightDM no dependa de quit-plymouth

@@ -188,6 +188,10 @@ if [ -z "$SWAP_TOTAL" ] || [ "$SWAP_TOTAL" -lt 2000 ]; then
     grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
 fi
 
+# Tema Plymouth también al apagar/reiniciar (sin esto salía el texto de systemd)
+echo "🎬 Configurando tema de apagado/reinicio (Plymouth)..."
+APP_DIR="$APP_DIR" bash "$APP_DIR/plymouth_apagado.sh" || true
+
 # Conservar el botón de encendido/apagado físico funcional para apagar la máquina
 rm -f /etc/systemd/logind.conf.d/race-control.conf 2>/dev/null || true
 systemctl restart systemd-logind 2>/dev/null || true
