@@ -1000,11 +1000,59 @@ function proxyDecoder(codec) {
     return null;
 }
 
+// ── Arranque de los visores desde un fotograma clave ─────────────────────────
+// Un visor que se engancha a mitad de GOP recibe primero fotogramas P sin su referencia. El
+// decodificador por GPU de Firefox (VA-API) no los oculta como el de software: falla con error
+// de decodificación y el recuadro del mosaico se cerraba y reconectaba (el parpadeo). Se guarda
+// la copia desde el último fotograma clave (GOP de 1 s) para entregársela a cada visor nuevo.
+const TS_PACKET = 188;
+const PMT_PID = 0x1000;               // PID de la PMT que escribe el muxer mpegts de FFmpeg
+const KEYFRAME_CACHE_MAX = 4 * 1024 * 1024;
+
+function newKeyframeCache() {
+    return { rest: null, pat: null, pmt: null, gop: null, gopBytes: 0 };
+}
+
+function trackKeyframes(c, chunk) {
+    const buf = c.rest ? Buffer.concat([c.rest, chunk]) : chunk;
+    let i = 0;
+    while (i + TS_PACKET <= buf.length) {
+        if (buf[i] !== 0x47) { i++; continue; } // resincronizar
+        const pkt = buf.subarray(i, i + TS_PACKET);
+        const pid = ((pkt[1] & 0x1f) << 8) | pkt[2];
+        if (pid === 0) c.pat = Buffer.from(pkt);
+        else if (pid === PMT_PID) c.pmt = Buffer.from(pkt);
+        else {
+            // Inicio de PES con random_access_indicator en el campo de adaptación = fotograma clave
+            const isKey = (pkt[1] & 0x40) && (pkt[3] & 0x20) && pkt[4] > 0 && (pkt[5] & 0x40);
+            if (isKey) { c.gop = [pkt]; c.gopBytes = TS_PACKET; }
+            else if (c.gop) {
+                c.gop.push(pkt);
+                c.gopBytes += TS_PACKET;
+                if (c.gopBytes > KEYFRAME_CACHE_MAX) { c.gop = null; c.gopBytes = 0; }
+            }
+        }
+        i += TS_PACKET;
+    }
+    // Paquete incompleto al final del bloque: se completa con el siguiente
+    c.rest = i < buf.length ? Buffer.from(buf.subarray(i)) : null;
+}
+
+// Bytes para un visor nuevo: PAT + PMT + GOP en curso + el paquete a medias, de modo que el
+// siguiente bloque del router continúa exactamente donde acaba esto. null si aún no hay clave.
+function keyframeStart(c) {
+    if (!c || !c.gop || !c.pat || !c.pmt) return null;
+    const parts = [c.pat, c.pmt, ...c.gop];
+    if (c.rest) parts.push(c.rest);
+    return Buffer.concat(parts);
+}
+
 function startProxy(state, decoder) {
     const channel = state.channel;
     if (!state.proxyRouter) state.proxyRouter = { subscribers: new Set(), lastDataAt: 0 };
     const pr = state.proxyRouter;
     pr.lastDataAt = 0;
+    pr.ts = newKeyframeCache();
 
     const args = [
         '-hide_banner', '-loglevel', 'error',
@@ -1046,6 +1094,7 @@ function startProxy(state, decoder) {
     child.on('error', (err) => console.error(`[PROXY CH-${channel}] No se pudo lanzar FFmpeg: ${err.message}`));
     child.stdout.on('data', (chunk) => {
         pr.lastDataAt = Date.now();
+        trackKeyframes(pr.ts, chunk);
         fanOut(pr, `${channel}-low`, chunk);
     });
     let stderrTail = '';
@@ -1121,9 +1170,16 @@ function isProxyActive(channel) {
 }
 
 // Suscribir a la copia ligera. Devuelve false si no está activa (usar la señal completa).
-function addProxySubscriber(channel, sub) {
+// fromKeyframe: el visor arranca en el último fotograma clave (mosaico del Monitor 2). La
+// grabación _low no lo usa: debe empezar a la vez que la principal para no desfasarse.
+function addProxySubscriber(channel, sub, { fromKeyframe = false } = {}) {
     if (!isProxyActive(channel)) return false;
-    activeInputs[channel].proxyRouter.subscribers.add(sub);
+    const pr = activeInputs[channel].proxyRouter;
+    if (fromKeyframe) {
+        const start = keyframeStart(pr.ts);
+        if (start) { try { sub.write(start); } catch (e) { return false; } }
+    }
+    pr.subscribers.add(sub);
     return true;
 }
 

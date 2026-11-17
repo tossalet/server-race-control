@@ -460,3 +460,20 @@ input:checked + .slider:before { transform: translateX(18px); }
     .topbar-actions { width: 100%; justify-content: space-between; }
     .explorer-bar { top: calc(var(--topbar-h, 150px) - 1rem); }
 }
+
+/* Descarga de logs por periodo (panel de logs del dashboard) */
+.log-download { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.log-custom { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.log-custom[hidden] { display: none; }
+.log-sep { color: var(--text-muted); font-size: 0.8rem; }
+.log-download select, .log-download input {
+    padding: 6px 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px; color: var(--text-main); font-family: var(--font-body); font-size: 0.8rem;
+    min-height: 32px; color-scheme: dark;
+}
+.log-download input[type="text"] { width: 170px; }
+.log-download select:focus, .log-download input:focus { outline: none; border-color: var(--accent-blue); }
+.log-download select option { background: #1e293b; color: #fff; }
+@media (max-width: 600px) {
+    .log-download, .log-download input[type="text"] { width: 100%; }
+}

@@ -249,13 +249,30 @@
                 </div>
 
                 <div class="system-logs-container" style="margin-top: 30px; background: #0a0a0a; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; height: 400px; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
-                    <div style="padding: 12px 20px; background: rgba(255,255,255,0.05); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                    <div style="padding: 12px 20px; background: rgba(255,255,255,0.05); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                         <h3 style="margin: 0; font-size: 0.95rem; font-family: monospace; color: #fff; display: flex; align-items: center; gap: 10px;">
                             <i class="fa-solid fa-terminal" style="color: var(--accent-blue);"></i> Live System Logs
                         </h3>
-                        <a href="/api/logs/download" target="_blank" class="btn-secondary" style="font-size: 0.8rem; padding: 6px 12px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                            <i class="fa-solid fa-download"></i> Download TXT
-                        </a>
+                        <!-- Descarga acotada: periodo rápido o rango propio, y filtro de texto opcional -->
+                        <div class="log-download">
+                            <select id="logRange" onchange="onLogRangeChange()" title="Periodo a descargar">
+                                <option value="15">Últimos 15 min</option>
+                                <option value="60" selected>Última hora</option>
+                                <option value="360">Últimas 6 h</option>
+                                <option value="1440">Últimas 24 h</option>
+                                <option value="custom">Rango…</option>
+                                <option value="all">Todo</option>
+                            </select>
+                            <span id="logCustomRange" class="log-custom" hidden>
+                                <input type="datetime-local" id="logFrom" title="Desde">
+                                <span class="log-sep">→</span>
+                                <input type="datetime-local" id="logTo" title="Hasta">
+                            </span>
+                            <input type="text" id="logQuery" placeholder="Filtrar (ej. MONITOR-2)" title="Solo líneas que contengan este texto">
+                            <button type="button" class="btn-secondary" onclick="downloadLogs()" style="font-size: 0.8rem; padding: 6px 12px; display: flex; align-items: center; gap: 6px;">
+                                <i class="fa-solid fa-download"></i> Descargar TXT
+                            </button>
+                        </div>
                     </div>
                     <div id="live-system-logs" style="flex: 1; padding: 15px 20px; overflow-y: auto; font-family: 'JetBrains Mono', monospace, Consolas; font-size: 0.75rem; color: #ccc; line-height: 1.6; display: flex; flex-direction: column; gap: 4px;">
                         <!-- Logs injectados aquí -->

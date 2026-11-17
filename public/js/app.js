@@ -1890,3 +1890,40 @@ async function sendTerminalCommand(event) {
     }
     consoleDiv.scrollTop = consoleDiv.scrollHeight;
 }
+
+// ── Descarga de logs por periodo ────────────────────────────────────────────
+// datetime-local trabaja en hora local, igual que el log del servidor
+function toLocalInputValue(d) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function onLogRangeChange() {
+    const custom = document.getElementById('logRange').value === 'custom';
+    document.getElementById('logCustomRange').hidden = !custom;
+    if (custom) {
+        const from = document.getElementById('logFrom');
+        const to = document.getElementById('logTo');
+        const now = new Date();
+        if (!to.value) to.value = toLocalInputValue(now);
+        if (!from.value) from.value = toLocalInputValue(new Date(now.getTime() - 30 * 60000));
+    }
+}
+
+function downloadLogs() {
+    const range = document.getElementById('logRange').value;
+    const params = new URLSearchParams();
+    if (range === 'custom') {
+        const from = document.getElementById('logFrom').value;
+        const to = document.getElementById('logTo').value;
+        if (from && to && from > to) { alert('La hora "desde" es posterior a la hora "hasta".'); return; }
+        if (from) params.set('from', from);
+        if (to) params.set('to', to);
+    } else if (range !== 'all') {
+        params.set('minutes', range);
+    }
+    const q = document.getElementById('logQuery').value.trim();
+    if (q) params.set('q', q);
+    const qs = params.toString();
+    window.open('/api/logs/download' + (qs ? '?' + qs : ''), '_blank');
+}

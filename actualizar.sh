@@ -74,26 +74,19 @@ xset s noblank
 xset s off
 xset -dpms
 
-# Pantalla táctil: con dos monitores X reparte el táctil por todo el escritorio y los toques
-# caen desplazados. Hay que mapearlo a su monitor. (instalar_servidor.sh lo hacía, pero este
-# script sobrescribía launch_kiosk.sh sin esta parte.)
-# Salida: TOUCH_OUTPUT en /opt/race-control/.env, si no la principal de xrandr, si no HDMI-0.
-TOUCH_OUTPUT=$(grep '^TOUCH_OUTPUT=' /opt/race-control/.env 2>/dev/null | cut -d'=' -f2)
-[ -z "$TOUCH_OUTPUT" ] && TOUCH_OUTPUT=$(xrandr 2>/dev/null | awk '/ connected primary/{print $1; exit}')
-[ -z "$TOUCH_OUTPUT" ] && TOUCH_OUTPUT=HDMI-0
-for i in $(seq 1 10); do   # el USB táctil puede tardar en aparecer tras el arranque
-    TOUCH_IDS=$(xinput list 2>/dev/null | grep -i "touch" | grep -i "pointer" | grep -oP 'id=\K[0-9]+')
-    [ -n "$TOUCH_IDS" ] && break
-    sleep 1
-done
-if [ -n "$TOUCH_IDS" ]; then
-    for tid in $TOUCH_IDS; do
-        echo "[$(date)] Pantalla táctil id=$tid → $TOUCH_OUTPUT"
-        xinput map-to-output "$tid" "$TOUCH_OUTPUT" || echo "[$(date)] ⚠️ No se pudo mapear el táctil a $TOUCH_OUTPUT"
+# Pantalla táctil solo en el monitor del panel. Se repite cada 30 s: un reenganche del USB
+# de la táctil o un cambio de pantallas borra el mapeo y el dedo volvía a mover el puntero
+# por los dos monitores.
+(
+    for i in $(seq 1 15); do   # el USB táctil puede tardar en aparecer tras el arranque
+        bash /opt/race-control/mapear_tactil.sh && break
+        sleep 2
     done
-else
-    echo "[$(date)] No se detectó pantalla táctil."
-fi
+    while true; do
+        sleep 30
+        bash /opt/race-control/mapear_tactil.sh --quiet
+    done
+) &
 
 # Fondo de pantalla
 if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then

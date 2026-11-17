@@ -581,16 +581,19 @@ xset s noblank
 xset s off
 xset -dpms
 
-# Calibrar pantalla táctil: mapear el controlador táctil al monitor correcto
-# Busca dinámicamente el dispositivo táctil SiS por nombre
-TOUCH_ID=$(xinput list --id-only "SiS HID Touch Controller" 2>/dev/null || \
-           xinput list | grep -i "touch" | grep -oP 'id=\K[0-9]+' | head -1)
-if [ -n "$TOUCH_ID" ]; then
-    echo "[$(date)] Calibrando pantalla táctil (id=$TOUCH_ID) → HDMI-0"
-    xinput map-to-output "$TOUCH_ID" HDMI-0 2>/dev/null || true
-else
-    echo "[$(date)] No se detectó pantalla táctil, omitiendo calibración."
-fi
+# Pantalla táctil solo en el monitor del panel. Se repite cada 30 s: un reenganche del USB
+# de la táctil o un cambio de pantallas borra el mapeo y el dedo volvía a mover el puntero
+# por los dos monitores.
+(
+    for i in $(seq 1 15); do   # el USB táctil puede tardar en aparecer tras el arranque
+        bash /opt/race-control/mapear_tactil.sh && break
+        sleep 2
+    done
+    while true; do
+        sleep 30
+        bash /opt/race-control/mapear_tactil.sh --quiet
+    done
+) &
 
 # Fondo de pantalla (detrás de las ventanas)
 if [ -f "/usr/share/plymouth/themes/racecontrol/bg.png" ]; then

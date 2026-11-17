@@ -61,7 +61,7 @@ wss.on('connection', (ws, req) => {
     let subscribed = false;
     const trySubscribe = () => {
         if (ws.readyState !== ws.OPEN) return true; // el cliente ya se fue: dejar de esperar
-        if (wantLow && streamManager.addProxySubscriber(channel, subObj)) {
+        if (wantLow && streamManager.addProxySubscriber(channel, subObj, { fromKeyframe: true })) {
             subscribed = true;
             onLow = true;
             console.log(`[WS] Client subscribed to LIVE channel ${channel} (copia ligera)`);
@@ -131,16 +131,25 @@ function writeLogLine(line) {
 }
 
 const logHistory = [];
-function getTimestamp() {
-    return new Date().toISOString().replace('T', ' ').substring(0, 19);
+// Hora LOCAL del servidor (antes UTC: con el reloj de pared una hora por delante, los logs no
+// cuadraban con lo que se había visto en pantalla). En el fichero va con su desfase horario
+// para distinguirla de las líneas antiguas, que están en UTC.
+const pad2 = (n) => String(n).padStart(2, '0');
+function formatLocal(d) {
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+function localOffset(d) {
+    const m = -d.getTimezoneOffset();
+    return `${m >= 0 ? '+' : '-'}${pad2(Math.floor(Math.abs(m) / 60))}:${pad2(Math.abs(m) % 60)}`;
 }
 
 function broadCastLog(level, message) {
-    const logEntry = { timestamp: getTimestamp(), level, message };
+    const now = new Date();
+    const logEntry = { timestamp: formatLocal(now), level, message };
     if (io) io.emit('server_log', logEntry);
     logHistory.push(logEntry);
     if (logHistory.length > 500) logHistory.shift(); // Keep last 500 lines in memory
-    writeLogLine(`[${logEntry.timestamp}] [${level}] ${message}\n`);
+    writeLogLine(`[${logEntry.timestamp} ${localOffset(now)}] [${level}] ${message}\n`);
 }
 
 // Intercept Console
@@ -859,12 +868,69 @@ app.get('/api/logs', (req, res) => {
     res.json(logHistory);
 });
 
-app.get('/api/logs/download', (req, res) => {
-    if (fs.existsSync(logFile)) {
-        res.download(logFile, 'server_log.txt');
-    } else {
-        res.status(404).send("No log file found.");
+// Descarga del log, opcionalmente acotada:
+//   ?minutes=N            últimos N minutos
+//   ?from=...&to=...      rango (AAAA-MM-DDTHH:MM, hora local del servidor)
+//   ?q=texto              solo líneas que contienen el texto (sin distinguir mayúsculas)
+// Lee también el fichero rotado (server.log.1) y pone todas las horas en hora local.
+const LOG_LINE_RE = /^\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(?: ([+-]\d{2}:\d{2}))?\]/;
+function parseLogTime(line) {
+    const m = LOG_LINE_RE.exec(line);
+    if (!m) return null;
+    // Sin desfase = línea antigua, escrita en UTC
+    return { ms: Date.parse(`${m[1]}T${m[2]}${m[3] || 'Z'}`), len: m[0].length };
+}
+
+app.get('/api/logs/download', async (req, res) => {
+    const files = [logFile + '.1', logFile].filter(f => fs.existsSync(f));
+    if (!files.length) return res.status(404).send('No log file found.');
+
+    const now = Date.now();
+    let from = -Infinity, to = Infinity;
+    const minutes = parseFloat(req.query.minutes);
+    if (minutes > 0) from = now - minutes * 60000;
+    if (req.query.from) { const t = new Date(req.query.from).getTime(); if (!isNaN(t)) from = t; }
+    if (req.query.to) { const t = new Date(req.query.to).getTime(); if (!isNaN(t)) to = t + 59999; } // incluye el minuto final
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const filtered = from !== -Infinity || to !== Infinity || q;
+
+    const stamp = (ms) => formatLocal(new Date(ms)).replace(/[-:]/g, '').replace(' ', '-').slice(0, 13);
+    const name = filtered
+        ? `server_log_${from === -Infinity ? 'inicio' : stamp(from)}_a_${to === Infinity ? stamp(now) : stamp(to)}.txt`
+        : 'server_log.txt';
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    const desc = [
+        from === -Infinity ? 'desde el inicio' : `desde ${formatLocal(new Date(from))}`,
+        to === Infinity ? 'hasta ahora' : `hasta ${formatLocal(new Date(to))}`,
+        q ? `con "${req.query.q}"` : null
+    ].filter(Boolean).join(', ');
+    res.write(`# Race Control — log del servidor ${desc} (hora local ${localOffset(new Date())})\n`);
+
+    const readline = require('readline');
+    let lastMs = null, count = 0;
+    try {
+        for (const f of files) {
+            const rl = readline.createInterface({ input: fs.createReadStream(f, { encoding: 'utf8' }), crlfDelay: Infinity });
+            for await (const line of rl) {
+                const t = parseLogTime(line);
+                let out = line;
+                if (t) {
+                    lastMs = t.ms;
+                    out = `[${formatLocal(new Date(t.ms))}]` + line.slice(t.len);
+                }
+                // Las líneas sin hora (continuación de un mensaje) heredan la de la anterior
+                if (lastMs === null || lastMs < from || lastMs > to) continue;
+                if (q && !out.toLowerCase().includes(q)) continue;
+                if (!res.write(out + '\n')) await new Promise(r => res.once('drain', r));
+                count++;
+            }
+        }
+    } catch (e) {
+        res.write(`# Error leyendo el log: ${e.message}\n`);
     }
+    if (!count) res.write('# Ninguna línea en ese rango.\n');
+    res.end();
 });
 
 /* =======================================
