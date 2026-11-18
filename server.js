@@ -17,6 +17,7 @@ const cors = require('cors');
 const fs = require('fs');
 const db = require('./db');
 const streamManager = require('./streamManager');
+const mosaicManager = require('./mosaicManager');
 const sysMonitor = require('./sysMonitor');
 const { spawn, execFile } = require('child_process');
 const util = require('util');
@@ -33,6 +34,31 @@ const { WebSocketServer } = require('ws');
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on('connection', (ws, req) => {
+    // Mosaico del Monitor 2 compuesto en el servidor: /mosaic?ch=2,3,4,...
+    if (req.url.startsWith('/mosaic')) {
+        const q = new URL(req.url, 'http://x').searchParams;
+        const channels = mosaicManager.parseChannels(q.get('ch'));
+        const sub = {
+            kind: 'viewer',
+            write(chunk) { if (ws.readyState === ws.OPEN) ws.send(chunk); },
+            pending() { return ws.bufferedAmount; },
+            destroy() { try { ws.terminate(); } catch (e) { } }
+        };
+        const m = mosaicManager.addViewer(channels, sub);
+        if (!m) return ws.close();
+        console.log(`[WS] Monitor 2 conectado al mosaico ${channels.join(',')}`);
+        let done = false;
+        const cleanup = () => {
+            if (done) return;
+            done = true;
+            mosaicManager.removeViewer(m, sub);
+            console.log(`[WS] Monitor 2 desconectado del mosaico ${channels.join(',')}`);
+        };
+        ws.on('close', cleanup);
+        ws.on('error', cleanup);
+        return;
+    }
+
     const match = req.url.match(/\/live\/(\d+)/);
     if (!match) return ws.close();
 
@@ -3607,9 +3633,9 @@ io.on('connection', (socket) => {
 });
 
 // Redirigir el handshake WebSocket al wss (comparte puerto 4000)
-// IMPORTANTE: NO destruir sockets no-/live/ — socket.io tiene su propio listener de upgrade
+// IMPORTANTE: NO destruir sockets no-/live/ ni /mosaic — socket.io tiene su propio listener de upgrade
 server.on('upgrade', (request, socket, head) => {
-    if (request.url && request.url.startsWith('/live/')) {
+    if (request.url && (request.url.startsWith('/live/') || request.url.startsWith('/mosaic'))) {
         wss.handleUpgrade(request, socket, head, (ws) => {
             wss.emit('connection', ws, request);
         });
