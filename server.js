@@ -18,6 +18,7 @@ const fs = require('fs');
 const db = require('./db');
 const streamManager = require('./streamManager');
 const mosaicManager = require('./mosaicManager');
+const diskInfo = require('./diskInfo');
 const sysMonitor = require('./sysMonitor');
 const { spawn, execFile } = require('child_process');
 const util = require('util');
@@ -488,8 +489,10 @@ app.get('/api/storage/status', async (req, res) => {
         const accessible = await checkAccess(mediaRoot);
         if (accessible && fs.statfsSync) {
             const stat = fs.statfsSync(mediaRoot);
-            const freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
-            res.json({ available: true, path: mediaRoot, freeGB });
+            // bavail: lo que de verdad se puede escribir (lo mismo que muestra df)
+            const freeGB = ((stat.bavail * stat.bsize) / 1e9).toFixed(1);
+            const totalGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
+            res.json({ available: true, path: mediaRoot, freeGB, totalGB, level: diskInfo.diskLevel(freeGB) });
         } else {
             res.json({ available: !accessible ? false : true, path: mediaRoot, freeGB: null, message: !accessible ? 'Disco no accesible' : null });
         }
@@ -499,7 +502,7 @@ app.get('/api/storage/status', async (req, res) => {
 });
 
 // Lista todas las particiones disponibles (montadas o detectables) para selección manual
-app.get('/api/storage/list', (req, res) => {
+app.get('/api/storage/list', async (req, res) => {
     if (process.platform === 'win32') {
         return res.json([{ device: 'local', mountPoint: path.join(__dirname, 'media'), fsType: 'local', sizeGB: null, freeGB: null, label: 'Carpeta local (Windows dev)' }]);
     }
@@ -531,26 +534,23 @@ app.get('/api/storage/list', (req, res) => {
             if (!device.startsWith('/dev/sd') && !device.startsWith('/dev/nvme')) continue;
             if (SKIP_PFX.some(p => mountPoint === p || mountPoint.startsWith(p + '/'))) continue;
 
-            // NO llamar a statfsSync sobre particiones externas — puede colgar en NTFS/NFS muertos.
-            // Solo obtener info de tamaño para el disco activo (mediaRoot) que ya sabemos que funciona.
-            let sizeGB = null, freeGB = null;
-            if (mediaRoot && mountPoint && mediaRoot.startsWith(mountPoint)) {
-                try {
-                    const stat = fs.statfsSync(mountPoint);
-                    sizeGB = ((stat.blocks * stat.bsize) / 1e9).toFixed(0);
-                    freeGB = ((stat.bfree * stat.bsize) / 1e9).toFixed(1);
-                } catch (e) { }
-            }
-
-            partitions.push({
-                device,
-                mountPoint,
-                fsType,
-                sizeGB,
-                freeGB,
-                label: device.includes('sd') ? `Puerto USB (${device.replace('/dev/', '')})` : `Disco NVMe (${device.replace('/dev/', '')})`
-            });
+            partitions.push({ device, mountPoint, fsType });
         }
+
+        // Tipo real de cada disco y espacio libre. Con df y no statfsSync: en un NTFS/NFS muerto
+        // statfsSync colgaría todo el servidor; df se abandona a los 2,5 s.
+        const types = await diskInfo.readDiskTypes();
+        await Promise.all(partitions.map(async (p) => {
+            const type = types.get(p.device) || {};
+            const isNvme = p.device.startsWith('/dev/nvme');
+            p.kind = type.kind || (isNvme ? 'internal' : 'unknown');
+            p.typeLabel = type.typeLabel || (isNvme ? 'Interno NVMe' : 'Disco');
+            p.model = type.model || '';
+            p.volumeLabel = type.volumeLabel || '';
+            p.label = p.typeLabel;
+            p.active = !!mediaRoot && (mediaRoot === p.mountPoint || mediaRoot.startsWith(p.mountPoint + '/'));
+            Object.assign(p, await diskInfo.readDiskSpace(p.mountPoint));
+        }));
     } catch (e) {
         console.error('[STORAGE] Error leyendo /proc/mounts:', e.message);
     }
