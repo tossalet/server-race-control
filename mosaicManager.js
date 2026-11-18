@@ -162,7 +162,9 @@ function stopTile(tile) {
 // ── Codificador del lienzo ───────────────────────────────────────────────────
 function startEncoder(m) {
     const { width, height } = m.layout;
-    const enc = sm.nvencAvailable
+    // La gráfica admite pocas codificaciones a la vez: si no queda sesión libre, por CPU
+    const useNvenc = sm.nvencAvailable && !m.softwareEncoder;
+    const enc = useNvenc
         ? ['-c:v', 'hevc_nvenc', '-preset', 'p1', '-tune', 'll', '-rc', 'cbr', '-b:v', '6M', '-maxrate', '6M', '-bufsize', '3M']
         : ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-b:v', '6M', '-maxrate', '6M', '-bufsize', '3M', '-pix_fmt', 'yuv420p'];
     const args = [
@@ -190,6 +192,13 @@ function startEncoder(m) {
     child.on('close', (code) => {
         if (m.encoder !== child) return;
         m.encoder = null;
+        if (useNvenc && Date.now() - m.encoderStartedAt < 3000) {
+            m.nvencFails = (m.nvencFails || 0) + 1;
+            if (m.nvencFails >= 2) {
+                m.softwareEncoder = true;
+                console.error('[MOSAICO] NVENC no disponible para el mosaico: se codifica por CPU');
+            }
+        }
         // Los visores reconectan a un vídeo nuevo (las marcas de tiempo vuelven a cero)
         for (const s of m.router.subscribers) sm.safeDestroy(s);
         m.router.subscribers.clear();
@@ -324,4 +333,7 @@ function removeViewer(m, sub) {
     if (m) m.router.subscribers.delete(sub);
 }
 
-module.exports = { mosaicLayout, parseChannels, addViewer, removeViewer };
+module.exports = {
+    mosaicLayout, parseChannels, addViewer, removeViewer,
+    composer: { mosaicLayout, fillBlack, blit, startEncoder },
+};

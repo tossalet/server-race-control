@@ -983,6 +983,8 @@ const PROXY_SIZE = '640x360';
 const PROXY_MAX_FAST_FAILS = 3;          // fallos seguidos antes de rendirse un rato
 const PROXY_DISABLE_MS = 5 * 60 * 1000;  // ...y cuánto tiempo (p. ej. sin sesiones NVENC libres)
 const PROXY_STALL_MS = 15000;
+// Las GeForce admiten 8 codificaciones NVENC a la vez: una queda libre para el mosaico del Monitor 2
+const MAX_PROXY_SESSIONS = 7;
 
 let cuvidDecoders = null; // decodificadores *_cuvid que trae el FFmpeg instalado
 execFile(getFFmpegPath(), ['-hide_banner', '-decoders'], { timeout: 10000, windowsHide: true }, (err, stdout) => {
@@ -992,6 +994,17 @@ execFile(getFFmpegPath(), ['-hide_banner', '-decoders'], { timeout: 10000, windo
     }
     console.log(`[PROXY] Decodificación NVDEC: ${cuvidDecoders.size ? [...cuvidDecoders].join(', ') : 'no disponible (el mosaico usará la señal completa)'}`);
 });
+
+// Decodificador por GPU para un códec, si el FFmpeg instalado lo trae
+function cuvidDecoderFor(codec) {
+    const decoder = proxyDecoder(codec);
+    return decoder && cuvidDecoders && cuvidDecoders.has(decoder) ? decoder : null;
+}
+
+function inputCodec(channel) {
+    const state = activeInputs[channel];
+    return (state && state.codec) || persistentCodecs[channel] || '';
+}
 
 function proxyDecoder(codec) {
     const c = (codec || '').toUpperCase();
@@ -1157,6 +1170,7 @@ setInterval(() => {
         if (state.proxyDisabledUntil && now < state.proxyDisabledUntil) continue;
         if (state.proxyRestartAt && now < state.proxyRestartAt) continue;
         if (!hasSignal(state.channel)) continue;
+        if (Object.values(activeInputs).filter(s => s.proxyChild).length >= MAX_PROXY_SESSIONS) continue;
         const decoder = proxyDecoder(state.codec || persistentCodecs[state.channel]);
         if (!decoder || !cuvidDecoders.has(decoder)) continue;
         startProxy(state, decoder);
@@ -1282,6 +1296,8 @@ module.exports = {
     newKeyframeCache,
     trackKeyframes,
     keyframeStart,
+    cuvidDecoderFor,
+    inputCodec,
     getTotalBitrates,
     activeInputs,
     activeOutputs,

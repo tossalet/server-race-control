@@ -18,6 +18,7 @@ const fs = require('fs');
 const db = require('./db');
 const streamManager = require('./streamManager');
 const mosaicManager = require('./mosaicManager');
+const replayMosaic = require('./replayMosaic');
 const diskInfo = require('./diskInfo');
 const sysMonitor = require('./sysMonitor');
 const { spawn, execFile } = require('child_process');
@@ -39,20 +40,30 @@ wss.on('connection', (ws, req) => {
     if (req.url.startsWith('/mosaic')) {
         const q = new URL(req.url, 'http://x').searchParams;
         const channels = mosaicManager.parseChannels(q.get('ch'));
+        // ?session=ID → mosaico de edición: lee las grabaciones y sigue la línea de tiempo
+        const session = q.get('session');
+        const mosaicModule = session ? replayMosaic : mosaicManager;
         const sub = {
             kind: 'viewer',
             write(chunk) { if (ws.readyState === ws.OPEN) ws.send(chunk); },
             pending() { return ws.bufferedAmount; },
             destroy() { try { ws.terminate(); } catch (e) { } }
         };
-        const m = mosaicManager.addViewer(channels, sub);
+        const m = session
+            ? replayMosaic.addViewer({
+                session, channels, mediaRoot,
+                t: parseFloat(q.get('t')) || 0,
+                paused: q.get('paused') === '1',
+                rate: parseFloat(q.get('rate')) || 1
+            }, sub)
+            : mosaicManager.addViewer(channels, sub);
         if (!m) return ws.close();
         console.log(`[WS] Monitor 2 conectado al mosaico ${channels.join(',')}`);
         let done = false;
         const cleanup = () => {
             if (done) return;
             done = true;
-            mosaicManager.removeViewer(m, sub);
+            mosaicModule.removeViewer(m, sub);
             console.log(`[WS] Monitor 2 desconectado del mosaico ${channels.join(',')}`);
         };
         ws.on('close', cleanup);
@@ -698,6 +709,7 @@ app.post('/api/monitor/command', (req, res) => {
             : `canal ${cmd.channel}`;
         console.log(`[MONITOR-CMD] ${cmd.type}: ${detail}`);
     }
+    replayMosaic.applyCommand(cmd);
     monitorClients.forEach(c => c.write(`data: ${JSON.stringify(cmd)}\n\n`));
     res.sendStatus(200);
 });
