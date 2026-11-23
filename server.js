@@ -986,6 +986,7 @@ app.get('/api/inputs', (req, res) => {
                 codec: isRunning
                     ? (state.codec || streamManager.persistentCodecs[row.channel] || row.codec || '')
                     : (row.codec || streamManager.persistentCodecs[row.channel] || ''),
+                resolution: isRunning ? (state.resolution || '') : '',
                 thumbTs: state ? (state.thumbTs || 0) : 0
             };
         });

@@ -347,6 +347,27 @@ function buildIngestArgs(inputObj) {
     return args;
 }
 
+/**
+ * Extrae la resolución de la línea de vídeo de FFmpeg, p. ej.
+ * "Video: h264 (High), yuv420p(tv, bt709, top first), 1920x1080 [SAR 1:1 DAR 16:9], 25 fps"
+ * → "1920x1080i · 25 fps". Devuelve '' si la línea aún no está completa.
+ */
+function parseVideoResolution(text) {
+    const lineMatch = text.match(/Video:[^\r\n]*[\r\n]/);
+    if (!lineMatch) return '';
+    const line = lineMatch[0];
+    const sizeMatch = line.match(/,\s*(\d{2,5})x(\d{2,5})\b/);
+    if (!sizeMatch) return '';
+    const interlaced = /\b(top|bottom) first\b/.test(line);
+    let label = `${sizeMatch[1]}x${sizeMatch[2]}${interlaced ? 'i' : ''}`;
+    const fpsMatch = line.match(/([\d.]+)(k?) fps/) || line.match(/([\d.]+)(k?) tbr/);
+    if (fpsMatch) {
+        const fps = parseFloat(fpsMatch[1]) * (fpsMatch[2] ? 1000 : 1);
+        if (fps > 0 && fps < 1000) label += ` · ${Math.round(fps * 100) / 100} fps`;
+    }
+    return label;
+}
+
 function spawnIngest(state) {
     const { channel, inputObj } = state;
     if (state.isStopping || activeInputs[channel] !== state) return;
@@ -368,7 +389,10 @@ function spawnIngest(state) {
 
     let lastParseTime = 0;
     let codecFound = false;
+    let resolutionFound = false;
+    let headerText = ''; // cabecera de FFmpeg acumulada: la línea "Video:" puede llegar partida
     const errorLogBuffer = [];
+    state.resolution = ''; // se vuelve a detectar en cada arranque (la cámara puede cambiar de modo)
 
     child.stderr.on('data', (data) => {
         const out = data.toString();
@@ -395,6 +419,19 @@ function spawnIngest(state) {
             }
         }
 
+        // Resolución de entrada: primera línea "Video:" (la del Input #0, antes que la del Output)
+        if (!resolutionFound) {
+            headerText = (headerText + out).slice(-8192);
+            const res = parseVideoResolution(headerText);
+            if (res) {
+                resolutionFound = true;
+                headerText = '';
+                state.resolution = res;
+                console.log(`[IN-${channel}] Resolución de entrada: ${res}`);
+                emitStats({ channel: channel, resolution: res });
+            }
+        }
+
         const now = Date.now();
         // THRESHOLD LIMIT: Solo analizamos estadísticas 2 veces por segundo para evitar saturar NodeJS
         if (now - lastParseTime < 500) return;
@@ -412,6 +449,7 @@ function spawnIngest(state) {
                 time: timeMatch ? timeMatch[1] : '--:--:--',
                 active: true,
                 codec: state.codec || '',
+                resolution: state.resolution || '',
                 history // Payload con curva precargada
             });
         }
@@ -452,9 +490,10 @@ function spawnIngest(state) {
         // Remove thumbnail so UI flips to TV Bars
         fs.unlink(path.join(__dirname, 'public', 'thumbs', `thumb_${channel}.jpg`), () => { });
         state.thumbTs = 0;
+        state.resolution = '';
 
         // Turn yellow in UI (we fake an active signal with 0 bitrate)
-        emitStats({ channel: channel, active: true, bitrate: '0.0kbits/s', time: '--:--:--' });
+        emitStats({ channel: channel, active: true, bitrate: '0.0kbits/s', time: '--:--:--', resolution: '' });
 
         const delay = Math.min(RESTART_MAX_MS, RESTART_MIN_MS * Math.pow(2, state.restartAttempts || 0));
         state.restartAttempts = (state.restartAttempts || 0) + 1;

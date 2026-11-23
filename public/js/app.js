@@ -499,6 +499,18 @@ document.addEventListener('DOMContentLoaded', () => {
             if (codecElem && data.codec.length > 0) codecElem.innerText = data.codec;
         }
 
+        // Resolución de entrada: se oculta al caer la señal o parar la entrada
+        if (data.resolution !== undefined || data.active === false) {
+            const resElem = document.getElementById(`res-${data.channel}`);
+            const res = data.active === false ? '' : (data.resolution || '');
+            if (resElem) {
+                resElem.innerText = res;
+                resElem.style.display = res ? '' : 'none';
+            }
+            const inp = inputs.find(i => i.channel.toString() === data.channel.toString());
+            if (inp) inp.resolution = res;
+        }
+
         // Backend pushes historical telemetry for each update
         if (data.history) {
             frontendTelemetryCache[data.channel.toString()] = data.history;
@@ -659,6 +671,7 @@ function renderStreams() {
                         </div>
                         <div class="badge-protocol ${protocolBadge}">${protocolText}</div>
                         <span id="codec-${input.channel}" class="badge-protocol udp" style="background:#4b5563;">H.26X</span>
+                        <span id="res-${input.channel}" class="badge-protocol udp" title="Resolución de entrada" style="background:#374151; font-family:monospace;${input.resolution ? '' : ' display:none;'}">${input.resolution || ''}</span>
                         ${input.ptz_enabled ? '<span class="badge-protocol" role="button" tabindex="0" onclick="event.stopPropagation(); openPtzCamera(' + input.channel + ')" onkeydown="if(event.keyCode===13){this.click();}" style="background:var(--accent-blue); padding: 3px 6px; cursor:pointer;" title="Abrir PTZ Control con esta cámara"><i class="fa-solid fa-gamepad"></i> PTZ</span>' : ''}
                         <span class="stream-name" style="display:flex; flex-direction:column; line-height:1.2;">
                             ${input.name || 'Channel ' + input.channel}
